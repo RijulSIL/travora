@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+
+# Env files (real secrets live here — never commit)
+.env
+.env.local
+
+# Virtualenvs
+.venv/
+venv/
+
+# Node / frontend build
+node_modules/
+dist/
+.vite/
+
+# Logs
+*.log
+
+# Office docs (binary, not meant to be diffed/tracked)
+*.docx
+*.pdf
+TRP_Product_Requirements_Document.zip
+word/
+backend/temp_prd/
+
+# Personal/one-off debug scripts and DB dumps (contain real emails/passwords)
+backend/scratch/
+backend/scratch_*.py
+backend/scratch.py
+backend/check_all_limits.py
+backend/check_l1.py
+backend/check_limits.py
+backend/fix_emp.py
+backend/test_error.py
+backend/test_phase2.py
+
+# Runtime user-uploaded content (not source)
+backend/storage/
+
+# Test suites / unused test artifacts (not part of the running webapp)
+backend/tests/
+frontend/src/**/*.test.js
+frontend/src/**/*.test.jsx
+frontend/test.css
+
+# Stray local SQLite DBs (the app uses MySQL — these are dev leftovers) and logs
+backend/*.db
+backend/error_traceback.txt
+backend/uvicorn_log.txt
+backend/prd_text.md
+
+# Misc
+20260708-0525-45.8880220.mp4
+logo/Picture1.png

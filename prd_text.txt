@@ -1,0 +1,1099 @@
+TRAVEL & REIMBURSEMENT PORTAL
+Product Requirements Document •  v1.0
+Simon India Ltd (SIL) / Adventz Group
+Document Ref
+TRP-PRD-SIL-2026-002
+Policy Reference
+SIL/HR/Travel Policy-Domestic/2026
+Status
+Draft – v1.0
+Effective From
+13-Mar-2026
+Owner
+Product Management / Corporate HR
+Prepared For
+Simon India Ltd & Adventz Group
+CONFIDENTIAL — INTERNAL USE ONLY
+Table of Contents
+Table of Contents2
+1. Executive Summary4
+1.1 Business Objectives4
+1.2 Key Constraints from SIL Policy4
+2. Backend Policy Configuration Engine6
+2.1 Policy Version Management6
+2.2 Configurable: Impact Level Master6
+2.3 Configurable: City Group Classification7
+2.4 Configurable: Hotel Room Rent & Food Limits7
+2.5 Configurable: Expense Categories & Rules8
+3. Configurable Approval Matrix10
+3.1 Standard 4-Stage Approval Chain10
+3.2 Approval Workflow — Visual Flow10
+3.3 Special Exception Approval Paths11
+3.4 Admin Configuration Options for Approval Matrix12
+3.4.1 Stage Configuration12
+3.4.2 Approver Routing Rules12
+3.4.3 SLA Configuration12
+3.4.4 Notification Configuration12
+4. Invoice Upload & AI Data Extraction14
+4.1 Upload Mechanism14
+4.2 AI Extraction Fields14
+4.3 Extraction Confidence & Employee Review15
+4.4 Reimbursement Form Auto-Population15
+5. Travel Booking Module16
+5.1 Booking Entitlement Enforcement16
+5.2 Flight Booking16
+5.3 Train Booking16
+5.4 Bus Booking16
+5.5 Local Conveyance17
+6. Claim Lifecycle & Business Rules18
+6.1 Claim Submission Rules18
+6.2 Advance Management18
+6.3 Policy Compliance Validation (Real-Time)18
+7. Admin Console — Backend Configuration20
+8. Dashboards & Reporting21
+8.1 Employee Dashboard21
+8.2 Manager Dashboard21
+8.3 HRBP / HR Dashboard21
+8.4 Finance Dashboard21
+8.5 Standard Reports21
+9. Roles & Permissions Matrix23
+10. Non-Functional Requirements & Integrations24
+10.1 Performance24
+10.2 Security24
+10.3 Key Integrations24
+11. Implementation Roadmap26
+12. Risks & Mitigations27
+13. Glossary28
+1. Executive Summary
+The Travel & Reimbursement Portal (TRP) is an enterprise-grade web and mobile platform built specifically to reflect Simon India Ltd's (SIL) Interim Domestic Travel Policy (SIL/HR/Travel Policy-Domestic/2026, effective 13-Mar-2026). It consolidates corporate travel booking and expense reimbursement into a single system driven by a fully configurable backend policy engine — meaning that all entitlement rules, spending limits, city classifications, and approval workflows can be modified by authorised HR/Finance administrators without any code deployment.
+Two foundational pillars distinguish TRP from generic travel tools:
+Policy-Driven Engine: Every booking and claim is auto-validated against the employee's Impact Level, destination city group (A/B/C), and expense category before it reaches an approver.
+Configurable Approval Matrix: Claims flow through a structured 4-stage approval chain — Reporting Manager → HR/HRBP → Payroll Team → Finance Team — each stage configurable in terms of routing rules, SLAs, escalation logic, and delegation.
+1.1 Business Objectives
+Digitise 100% of the domestic travel claim lifecycle for all SIL offices (CO.GGN, RO.BNG, RO.BBN, SO.ALL).
+Enforce SIL travel policy rules at source — Impact Level entitlements, hotel room rent caps, food limits, city-group-based rates — automatically.
+Achieve claim settlement within 10 working days (per policy clause 3.5: submission within 5 days, accounts settlement within 10 days).
+Enable HR, HRBP, and Finance to configure all policy parameters from a backend admin panel — no developer intervention needed.
+Capture GST-compliant invoice data for ITC reconciliation; auto-validate GSTIN on every invoice.
+Provide real-time spend dashboards for Finance, HR, and Department Heads.
+1.2 Key Constraints from SIL Policy
+Policy Rule
+System Behaviour
+Claim submission within 5 working days of return
+System enforces deadline; blocks submission after Day 5 (configurable hard/soft)
+Accounts settle within 10 working days of receipt
+SLA timer auto-starts when Finance receives approved claim
+Advance outstanding > 3 weeks deducted from salary
+Automated alert to Payroll & HR; flag on employee profile
+Air tickets booked at least 1 week in advance
+Booking module enforces 7-day advance window for air; warning/block configurable
+No reimbursement for cigarettes/alcohol
+Expense category blacklist enforced during claim submission
+Original bills mandatory for air/train/hotel/food
+Invoice mandatory for all above-threshold categories; no bill = incidental only
+3-wheeler/metro: no bill needed, amount must be reasonable
+Self-declaration allowed; AI checks amount vs. fare benchmarks
+Room rent limits: no deviation allowed (CEO approval required)
+Hard cap enforced; exception triggers CEO + HRBP approval chain
+2. Backend Policy Configuration Engine
+All policy parameters are managed through a dedicated Admin Policy Console accessible only to authorised roles (HRBP, HR Admin, Finance Admin). Changes are versioned, audit-logged, and take effect from a configurable date — ensuring historical claims are processed under the policy version active at the time of travel.
+2.1 Policy Version Management
+Each policy configuration is saved as a versioned snapshot with effective date and expiry date.
+Active version is always auto-selected based on the travel date of the claim (not submission date).
+All historical versions are archived and immutable after the effective date passes.
+Policy changes require HRBP sign-off and are logged with the approver's identity and timestamp.
+2.2 Configurable: Impact Level Master
+Impact Levels are the primary axis for all entitlement rules. HR Admin can add, rename, or deprecate levels without code changes. The current SIL structure is pre-loaded:
+Impact Level
+Employee Grade Examples
+Air Entitlement
+Train Entitlement
+Local Conveyance
+Level 1
+CXO / Level 1
+Premium Economy / Economy
+1AC / Executive Chair Car
+Hired Taxi / Innova (Standard AC)
+Level 2
+Level 2
+Economy
+1AC / Executive Chair Car
+Uber Sedan/Premium/Go or Shared Taxi
+Level 3
+Level 3
+Economy
+1AC / Executive Chair Car
+Uber Sedan/Premium/Go or Shared Taxi
+Level 4A–4C
+Level 4A, 4B, 4C
+Economy
+2AC / AC Chair Car
+Uber Go or Company booked vehicle
+Level 5A–5C
+Level 5A, 5B, 5C
+Economy (journey > 12 hrs / exigency only; approval: FH + Group Head HR + CEO)
+2AC / AC Chair Car / AC Bus
+Uber Go / Uber Auto / Public Transport
+Level 6A–6C
+Level 6A, 6B, 6C
+Economy (journey > 12 hrs / exigency only; approval: FH + Group Head HR + CEO)
+3AC / Chair Car / AC Bus
+Uber Go / Uber Auto / Public Transport
+Level 6D
+Level 6D
+Economy (journey > 12 hrs / exigency only; approval: FH + Group Head HR + CEO)
+3AC / Chair Car / AC Bus
+Uber Go / Uber Auto / Public Transport
+Admin Configuration Fields per Impact Level:
+Level Code (e.g., 5A) and display name
+Air eligibility: Yes / No / Conditional (with condition rules: journey duration threshold in hours, required approvers)
+Air class allowed: Economy / Premium Economy / Business
+Train class(es) allowed: multi-select from 1AC, 2AC, 3AC, CC, EC, SL
+Local conveyance mode(s): multi-select with tier (Hired Taxi / Ride Hailing / Public Transport / Personal Vehicle)
+Personal vehicle reimbursement rate: ₹/km for 4-wheeler and 2-wheeler (currently ₹8.50 and ₹4.00 respectively)
+Twin-sharing mandatory: Yes / No
+2.3 Configurable: City Group Classification
+Cities are classified into Group A, B, and C for determining hotel and food expense limits. Admins can move any city between groups without a code change.
+City Group
+Current SIL Classification
+Admin Can
+Group A
+Mumbai (incl. Thane & Navi Mumbai), Delhi NCR (incl. Noida, Greater Noida, Faridabad, Gurgaon, Ghaziabad), Kolkata, Chennai, Pune, Bangalore, Hyderabad, Ahmedabad
+Add/remove cities, rename group
+Group B
+All State & UT capitals, Goa, Agra, Cochin, Calicut, Coimbatore, Indore, Kanpur, Surat, Udaipur, Varanasi, Vishakhapatnam, Vijaywada, Ludhiana, Cuttack, Vadodara, Mangalore, Mysore, Hubli, Belgaum, Nagpur, Aurangabad, Allahabad, Gorakhpur, Amritsar, Jalandhar, Bareilly, Paradeep, Bathinda, Lakhimpur, Bhubaneswar, Meerut
+Add/remove cities, rename group
+Group C
+All other cities/towns not in Group A or B (catch-all default)
+Add cities to promote to A or B; Group C is always the default for unlisted cities
+2.4 Configurable: Hotel Room Rent & Food Limits
+All amounts in the table below are configurable per Impact Level per City Group. The table reflects SIL policy as of 13-Mar-2026 and is pre-loaded as the default configuration. All amounts are exclusive of taxes.
+Impact Level
+Grp A – Room/Night (₹)
+Grp A – Food/Day (₹)
+Grp B – Room/Night (₹)
+Grp B – Food/Day (₹)
+Grp C – Room/Night (₹)
+Grp C – Food/Day (₹)
+Incidental/Night (₹)
+Day Visit Limit/Day (₹)
+Level 1
+Actual
+Actual
+Actual
+Actual
+Actual
+Actual
+800
+Actuals
+Level 2A–3A
+9,000
+Actual
+8,000
+Actual
+6,000
+Actual
+500
+400
+Level 3B–4A
+7,000
+Actual
+6,000
+Actual
+5,000
+Actual
+400
+300
+Level 4B–5A
+5,000
+1,500
+4,000
+1,200
+3,000
+1,200
+200
+250
+Level 5B–6A (Twin Sharing)
+4,000
+1,000
+3,500
+800
+3,000
+700
+200
+200
+Level 6B–6C (Twin Sharing)
+2,500
+600
+2,000
+600
+2,000
+500
+100
+150
+Level 6D (Twin Sharing)
+2,000
+500
+1,500
+500
+1,200
+400
+75
+100
+Admin Configuration Rules:
+Each cell (Impact Level × City Group × Expense Type) is independently editable.
+'Actual' means no cap enforced — system accepts any amount with valid invoice.
+Numeric caps are hard-enforced by default; admin can set each cap as Hard Block or Soft Warning.
+Room rent cap deviation: Policy mandates CEO approval — this is pre-configured as a mandatory exception workflow and cannot be downgraded by admin.
+Food expenses without bills are auto-routed to Incidental Expenses bucket.
+Twin-sharing flag activates automatically when employee level is 5B–6D and a travel companion of equivalent level is on the same claim period.
+2.5 Configurable: Expense Categories & Rules
+Category
+Sub-types
+Bill Mandatory?
+GST Required?
+Blacklisted Items
+Notes
+Air Travel
+Airfare, Airport tax, Baggage
+Yes (Boarding Pass + Invoice)
+Yes
+Business/First class (unless Level 1)
+Book ≥7 days in advance
+Train Travel
+Fare, Reservation, Tatkal
+Yes (Ticket + Receipt)
+Yes
+Class above entitlement
+Tatkal needs pre-approval
+Bus Travel
+Inter-city Bus
+Yes (Ticket)
+Yes
+Non-AC bus for eligible levels
+Local Conveyance
+Cab/Taxi, Uber, Auto, Metro, Personal vehicle
+Yes for >₹500; No for auto/metro
+No (consumer services)
+Hired Taxi for Level 4+
+Personal vehicle: ₹8.50/km (4W), ₹4/km (2W)
+Hotel / Accommodation
+Room rent + Laundry
+Yes (GST Invoice)
+Yes (12%/18%)
+Room above entitlement limit
+Guest house stay = food + IE only
+Food & Meals
+Breakfast, Lunch, Dinner
+Yes (bill); No bill = Incidental
+Yes (5%/18%)
+Alcohol, Cigarettes
+Only for outstation overnight travel
+Incidental Expenses
+Kaccha bills, Tips, Porterage, misc
+No formal bill; self-declaration
+No
+Alcohol, Cigarettes
+Capped per level/night
+Communication
+SIM/Roaming, Internet
+Yes
+Yes (18%)
+Day Visit Expenses
+Food during day visit (no night stay)
+Yes
+Yes
+Alcohol, Cigarettes
+Prior CEO approval for external meetings
+3. Configurable Approval Matrix
+The approval matrix is the heart of the reimbursement workflow. Every stage, routing rule, SLA, escalation path, and approver role is configurable from the Admin Console without code changes. The default matrix reflects SIL's 4-stage approval chain as described below.
+3.1 Standard 4-Stage Approval Chain
+Stage
+Stage Name
+Approver Role
+Default SLA
+Actions Available
+On SLA Breach
+Stage 1
+Manager Review
+Reporting Manager of Employee
+48 hours
+Approve / Send Back / Reject
+Escalate to skip-level manager; notify HRBP
+Stage 2
+HR / HRBP Review
+HRBP assigned to employee's business unit
+48 hours
+Approve / Send Back / Reject / Flag Exception
+Escalate to Group Head HR; notify Finance
+Stage 3
+Payroll Review
+Payroll Team (designated Payroll Processor)
+48 hours
+Validate & Approve / Send Back / Put on Hold
+Escalate to Finance Head; notify HR
+Stage 4
+Finance Payment
+Finance Team (Accounts Payable)
+As per payroll cycle (max 10 working days from Stage 3 receipt)
+Initiate Payment / Hold / Reject with Reason
+Escalate to CFO; flag for salary deduction if advance outstanding > 3 weeks
+Note: The 10-working-day settlement SLA (Clause 3.5) is system-enforced. If Finance does not process payment within 10 working days of claim receipt, an automated escalation is triggered to the Finance Head and CFO.
+3.2 Approval Workflow — Visual Flow
+The following describes the complete reimbursement journey from invoice upload to payment:
+Step
+Actor
+Action
+System Behaviour
+1
+Employee
+Uploads invoices (photo / PDF) for the trip
+AI extracts: vendor, GSTIN, line items, amounts, taxes. Employee reviews & confirms extracted data.
+2
+Employee
+Fills Reimbursement Form
+Form auto-populated from extracted invoice data. Employee selects expense categories, travel dates, purpose. Policy limits validated in real-time.
+3
+Employee
+Submits Claim
+System validates: claim within 5 working days, amounts within Impact Level limits for city group, mandatory bills attached, no blacklisted categories.
+4
+System
+Route to Stage 1 (Reporting Manager)
+Manager receives email + in-app notification with full claim detail, invoice previews, and policy compliance summary.
+5
+Reporting Manager
+Reviews & Acts
+Can Approve, Send Back for clarification, or Reject. Any modification to amount must be annotated. 48-hr SLA with auto-escalation.
+6
+System
+Route to Stage 2 (HR/HRBP)
+On Manager approval, claim moves to HRBP for policy compliance check. HRBP sees Impact Level, entitlement limits, and any exceptions flagged.
+7
+HRBP
+HR Policy Review
+Verifies travel entitlement compliance, checks exception approvals (e.g., CEO sign-off for air travel by Level 5/6), approves or flags. 48-hr SLA.
+8
+System
+Route to Stage 3 (Payroll Team)
+Payroll receives claim with all approvals. Payroll validates: advance outstanding, payroll period alignment, salary deduction flags if needed.
+9
+Payroll Team
+Payroll Validation
+Confirms no outstanding advance >3 weeks. Validates bank account details. Marks claim as 'Ready for Payment'. Can hold for next payroll cycle. 48-hr SLA.
+10
+System
+Route to Stage 4 (Finance Team)
+Finance receives payment-ready claims. 10-working-day SLA clock starts. Finance sees GST summary, ITC eligibility, and total payable.
+11
+Finance Team
+Payment Processing
+Initiates bank transfer to employee. Uploads payment reference. System auto-closes claim and notifies employee. Ledger entry exported to ERP.
+12
+Employee
+Notification
+Employee receives payment confirmation with amount, UTR/reference, and date. Claim archived with full audit trail.
+3.3 Special Exception Approval Paths
+Certain policy exceptions require approvers beyond the standard chain. These are pre-configured and cannot be bypassed:
+Exception Type
+Triggered When
+Additional Approvers Required
+Standard Chain Still Applies?
+Air Travel for Level 5A–6D
+Employee at Level 5A–6D books/claims air travel
+Function Head + Group Head HR + CEO (all 3 required)
+Yes — after exception approval, normal 4-stage chain proceeds
+Tatkal Train Booking
+Tatkal ticket purchased
+Function Head (Level 3A or above)
+Yes
+Room Rent Deviation
+Claimed room rent exceeds policy cap for city group
+CEO (with HRBP and Function Head recommendation)
+Yes — Finance validates CEO approval before payment
+Hired Taxi for Level 4+
+Level 4A–6D claims Hired Taxi (not eligible)
+HRBP + CEO
+Yes
+Day Visit External Meeting Expenses
+Expenses claimed for day visit external meeting
+CEO pre-approval required (before travel)
+Yes
+Mode of Travel Deviation (Level 5 & 6)
+Level 5/6 uses travel mode above entitlement
+Level 3A recommendation + CEO + HRBP approval
+Yes
+Policy Exception — General
+Any other deviation from policy
+Level 3A or above + Functional Head; HRBP logs exception
+Yes — exception details attached to claim throughout chain
+3.4 Admin Configuration Options for Approval Matrix
+3.4.1 Stage Configuration
+Add or remove approval stages (minimum 1, maximum 6 stages supported)
+Rename stages (e.g., rename 'Payroll Review' to 'Accounts Verification')
+Reorder stages via drag-and-drop in Admin Console
+Set each stage as Mandatory or Conditional (e.g., HR stage only triggers if claim > ₹5,000)
+Enable or disable parallel approval (two stages running simultaneously)
+3.4.2 Approver Routing Rules
+Rule type: Role-based (e.g., 'Reporting Manager'), Named Individual, or Department Role (e.g., 'HRBP for Business Unit X')
+Routing conditions: by employee grade range, by claim amount range, by office location, by expense category
+Fallback approver: configurable in case primary approver is unavailable
+Delegation: any approver can delegate authority to a named colleague for a specific date range; delegation is logged and auditable
+Auto-approval rule: Claims below a configurable threshold (e.g., ₹2,000) with valid receipts can be set to auto-approve Stage 1
+3.4.3 SLA Configuration
+SLA duration per stage: configurable in hours or business days
+Business hours definition: configurable working hours and holidays calendar (company holidays excluded from SLA)
+Reminder schedule: configurable reminder intervals before SLA breach (e.g., reminder at 24 hrs, warning at 36 hrs, escalation at 48 hrs)
+Escalation target: configurable skip-level approver or role for each stage
+3.4.4 Notification Configuration
+Notification channels per stage: Email, SMS, In-app Push (toggle each independently)
+Notification templates: editable HTML/text templates with dynamic placeholders (employee name, amount, claim ID, deadline, etc.)
+Notification recipients: submitter, current approver, CC list (e.g., always CC HRBP after Stage 1 approval)
+4. Invoice Upload & AI Data Extraction
+4.1 Upload Mechanism
+Mobile app: Camera capture (auto-enhance, auto-rotate, deskew) or gallery upload
+Web portal: Drag-and-drop or file picker
+Supported formats: JPEG, PNG, HEIC, PDF (single/multi-page)
+Batch upload: Up to 30 invoices per claim session
+Max file size: 10 MB per invoice
+Offline mobile capture: Invoices captured offline stored locally and synced when connectivity restored
+4.2 AI Extraction Fields
+Field
+Category
+Extracted From
+Validation
+Vendor / Supplier Name
+Vendor
+Header region of invoice
+Fuzzy match against vendor master; flagged if unrecognised
+GSTIN of Supplier
+GST
+GSTIN line on invoice
+Format check (15-char alphanum) + live GSTN API check for registered status
+Company GSTIN (Buyer)
+GST
+Buyer details section
+Auto-matched from company profile; employee confirms
+Invoice Number
+Metadata
+Invoice header
+Unique per supplier; duplicate detection across all company claims
+Invoice Date
+Metadata
+Invoice header
+Must fall within travel dates of the claim
+Place of Supply
+GST
+Invoice footer / header
+State code (01–38); intra vs. inter state auto-detected for CGST/SGST vs. IGST
+HSN / SAC Code
+GST
+Line item table
+Validated against HSN master; ITC eligibility auto-flagged
+Line Item Description
+Financial
+Line item table
+NLP classification into expense category (Food, Stay, Transport, etc.)
+Line Item Quantity & Unit
+Financial
+Line item table
+Numeric parse; unit normalised
+Line Item Unit Price
+Financial
+Line item table
+Cross-checked against total
+Tax Rate (%)
+Financial
+Tax column / footer
+GST rate validated (0, 5, 12, 18, 28%)
+CGST / SGST / IGST Amount
+Financial
+Tax section
+Rate × Taxable Value cross-validation
+Total Taxable Value
+Financial
+Subtotal field
+Sum of line items cross-validated
+Grand Total / Amount Payable
+Financial
+Footer total
+Taxable + Taxes cross-validated
+Payment Mode
+Payment
+Footer / payment details
+Cash / Card / UPI / NEFT detected
+Currency
+Financial
+Amount fields
+INR default; foreign currency flagged for manual rate entry
+4.3 Extraction Confidence & Employee Review
+Confidence Level
+Score
+Field Display
+Required Action
+High Confidence
+> 90%
+Green — auto-filled
+Employee can review; no mandatory action required
+Medium Confidence
+60–90%
+Yellow — pre-filled with highlight
+Employee must click Confirm or Edit before submitting
+Low Confidence
+< 60%
+Orange — field flagged
+Employee must manually enter or correct
+Extraction Failed
+0% / Error
+Red — field blank
+Employee must manually enter; submission blocked until filled
+Audit trail captures: Original extracted value, confidence score, final employee-entered value, and timestamp of confirmation — for every field on every invoice.
+4.4 Reimbursement Form Auto-Population
+Once the employee confirms extracted invoice data, the Reimbursement Form is auto-populated:
+Each confirmed invoice line item is mapped to an expense category based on AI classification.
+Amounts are grouped by category and compared against the employee's Impact Level limit for the destination city group.
+Items exceeding limits are highlighted in red; employee must either adjust the claim or initiate an exception request.
+GST summary is auto-computed and displayed: total taxable, CGST, SGST, IGST, grand total, and ITC-eligible amount.
+Employee reviews the aggregated form, adds trip details (purpose, travel dates, advance received if any), and submits.
+5. Travel Booking Module
+5.1 Booking Entitlement Enforcement
+When an employee searches for travel, the system automatically filters and flags options based on their Impact Level entitlement (configured in the Policy Engine):
+In-policy options shown with a green badge.
+Out-of-policy options shown with a warning badge and cost delta; selectable only with an exception request.
+For Level 5A–6D employees, air search is disabled by default; enabled only after Function Head + Group Head HR + CEO exception approval is recorded in the system.
+5.2 Flight Booking
+Feature
+Detail
+Eligibility check
+Level 1–4C: Air booking enabled. Level 5A–6D: Air booking requires pre-approved exception in system before search is unlocked.
+Class filter
+Level 1: Economy or Premium Economy. Level 2–4C: Economy only. System hides non-eligible classes.
+Advance booking rule
+System enforces minimum 7-day advance booking for air (Clause 3.4). Admin can adjust this threshold.
+GST invoice
+System auto-requests GST invoice from airline using company GSTIN at booking confirmation.
+Cancellation
+In-app cancellation with refund tracking; refund amount auto-offset from claim if ticket was claimed.
+Boarding Pass
+Employee must upload boarding pass post-travel as mandatory document for air travel claim (Clause 3.2).
+5.3 Train Booking
+Feature
+Detail
+Class eligibility
+Level 1–3: 1AC / Executive Chair Car. Level 4A–5A: 2AC / AC Chair Car. Level 5B–6D: 3AC / Chair Car. System filters classes.
+Tatkal booking
+Allowed but requires Function Head pre-approval; system blocks Tatkal without approved exception.
+IRCTC integration
+PNR booking, live seat availability, waitlist status, cancellation via IRCTC API.
+E-ticket storage
+Auto-stored in system; accessible from 'My Trips'. Employee must submit original ticket (Clause 3.2).
+PNR tracking
+Live PNR status with waitlist-to-confirmed alerts.
+5.4 Bus Booking
+Feature
+Detail
+Class eligibility
+AC bus for all levels. Non-AC bus not reimbursable for levels eligible for AC bus.
+Operator integration
+redBus / AbhiBus API; preferred operators highlighted based on company vendor list.
+Ticket
+E-ticket stored in system; original ticket required for claim.
+5.5 Local Conveyance
+Conveyance Type
+Eligible Levels
+Bill Required?
+Claim Mechanism
+Hired Taxi / Innova
+Level 1 only
+Yes (vendor invoice)
+Invoice upload; amount checked against trip distance estimate
+Uber Sedan/Premium/Go
+Level 2–4C
+Uber receipt (email/app)
+Receipt upload or direct Uber API integration (roadmap)
+Uber Go / Company Vehicle
+Level 4A–4C
+Uber receipt / company vehicle log
+Receipt upload or vehicle log
+Uber Go / Uber Auto / Public
+Level 5A–6D
+Uber receipt; no bill for auto/metro
+Receipt upload; auto/metro via self-declaration (amount validated)
+Personal 4-Wheeler
+All levels with manager approval
+No bill; odometer reading required
+Self-declaration with start/end odometer; ₹8.50/km auto-calculated
+Personal 2-Wheeler
+All levels with manager approval
+No bill; odometer reading required
+Self-declaration with start/end odometer; ₹4.00/km auto-calculated
+6. Claim Lifecycle & Business Rules
+6.1 Claim Submission Rules
+Rule
+Source (Policy Clause)
+System Enforcement
+Submit within 5 working days of return
+Clause 3.5
+Hard block after Day 5 (configurable: hard block or warning + mandatory manager override)
+Outstanding advance > 3 weeks: salary deduction
+Clause 3.6
+Automated alert to employee, manager, Payroll, HR at Day 15; auto-flag at Day 21 for payroll deduction processing
+Air ticket booked ≥ 7 days in advance
+Clause 3.4
+Booking module enforces 7-day advance; late booking requires manager approval exception logged in system
+Room rent deviation: CEO approval mandatory
+Clause 2.4.2
+Hard cap enforced; exception triggers a parallel CEO + HRBP approval before claim can proceed to Stage 1
+Cigarettes / Alcohol not reimbursable
+Clause 3.1
+Blacklisted expense type; if AI extraction detects alcohol/tobacco items in invoice, those line items are auto-rejected
+No bill required for 3-wheeler / metro
+Clause 3.3
+Self-declaration form enabled for these modes; AI benchmarks claimed amount against city fare estimates
+Food without bill = Incidental Expenses
+Clause 2.2
+If food invoice not uploaded, food amount auto-routed to Incidental Expenses (IE) bucket under the IE cap for the level
+Guest house stay: room rent not reimbursed
+Clause 2.3
+Employee marks accommodation type as 'Guest House'; room rent field auto-disabled
+Residential training: no room/food reimbursement
+Clause 3.7
+Travel type 'Training (accommodation included)' disables room and food categories automatically
+6.2 Advance Management
+Employee can request travel advance before a trip through the portal.
+Advance request routes through the same approval chain (Manager → HR → Finance).
+Approved advance amount is visible on the employee's claim form and auto-deducted from the net reimbursement payable.
+System tracks advance outstanding per employee with aging (Days Outstanding). Automated alerts:
+Day 15: Reminder to employee and manager.
+Day 21 (3 weeks): Flagged to HR and Payroll for salary deduction processing.
+Payroll team sees advance deduction flag during Stage 3 review.
+6.3 Policy Compliance Validation (Real-Time)
+At every step of claim creation, the system performs real-time validation:
+Invoice upload: GSTIN validated; duplicate invoice detected.
+Expense category selection: Category eligibility checked against employee Impact Level.
+Amount entry: Compared against city-group × Impact Level cap in real-time; red highlight + cap amount shown if exceeded.
+Submission: Full policy compliance report generated and attached to the claim before it enters the approval chain. Approvers see this report at every stage.
+7. Admin Console — Backend Configuration
+The Admin Console is a dedicated, role-protected web interface accessible to HR Admin, HRBP, and Finance Admin. All configuration changes are versioned, dated, and require a mandatory confirmation step before going live.
+Module
+Configurable By
+What Can Be Changed
+Impact Level Master
+HR Admin / HRBP
+Add/edit/deprecate levels; set travel entitlements per level; set twin-sharing rules; set personal vehicle rates
+City Group Classification
+HR Admin / HRBP
+Add/remove cities to/from Group A, B, C; effective from a configurable date
+Expense Limits Table
+HR Admin / Finance Admin
+Set room rent cap, food cap, IE cap per level per city group; toggle Hard Block vs. Soft Warning
+Expense Categories
+HR Admin / Finance Admin
+Add/remove/rename categories; set bill mandatory flag; set GST required flag; set blacklisted items
+Approval Matrix
+HR Admin / Finance Admin
+Add/remove/reorder stages; set approver roles/routing; set SLA; configure escalation; set delegation rules; toggle auto-approval
+Exception Workflows
+HR Admin
+Define exception types; set required approvers per exception type; configure exception approval chain
+Notification Templates
+HR Admin
+Edit email/SMS/push templates; set notification triggers; configure recipient rules
+Claim Submission Rules
+HR Admin / Finance Admin
+Set submission deadline (days); configure advance alert days; configure advance deduction trigger day; set self-declaration thresholds
+Policy Version Management
+HR Admin
+Create new policy version; set effective dates; archive old versions; view diff between versions
+User & Role Management
+IT Admin
+Assign roles to employees; manage SSO; configure RBAC; bulk user import from HRMS
+Company Profile
+IT Admin / Finance Admin
+Company GSTIN(s), office locations, bank details for payment, ERP integration settings
+Holiday Calendar
+HR Admin
+Upload annual holiday list; used for SLA business-day calculations
+8. Dashboards & Reporting
+8.1 Employee Dashboard
+Active travel requests: booking status, e-ticket download
+Claim tracker: Current stage in 4-step approval chain (visual stepper with timestamps)
+Reimbursement history: All past claims with settlement dates and amounts
+Outstanding advance: Amount and days outstanding
+Policy entitlement summary: Current Impact Level limits for quick reference
+Quick actions: New booking, New expense claim, Upload invoice
+8.2 Manager Dashboard
+Pending approvals queue with SLA countdown (colour-coded: green > 24 hrs, amber < 24 hrs, red = breached)
+Team travel calendar: Who is travelling, where, and when
+Team spend vs. departmental budget: month-to-date and year-to-date
+One-click approve/reject with mandatory comment for rejections
+8.3 HRBP / HR Dashboard
+Claims in Stage 2 (HR Review) with policy compliance summary per claim
+Exception requests pending HR recommendation
+Policy violation log: All claims that breached policy limits (by category, level, amount)
+Advance outstanding register: Employees with advances > 15 days / > 21 days
+Compliance heatmap: Policy adherence rate by department / office location
+8.4 Finance Dashboard
+Claims ready for payment (Stage 4 queue) with total payable amount
+GST summary: Total CGST/SGST/IGST across all approved claims; ITC-eligible amount
+Payment processed vs. pending by week/month
+Vendor spend analysis: Top vendors by amount claimed across all employees
+Outstanding liabilities: Approved claims pending payment with aging
+8.5 Standard Reports
+Report
+Audience
+Frequency
+Export Format
+Travel Spend Summary (by Dept / Level / City Group)
+Finance, Leadership
+Monthly
+PDF, Excel
+Claim Aging Report (by Stage)
+Finance, HRBP
+Weekly
+Excel
+Policy Compliance Report (violations, exceptions)
+HRBP, Finance
+Monthly
+PDF
+ITC Reconciliation Report (GSTR-2B format)
+Finance, Tax Team
+Monthly
+Excel
+Advance Outstanding Register
+Finance, Payroll, HR
+Weekly
+Excel
+Employee Expense Statement
+Employee (self)
+On-demand
+PDF
+Approval TAT Report (by Stage)
+HRBP, Finance Head
+Monthly
+Excel
+Exception Requests Log
+HR, Compliance
+Monthly
+PDF, Excel
+Audit Trail Export
+Compliance, IT
+On-demand
+CSV
+Budget Utilisation by Cost Centre
+Department Heads, Finance
+Monthly
+PDF, Excel
+9. Roles & Permissions Matrix
+Feature / Action
+Employee
+Rep. Manager
+HRBP / HR
+Payroll
+Finance
+IT Admin
+Create travel request / book travel
+✓
+✓
+✓
+–
+–
+–
+Submit expense claim
+✓
+✓
+✓
+–
+–
+–
+Upload invoices
+✓
+✓
+✓
+–
+–
+–
+View own claims
+✓
+✓
+✓
+✓
+✓
+✓
+Stage 1 Approve / Reject (Manager)
+–
+✓
+–
+–
+–
+–
+Stage 2 Approve / Reject (HR/HRBP)
+–
+–
+✓
+–
+–
+–
+Stage 3 Validate / Hold (Payroll)
+–
+–
+–
+✓
+–
+–
+Stage 4 Process Payment (Finance)
+–
+–
+–
+–
+✓
+–
+View all claims (all employees)
+–
+Team
+BU / All
+All
+All
+All
+Configure Impact Level entitlements
+–
+–
+✓
+–
+–
+–
+Configure city groups & expense limits
+–
+–
+✓
+–
+✓
+–
+Configure approval matrix
+–
+–
+✓
+–
+✓
+–
+Configure exception workflows
+–
+–
+✓
+–
+–
+–
+Manage policy versions
+–
+–
+✓
+–
+–
+–
+View Finance / GST dashboard
+–
+–
+–
+–
+✓
+–
+View HRBP compliance dashboard
+–
+–
+✓
+–
+–
+–
+Export ITC / GSTR-2B reports
+–
+–
+–
+–
+✓
+–
+User & role management
+–
+–
+–
+–
+–
+✓
+View audit logs
+–
+–
+✓
+–
+✓
+✓
+10. Non-Functional Requirements & Integrations
+10.1 Performance
+Metric
+Target
+Page load (web, P90)
+< 2 seconds
+API response time (P95)
+< 500 ms
+AI invoice extraction
+< 60 seconds per invoice
+Travel search results
+< 3 seconds
+Concurrent users
+5,000 without degradation
+System availability
+99.9% uptime (≤ 8.7 hrs downtime/year)
+10.2 Security
+Data encryption: TLS 1.3 in transit; AES-256 at rest
+MFA mandatory for HR Admin, Finance Admin, IT Admin roles
+SSO via SAML 2.0 / OAuth 2.0 (Azure AD / Okta / Google Workspace)
+RBAC: Every action permission-gated; principle of least privilege
+Invoice images stored in encrypted, restricted object storage (S3-compatible)
+OWASP Top 10 compliance; annual penetration testing
+DPDPA (Digital Personal Data Protection Act, 2023) compliance for employee PII
+10.3 Key Integrations
+System
+Purpose
+Priority
+HRMS (employee master, grade, reporting hierarchy)
+Sync employee Impact Level, reporting manager, cost centre, bank details
+P0
+GSTN Public API
+Real-time GSTIN validation on every invoice
+P0
+IRCTC API
+Train search, booking, PNR, cancellation
+P0
+Amadeus / Sabre GDS
+Flight inventory, booking, e-ticket
+P0
+redBus / AbhiBus API
+Bus booking, operator inventory
+P0
+ERP / Accounting (SAP / Tally)
+Ledger posting, ITC reconciliation, payment confirmation
+P1
+Email Gateway (SES / SMTP)
+Approval notifications, claim status, OTP
+P0
+SMS Gateway (MSG91 / Twilio)
+OTP, booking confirmations, payment alerts
+P1
+Push Notifications (FCM / APNs)
+Mobile app real-time alerts
+P1
+SSO Provider (Azure AD / Okta)
+Single sign-on, user provisioning
+P0
+Cloud Storage (S3-compatible)
+Invoice and document archival (7-year retention)
+P0
+Bank / Payment Gateway
+Reimbursement disbursement to employee bank account
+P1
+11. Implementation Roadmap
+Phase
+Duration
+Key Deliverables
+Phase 0 — Discovery & Design
+Weeks 1–4
+Requirements finalisation with SIL HR/Finance, UI/UX wireframes, architecture design, IRCTC/GDS API evaluation, security & DPDPA review
+Phase 1 — Foundation & Auth
+Weeks 5–10
+SSO/MFA, employee profile sync from HRMS, Impact Level master pre-loaded with SIL policy data, city group configuration, Admin Console v1
+Phase 2 — AI Invoice Engine
+Weeks 11–18
+Invoice upload (mobile + web), OCR + NLP extraction pipeline, GSTIN validation, reimbursement form auto-population, GST summary computation
+Phase 3 — Claim & Approval Workflow
+Weeks 19–26
+4-stage approval chain, configurable workflow engine, SLA timers, escalation, exception approval paths (CEO/HRBP flows), advance management, all notification channels
+Phase 4 — Travel Booking
+Weeks 27–32
+Flight booking (Amadeus), Train booking (IRCTC), Bus booking (redBus), policy enforcement in search, entitlement-based class filtering
+Phase 5 — Finance & Reporting
+Weeks 33–38
+Finance dashboard, ITC reconciliation report, ERP integration, GSTR-2B export, full audit trail, compliance reports
+Phase 6 — Mobile Apps & UAT
+Weeks 39–44
+Native iOS & Android apps, offline invoice capture, UAT with SIL pilot group, performance testing, go-live
+Phase 7 — Enhancements
+Post Go-Live
+Hotel booking, multi-currency support, corporate card integration, Uber API direct integration, AI-powered advance booking recommendations
+12. Risks & Mitigations
+Risk
+Likelihood
+Impact
+Mitigation
+IRCTC API rate limits / instability
+High
+High
+Retry logic, fallback to manual PNR entry, queue-based booking, SLA adjustment
+AI extraction accuracy < 90% for kaccha/handwritten bills
+High
+Medium
+Manual fallback for low-confidence fields; kaccha bills auto-routed to Incidental Expenses (as per policy); model retraining on SIL invoice corpus
+GSTN API downtime at claim submission time
+Medium
+Medium
+Cache last known GSTIN status (24-hr TTL); allow submission with 'Pending Validation' flag; Finance verifies before payment
+Employee adoption resistance (field staff, Level 5–6D)
+Medium
+High
+Mobile-first design, offline invoice capture, WhatsApp-based upload option (roadmap), training sessions at site offices
+Policy version mismatch (employee travels under old policy)
+Low
+High
+Claims always validated against policy version effective on travel start date; historical versions archived immutably
+CEO approval bottleneck for Level 5/6 air travel exceptions
+Medium
+Medium
+Pre-travel exception workflow (not tied to claim); approved once and stored; reduces claim-time delays
+ERP integration complexity (SAP/Tally versions)
+High
+Medium
+Phase 1: CSV/Excel export as fallback; real-time API integration in Phase 5 after mapping sessions with Finance team
+Duplicate/fraudulent invoice submission
+Low
+High
+Duplicate detection (vendor + date + amount); GSTIN uniqueness check; AI flags anomalies for Finance review
+13. Glossary
+Term
+Definition
+IL / Impact Level
+SIL's employee seniority classification (Level 1 to Level 6D) used to determine travel entitlements
+RR
+Room Rent (includes laundry expenses per SIL policy)
+IE
+Incidental Expenses — small miscellaneous expenses without formal bills (kaccha bills included)
+HRBP
+HR Business Partner — the HR representative assigned to a business unit at SIL
+FH / Function Head
+The head of the functional department the employee belongs to
+3A Level
+Minimum seniority level required for approval authority in SIL's travel approval hierarchy
+Group A / B / C Cities
+SIL's classification of Indian cities into three tiers for determining hotel and food expense limits
+Twin Sharing
+Mandatory room-sharing arrangement for Level 5B–6D employees when travelling with equivalent-level colleagues
+GSTIN
+Goods and Services Tax Identification Number — 15-character unique ID for GST-registered entities
+ITC
+Input Tax Credit — GST credit claimable on business expenses
+GSTR-2B
+Auto-populated monthly ITC statement under GST; used for ITC reconciliation
+HSN / SAC
+Harmonised System of Nomenclature / Service Accounting Code — product/service classification under GST
+OCR
+Optical Character Recognition — technology to extract text from scanned images
+NLP
+Natural Language Processing — AI technique to classify and structure extracted invoice text
+GDS
+Global Distribution System (Amadeus, Sabre) — platforms for flight inventory and booking
+PNR
+Passenger Name Record — unique booking reference for train/air tickets
+IRCTC
+Indian Railway Catering and Tourism Corporation — entity managing Indian railway ticket booking
+SLA
+Service Level Agreement — agreed turnaround time for each approval stage
+RBAC
+Role-Based Access Control — access permissions governed by user role
+DPDPA
+Digital Personal Data Protection Act, 2023 — India's data privacy law governing employee PII

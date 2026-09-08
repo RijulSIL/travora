@@ -1,0 +1,26 @@
+---
+description: When changing functionality, also update Docker artifacts and keep design/UI in scope
+alwaysApply: true
+---
+
+# Docker + design with every functional change
+
+## Docker (keep the stack truthful)
+
+Whenever you add or change **runtime dependencies**, **ports**, **env vars**, **build steps**, or **startup** behavior:
+
+- Update **Dockerfile** (base image, installs, COPY, ENTRYPOINT/CMD).
+- Update **docker-compose.yml** / **Compose overrides** if services, env files, volumes, networks, or healthchecks change.
+- Add or refresh **`.env.example`** / docs for any new/changed variables.
+- If there is no containerization yet but the repo uses Docker elsewhere, extend the existing pattern consistently.
+
+Prefer one coherent change set: code + Dockerfile/compose/examples together—not only the app code.
+
+## Design (behavior + UX)
+
+When changing **user-facing flows**, **APIs consumed by UI**, **errors**, **loading**, or **data shape**:
+
+- Consider **layout, typography, spacing, accessibility** (keyboard, contrast, labels) aligned with existing components and design system.
+- **Loading / empty / error** states must stay coherent unless the brief says otherwise.
+
+When the change is **backend-only**, still flag if the UI or messaging should be updated to match behavior.

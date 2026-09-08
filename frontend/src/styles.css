@@ -1,0 +1,260 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@keyframes breathe {
+  0%, 100% {
+    transform: scale(1) translate(0, 0);
+  }
+  33% {
+    transform: scale(1.05) translate(3%, 3%);
+  }
+  66% {
+    transform: scale(0.95) translate(-3%, -2%);
+  }
+}
+
+.animate-breathe {
+  animation: breathe 15s ease-in-out infinite;
+}
+
+@keyframes flow {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.animate-flow {
+  background-size: 200% 100%;
+  animation: flow 3s linear infinite;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.4s ease-out forwards;
+}
+
+@keyframes scan {
+  0% { top: 0%; opacity: 0; }
+  10% { opacity: 1; }
+  90% { opacity: 1; }
+  100% { top: 100%; opacity: 0; }
+}
+
+.animate-scan {
+  animation: scan 2s linear infinite;
+}
+
+@keyframes ripple {
+  0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
+  100% { box-shadow: 0 0 0 20px rgba(16, 185, 129, 0); }
+}
+
+.animate-ripple {
+  animation: ripple 1.5s infinite;
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-5px); }
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+@keyframes pop-in {
+  0% { transform: scale(0); opacity: 0; }
+  80% { transform: scale(1.2); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes scale-line {
+  0% { transform: scaleX(0); opacity: 0; }
+  100% { transform: scaleX(1); opacity: 1; }
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+@keyframes screen-fly {
+  0% { 
+    transform: translate(-60vw, 60vh) scale(0.5);
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  90% {
+    opacity: 1;
+  }
+  100% { 
+    transform: translate(60vw, -60vh) scale(1.5);
+    opacity: 0;
+  }
+}
+
+.animate-screen-fly {
+  animation: screen-fly 2s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+@keyframes spin3d {
+  0% { transform: rotateX(-20deg) rotateY(0deg) rotateZ(35deg); }
+  100% { transform: rotateX(-20deg) rotateY(360deg) rotateZ(35deg); }
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  color: #17202a;
+  background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 50%, #d1fae5 100%);
+  background-attachment: fixed;
+  font-family: 'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: -0.025em;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+.field {
+  @apply h-10 w-full rounded-lg border border-line bg-white px-3.5 text-sm outline-none transition-all duration-200 focus:border-brand focus:ring-2 focus:ring-brand/15;
+}
+
+.btn-primary {
+  @apply inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-brand px-4 text-sm font-semibold text-white transition-all duration-200 hover:bg-brand/90 hover:shadow-sm active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60;
+}
+
+.btn-secondary {
+  @apply inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-4 text-sm font-semibold text-ink transition-all duration-200 hover:bg-slate-50 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60;
+}
+
+.panel {
+  @apply border border-slate-200/60 bg-white rounded-2xl shadow-sm;
+}
+
+
+.table-contain {
+  /* contain: strict; - Removed to fix 0x0 size issue */
+}
+
+/* ── Stat cards (dashboard ribbons) ── */
+.stat-card {
+  @apply rounded-2xl border border-slate-200/60 bg-white p-5 shadow-sm transition-all duration-200 hover:shadow-md;
+}
+.stat-card-icon {
+  @apply flex h-10 w-10 items-center justify-center rounded-xl text-white shadow-sm mb-3;
+}
+.stat-card-label {
+  @apply text-[11px] font-bold uppercase tracking-wider text-slate-400;
+}
+.stat-card-value {
+  @apply mt-1 text-2xl font-extrabold text-ink;
+}
+
+/* ── Top nav tabs ── */
+.nav-tab {
+  @apply relative flex items-center gap-2 px-3 py-2.5 text-[13px] font-medium text-slate-500 transition-colors duration-150 hover:text-ink whitespace-nowrap;
+}
+.nav-tab.active {
+  @apply text-brand font-semibold;
+}
+.nav-tab.active::after {
+  content: '';
+  @apply absolute bottom-0 left-2 right-2 h-[2px] rounded-full bg-brand;
+}
+
+/* ── Quick action cards ── */
+.quick-action {
+  @apply flex items-center gap-3 rounded-xl border border-slate-200/60 bg-white px-4 py-3.5 text-sm font-semibold text-ink shadow-sm transition-all duration-200 hover:shadow-md hover:border-brand/20 hover:text-brand cursor-pointer;
+}
+.quick-action-primary {
+  @apply flex items-center gap-3 rounded-xl bg-brand px-4 py-3.5 text-sm font-semibold text-white shadow-sm transition-all duration-200 hover:bg-brand/90 cursor-pointer;
+}
+
+
+@media print {
+  header,
+  aside,
+  nav,
+  .btn-primary,
+  .btn-secondary,
+  .print\:hidden {
+    display: none !important;
+  }
+  main {
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+}
+
+/* Status badges */
+.badge {
+  @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium;
+}
+.badge-draft {
+  @apply bg-slate-100 text-slate-700;
+}
+.badge-submitted {
+  @apply bg-blue-100 text-blue-800;
+}
+.badge-in-approval {
+  @apply bg-amber-100 text-amber-800;
+}
+.badge-ready-payment {
+  @apply bg-purple-100 text-purple-800;
+}
+.badge-paid {
+  @apply bg-green-100 text-green-800;
+}
+.badge-rejected {
+  @apply bg-red-100 text-red-800;
+}
+.badge-sent-back {
+  @apply bg-orange-100 text-orange-800;
+}
+.badge-on-hold {
+  @apply bg-yellow-100 text-yellow-800;
+}
+
+.sla-ok {
+  @apply font-semibold text-emerald-600;
+}
+.sla-warning {
+  @apply font-semibold text-amber-600;
+}
+.sla-breached {
+  @apply animate-pulse font-semibold text-red-600;
+}
+
+.toast-container {
+  @apply fixed bottom-4 right-4 z-[60] flex flex-col gap-2;
+}
+.toast {
+  @apply max-w-sm rounded-lg px-4 py-3 text-sm font-medium shadow-lg;
+}
+.toast-success {
+  @apply bg-green-600 text-white;
+}
+.toast-error {
+  @apply bg-red-600 text-white;
+}
+.toast-info {
+  @apply bg-blue-600 text-white;
+}
