@@ -128,7 +128,7 @@ export default function InvoiceReview() {
       }
       return {
         field_key: field.field_key,
-        final_value: values[field.field_key] ?? '',
+        final_value: finalValue,
         confirmed,
       };
     });

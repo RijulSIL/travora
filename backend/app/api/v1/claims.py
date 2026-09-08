@@ -3,10 +3,15 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-# Triggering reload to see if it fixes the hang
 
+# Triggering reload to see if it fixes the hang
 from app.core.database import get_db
-from app.core.rbac import PERMISSION_MATRIX, get_current_claims, require_any_permission, require_permission
+from app.core.rbac import (
+    PERMISSION_MATRIX,
+    get_current_claims,
+    require_any_permission,
+    require_permission,
+)
 from app.models.auth import Role
 from app.models.reimbursement import ClaimDraft, ClaimExpense, ClaimInvoice, ClaimTrip
 from app.schemas.reimbursement import ClaimDraftIn, ClaimDraftOut, PolicyCheckOut
@@ -153,7 +158,6 @@ async def team_claims(
 ) -> list[dict]:
     from app.models.auth import User
     from app.models.employee import Employee
-    from app.core.rbac import require_role
     
     # Check role manually
     if claims.get("role") not in ["REPORTING_MANAGER", "IT_ADMIN"]:

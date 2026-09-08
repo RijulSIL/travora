@@ -1,12 +1,12 @@
-from decimal import Decimal
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from app.models.reimbursement import ClaimDraft, ClaimExpense
-from app.models.employee import Employee
-from app.models.policy import ImpactLevel, AirEligibility
-from app.models.claim_workflow import ExceptionRequest, ExceptionRequestStatus
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.models.auth import User
-from app.models.travel_booking import TravelMode, TravelTrip
+from app.models.claim_workflow import ExceptionRequest, ExceptionRequestStatus
+from app.models.employee import Employee
+from app.models.policy import AirEligibility, ImpactLevel
+from app.models.reimbursement import ClaimDraft, ClaimExpense
+
 
 async def detect_claim_exceptions(claim: ClaimDraft, expenses: list[ClaimExpense], db: AsyncSession) -> list[dict]:
     exceptions = []

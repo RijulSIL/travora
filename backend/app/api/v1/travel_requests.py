@@ -7,7 +7,12 @@ from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.rbac import get_current_claims, require_any_permission, require_permission, require_role
+from app.core.rbac import (
+    get_current_claims,
+    require_any_permission,
+    require_permission,
+    require_role,
+)
 from app.models.auth import Role
 from app.schemas.travel_request import (
     DeskQueueItemOut,

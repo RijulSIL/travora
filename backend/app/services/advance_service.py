@@ -1,9 +1,12 @@
-from datetime import date, datetime
+from datetime import datetime
 from decimal import Decimal
-from sqlalchemy import select, func
+
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.models.claim_workflow import AdvanceRequest, AdvanceRequestStatus
 from app.models.reimbursement import ClaimDraft, ClaimStatus
+
 
 async def get_outstanding_advance(user_id: int, db: AsyncSession) -> Decimal:
     """

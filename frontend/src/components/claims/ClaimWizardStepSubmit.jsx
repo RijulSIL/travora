@@ -1,4 +1,4 @@
-import { MapPin, Calendar, Plane, FileText, Check, ArrowLeft, Send, ShieldAlert } from 'lucide-react';
+import { MapPin, Calendar, Plane, FileText, ArrowLeft, Send } from 'lucide-react';
 
 function money(value) {
   return Number(value || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });

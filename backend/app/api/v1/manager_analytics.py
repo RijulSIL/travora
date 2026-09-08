@@ -1,16 +1,15 @@
-from datetime import date, timedelta
-from dateutil.relativedelta import relativedelta
-from decimal import Decimal
+from datetime import date
 
+from dateutil.relativedelta import relativedelta
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.rbac import get_current_claims
-from app.models.reimbursement import ClaimDraft, ClaimExpense
-from app.models.auth import User, Role
+from app.models.auth import Role, User
 from app.models.employee import Employee
+from app.models.reimbursement import ClaimDraft, ClaimExpense
 
 router = APIRouter(prefix="/reports/manager", tags=["reports"])
 

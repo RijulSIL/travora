@@ -3,9 +3,9 @@ import logging
 from pathlib import Path
 
 import aiomysql
-from alembic import command
 from alembic.config import Config
 
+from alembic import command
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)

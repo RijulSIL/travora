@@ -1,15 +1,15 @@
 import logging
 from collections.abc import Callable
+from datetime import datetime
 
 from fastapi import Depends, HTTPException, Request, status
 from jose import JWTError, jwt
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from datetime import datetime
-from app.models.auth import Role, Delegation
+from app.models.auth import Delegation, Role
 
 logger = logging.getLogger(__name__)
 

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, X, ShieldAlert, FileText, AlertCircle } from 'lucide-react';
+import { AlertTriangle, X, ShieldAlert, AlertCircle } from 'lucide-react';
 import useBodyScrollLock from '../../hooks/useBodyScrollLock';
 
 export default function ExceptionRequestModal({ open, expense, onClose, onSubmit, loading }) {

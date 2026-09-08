@@ -20,12 +20,12 @@ from app.core.config import settings
 from app.models.auth import User
 from app.models.employee import Employee
 from app.models.expense_category import ExpenseCategory
-from app.models.reimbursement import ClaimStatus
-from app.models.policy import ExpenseLimit, ImpactLevel, AirEligibility
+from app.models.policy import AirEligibility, ExpenseLimit, ImpactLevel
 from app.models.reimbursement import (
     ClaimDraft,
     ClaimExpense,
     ClaimInvoice,
+    ClaimStatus,
     ClaimTrip,
     GstinValidationCache,
     GstinValidationStatus,
@@ -34,13 +34,11 @@ from app.models.reimbursement import (
     InvoiceLineItem,
     InvoiceStatus,
 )
-from app.services.audit_service import log_event
-from app.services.exception_service import trigger_exceptions_if_needed
-from app.services.notification_service import create_notification
-from app.services.advance_service import get_outstanding_advance
 from app.models.travel_booking import TravelMode, TravelTrip
 from app.schemas.reimbursement import ClaimDraftIn, InvoiceFieldsUpdateRequest
+from app.services.advance_service import get_outstanding_advance
 from app.services.claim_submission_rules import validate_claim_submission
+from app.services.exception_service import trigger_exceptions_if_needed
 from app.services.invoice_gemini_extraction import extract_invoice_with_gemini_sync
 from app.services.policy_engine import (
     check_cap,
@@ -234,9 +232,10 @@ async def store_invoice_upload(
     im_hash_str = None
     if content_type.startswith("image/"):
         try:
+            import io
+
             import imagehash
             from PIL import Image
-            import io
             img = Image.open(io.BytesIO(content))
             im_hash_str = str(imagehash.phash(img))
         except Exception as e:

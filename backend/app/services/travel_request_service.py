@@ -15,26 +15,33 @@ from uuid import uuid4
 
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy import and_, asc, distinct, func, or_, select
-from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.rbac import PERMISSION_MATRIX
-from app.models.auth import Role, User, Delegation
+from app.models.auth import Delegation, Role, User
 from app.models.employee import Employee
 from app.models.policy import CityGroup, ImpactLevel
 from app.models.reimbursement import ClaimTrip
 from app.models.travel_booking import TravelMode, TravelTrip, TripStatus
-from app.models.travel_request import TravelRequest, TravelRequestMode, TravelRequestStatus, TravelRequestTicket, TripType, TravelRequestLeg
+from app.models.travel_request import (
+    TravelRequest,
+    TravelRequestLeg,
+    TravelRequestMode,
+    TravelRequestStatus,
+    TravelRequestTicket,
+    TripType,
+)
 
 # Re-use entitlement lookups from booking service
 from app.services.travel_booking_service import (
     FLIGHT_ALLOWED_CLASSES,
+    LEVELS_REQUIRING_AIR_UNLOCK,
     TRAIN_ALLOWED_CLASSES,
     _get_user_impact_level_code,
-    _normalize_level,
-    LEVELS_REQUIRING_AIR_UNLOCK,
     _has_completed_exception_chain,
+    _normalize_level,
 )
 
 _TICKET_EXTENSIONS = {".jpg", ".jpeg", ".png", ".heic", ".pdf"}

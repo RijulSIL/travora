@@ -6,12 +6,6 @@ import { useAsyncAction } from '../../hooks/useAsyncAction';
 import { adminApi } from '../../services/adminApi';
 import { selectResolvedRole, useAuthStore } from '../../store/authStore';
 
-function truncate(text, maxLen) {
-  if (text == null || text === '') return '—';
-  const s = String(text);
-  return s.length > maxLen ? `${s.slice(0, maxLen)}…` : s;
-}
-
 export default function NotificationTemplates() {
   useSetPageTitle('Notification Templates');
   const role = useAuthStore(selectResolvedRole);

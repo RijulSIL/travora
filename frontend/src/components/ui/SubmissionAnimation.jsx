@@ -135,7 +135,7 @@ export default function SubmissionAnimation({ mode, status, onComplete }) {
             </h3>
             <p className="text-[#2E8B74] text-[13px] font-medium leading-relaxed opacity-90">
               Your {mode === 'CLAIM' ? 'claim' : 'trip'} is on its way.<br/>
-              We'll notify you once it's approved.
+              We&apos;ll notify you once it&apos;s approved.
             </p>
           </div>
           <div className="w-12 h-12 bg-emerald-50 rounded-full flex items-center justify-center border border-emerald-100 shadow-inner">

@@ -1,7 +1,6 @@
-from pathlib import Path
-
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
@@ -71,7 +70,7 @@ async def list_invoices(
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db)
 ):
-    from app.models.reimbursement import ClaimInvoice, ClaimDraft, ClaimStatus
+    from app.models.reimbursement import ClaimDraft, ClaimInvoice, ClaimStatus
 
     query = (
         select(Invoice, InvoiceField.final_value, InvoiceField.original_value)
@@ -227,7 +226,7 @@ async def confirm_invoice_fields(
             total_amount = Decimal(amount_str)
         except Exception:
             pass
-    setattr(invoice, "total_amount", total_amount)
+    invoice.total_amount = total_amount
     return invoice
 
 

@@ -170,8 +170,9 @@ async def my_trips(
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ) -> list[TripOut]:
-    from app.models.travel_request import TravelRequest
     from sqlalchemy import select
+
+    from app.models.travel_request import TravelRequest
 
     trips = await list_trips(int(claims["sub"]), db)
     desk_ids = await desk_ticket_ids_for_trips(trips, db)

@@ -6,7 +6,14 @@ from fastapi import HTTPException, status
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.policy import CityGroup, CityGroupType, ExpenseLimit, ImpactLevel, PolicyStatus, PolicyVersion
+from app.models.policy import (
+    CityGroup,
+    CityGroupType,
+    ExpenseLimit,
+    ImpactLevel,
+    PolicyStatus,
+    PolicyVersion,
+)
 
 
 async def resolve_city_group(city_name: str, travel_date: date, db: AsyncSession) -> CityGroupType:

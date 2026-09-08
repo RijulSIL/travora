@@ -6,7 +6,12 @@ from app.core.database import get_db
 from app.core.rbac import require_mfa, require_role
 from app.models.auth import Role
 from app.schemas.holiday import CompanyHolidayCreateIn, CompanyHolidayOut, CompanyHolidayUpdateIn
-from app.services.holiday_service import create_holiday, delete_holiday, list_holidays, update_holiday
+from app.services.holiday_service import (
+    create_holiday,
+    delete_holiday,
+    list_holidays,
+    update_holiday,
+)
 
 router = APIRouter(prefix="/admin", tags=["holiday-calendar"])
 

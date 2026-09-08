@@ -4,12 +4,12 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from fastapi import HTTPException, status
-from sqlalchemy import delete, select, func
+from fastapi import HTTPException
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.rbac import PERMISSION_MATRIX
-from app.models.auth import Role, User, Delegation
+from app.models.auth import Delegation, Role, User
 from app.models.claim_workflow import (
     AdvanceApprovalStage,
     AdvanceRequest,
@@ -25,9 +25,11 @@ from app.models.claim_workflow import (
 from app.models.employee import AuditLog, Employee
 from app.models.reimbursement import ClaimDraft, ClaimStatus
 from app.services.audit_service import log_event
-from app.services.claim_submission_rules import parse_auto_approve_threshold, total_claimed_from_report
+from app.services.claim_submission_rules import (
+    parse_auto_approve_threshold,
+    total_claimed_from_report,
+)
 from app.services.notification_service import create_notification
-
 
 STAGE_STATUS_NOT_STARTED = "NOT_STARTED"
 EXCEPTION_APPROVAL_CHAINS: dict[str, list[str]] = {

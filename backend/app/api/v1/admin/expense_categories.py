@@ -9,8 +9,8 @@ from app.core.rbac import require_any_permission, require_mfa, require_permissio
 from app.models.expense_category import ExpenseCategory
 from app.models.policy import PolicyStatus, PolicyVersion
 from app.schemas.common import BlacklistCheckRequest, ExpenseCategoryIn
-from app.services.policy_engine import enforce_immutability, get_active_policy_version
 from app.services.expense_category_service import check_blacklist
+from app.services.policy_engine import enforce_immutability, get_active_policy_version
 
 router = APIRouter(prefix="/admin/expense-categories", tags=["admin-expense-categories"])
 

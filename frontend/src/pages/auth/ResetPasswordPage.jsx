@@ -28,7 +28,7 @@ export default function ResetPasswordPage() {
     if (!/[A-Z]/.test(pwd)) return 'Password must contain at least one uppercase letter';
     if (!/[a-z]/.test(pwd)) return 'Password must contain at least one lowercase letter';
     if (!/[0-9]/.test(pwd)) return 'Password must contain at least one number';
-    if (!/[!@#$%^&*()_+={}\[\]|\\:;"'<>,.?/~`-]/.test(pwd)) return 'Password must contain at least one special character';
+    if (!/[!@#$%^&*()_+={}[\]|\\:;"'<>,.?/~`-]/.test(pwd)) return 'Password must contain at least one special character';
     return null;
   };
 
@@ -189,8 +189,8 @@ export default function ResetPasswordPage() {
                     {/[0-9]/.test(password) ? <Check size={14} strokeWidth={3} className="shrink-0" /> : <div className="h-1.5 w-1.5 rounded-full bg-rose-400 ml-1 mr-0.5 shrink-0" />}
                     <span>At least 1 number</span>
                   </div>
-                  <div className={`flex items-center gap-2 transition-colors ${/[!@#$%^&*()_+={}\[\]|\\:;"'<>,.?/~`-]/.test(password) ? "text-emerald-600" : "text-rose-500"}`}>
-                    {/[!@#$%^&*()_+={}\[\]|\\:;"'<>,.?/~`-]/.test(password) ? <Check size={14} strokeWidth={3} className="shrink-0" /> : <div className="h-1.5 w-1.5 rounded-full bg-rose-400 ml-1 mr-0.5 shrink-0" />}
+                  <div className={`flex items-center gap-2 transition-colors ${/[!@#$%^&*()_+={}[\]|\\:;"'<>,.?/~`-]/.test(password) ? "text-emerald-600" : "text-rose-500"}`}>
+                    {/[!@#$%^&*()_+={}[\]|\\:;"'<>,.?/~`-]/.test(password) ? <Check size={14} strokeWidth={3} className="shrink-0" /> : <div className="h-1.5 w-1.5 rounded-full bg-rose-400 ml-1 mr-0.5 shrink-0" />}
                     <span>At least 1 special character</span>
                   </div>
                 </div>

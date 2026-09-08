@@ -3,17 +3,17 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.auth import Role, User, Delegation
+from app.models.auth import Delegation, Role, User
 from app.models.claim_workflow import ExceptionApproval, ExceptionRequest, ExceptionRequestStatus
 from app.models.employee import Employee
 from app.models.expense_category import CompanyProfile
 from app.models.policy import CityGroupType, ExpenseLimit, ImpactLevel, PolicyStatus, PolicyVersion
 from app.models.reimbursement import ClaimDraft, ClaimStatus
 from app.schemas.me import MeOut
-from app.services.workflow_service import list_pending_approvals, get_workflow_config
+from app.services.workflow_service import get_workflow_config, list_pending_approvals
 
 
 def _fmt_inr(value: Decimal) -> str:

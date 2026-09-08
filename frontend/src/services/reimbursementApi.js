@@ -69,7 +69,6 @@ export const reimbursementApi = {
     api.get(`reports/${reportType}/export`, { params: { ...params, format: 'pdf' }, responseType: 'blob' }),
   reportSchedules: () => api.get('reports/schedule'),
   createReportSchedule: (payload) => api.post('reports/schedule', payload),
-  policyViolations: (params) => api.get('reports/policy-violations', { params }),
   exceptionRequestsLog: (params) => api.get('reports/exception-requests', { params }),
 
   requestException: (payload) => api.post('exceptions/request', payload),

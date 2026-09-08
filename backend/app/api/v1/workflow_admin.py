@@ -2,7 +2,12 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.rbac import get_current_claims, require_any_permission, require_mfa, require_permission
+from app.core.rbac import (
+    get_current_claims,
+    require_any_permission,
+    require_mfa,
+    require_permission,
+)
 from app.schemas.workflow import WorkflowConfigOut, WorkflowConfigUpdate
 from app.services.workflow_service import get_workflow_config, save_workflow_config
 

@@ -1,13 +1,13 @@
 from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
 from app.core.rbac import get_current_claims
 from app.models.auth import Delegation, User
-from app.schemas.me import MeOut, DelegationIn, DelegationOut
+from app.schemas.me import DelegationIn, DelegationOut, MeOut
 from app.services.me_service import build_me_profile
 
 router = APIRouter(tags=["me"])

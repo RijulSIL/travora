@@ -98,7 +98,7 @@ export default function EmployeeDashboard() {
           Welcome back, {firstName}
         </h2>
         <p className="mt-1 text-sm text-slate-500">
-          Here's a snapshot of your claims, travel, and impact level allowances.
+          Here&apos;s a snapshot of your claims, travel, and impact level allowances.
         </p>
       </div>
 

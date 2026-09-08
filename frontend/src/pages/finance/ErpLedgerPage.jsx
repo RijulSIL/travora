@@ -16,7 +16,7 @@ export default function ErpLedgerPage() {
   const load = async (next = filters) => {
     setLoading(true);
     try {
-      const cleanParams = Object.fromEntries(Object.entries(next).filter(([_, v]) => v !== ''));
+      const cleanParams = Object.fromEntries(Object.entries(next).filter(([, v]) => v !== ''));
       const res = await reimbursementApi.erpLedger(cleanParams);
       setRows(res.data || []);
     } finally {

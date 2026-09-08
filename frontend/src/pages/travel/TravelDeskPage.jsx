@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { 
-  Search, Plane, Train, Bus, FileText, CheckCircle2, 
-  XCircle, ArrowRight, UploadCloud, MapPin, Calendar, 
-  Clock, AlertCircle 
+import {
+  Search, Plane, Train, Bus, FileText, CheckCircle2,
+  XCircle, ArrowRight, UploadCloud,
+  Clock, AlertCircle
 } from 'lucide-react';
 
 import { useSetPageTitle } from '../../context/PageTitleContext';
@@ -178,7 +178,6 @@ export default function TravelDeskPage() {
   }
 
   const pendingQueueCount = useMemo(() => queue.filter(r => r.request.status === 'PENDING').length, [queue]);
-  const approvedQueueCount = useMemo(() => queue.filter(r => r.request.status === 'APPROVED').length, [queue]);
 
   return (
     <section className="mx-auto max-w-6xl space-y-6 px-4 py-4">

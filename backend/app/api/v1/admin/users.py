@@ -2,7 +2,7 @@ import csv
 import io
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
-from sqlalchemy import select, or_
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -79,6 +79,7 @@ async def list_users(
 )
 async def list_impact_levels(db: AsyncSession = Depends(get_db)):
     from datetime import date
+
     from app.services.policy_engine import get_active_policy_version
     
     try:

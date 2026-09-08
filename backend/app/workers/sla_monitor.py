@@ -1,13 +1,20 @@
 import asyncio
-from datetime import datetime, UTC
+from datetime import UTC, datetime
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.database import AsyncSessionLocal
-from app.models.claim_workflow import ClaimApprovalStage, ClaimApprovalStageStatus, NotificationCategory
-from app.models.reimbursement import ClaimDraft
+from app.models.auth import User
+from app.models.claim_workflow import (
+    ClaimApprovalStage,
+    ClaimApprovalStageStatus,
+    NotificationCategory,
+)
 from app.models.employee import Employee
-from app.models.auth import User, Role
+from app.models.reimbursement import ClaimDraft
 from app.services.notification_service import create_notification
+
 
 def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)

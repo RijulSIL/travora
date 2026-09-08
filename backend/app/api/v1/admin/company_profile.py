@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.encryption import decrypt_text, encrypt_text
-from app.core.rbac import require_any_permission, require_mfa, require_permission
+from app.core.rbac import require_mfa, require_permission
 from app.models.expense_category import CompanyProfile
 from app.schemas.common import CompanyProfileIn, CompanyProfileOut
 

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { User, Users, Search, Calendar, Trash2, Plus, AlertCircle, Shield } from 'lucide-react';
+import { Users, Search, Calendar, Trash2, Plus, AlertCircle, Shield } from 'lucide-react';
 import { format } from 'date-fns';
 
 import { useAuthStore } from '../store/authStore';

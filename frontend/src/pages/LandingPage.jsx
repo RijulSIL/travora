@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  Compass,
   CreditCard,
   ShieldCheck,
   Layers,
@@ -12,13 +11,9 @@ import {
   Sparkles,
   Coins,
   ArrowRight,
-  ArrowDown,
   LogIn,
   ChevronDown,
-  Shield,
   CheckCircle2,
-  Clock,
-  BarChart3,
   Zap,
 } from 'lucide-react';
 
@@ -424,7 +419,6 @@ export default function LandingPage() {
 
             <div className="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
               {FEATURES.map((f) => {
-                const IconComponent = f.icon;
                 return (
                   <div
                     key={f.title}

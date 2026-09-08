@@ -1,4 +1,4 @@
-import { Bell, ChevronDown, Compass, LogOut, Menu } from 'lucide-react';
+import { Bell, ChevronDown, LogOut, Menu } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 
@@ -12,7 +12,7 @@ import NotificationPanel from '../ui/NotificationPanel';
 
 import {
   Home, Clock, AlertTriangle, Users, TrendingUp, CheckSquare,
-  FileText, Plane, Receipt, PlusCircle, Settings, Map,
+  Plane, Receipt, PlusCircle, Settings, Map,
   DollarSign, Folder, Mail, Calendar, Building, User, History, ClipboardList
 } from 'lucide-react';
 
@@ -58,7 +58,6 @@ function NavBadge({ children }) {
 
 export default function AppNavbar({ onOpenSidebar }) {
   const navigate = useNavigate();
-  const { title } = usePageTitle();
   const profile = useAuthStore((state) => state.profile);
   const user = useAuthStore((state) => state.user);
   const role = useAuthStore(selectResolvedRole);

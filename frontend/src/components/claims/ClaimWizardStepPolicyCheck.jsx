@@ -162,7 +162,7 @@ export default function ClaimWizardStepPolicyCheck({
           </div>
           {hardBlocks > 0 && (
             <div className="text-[10px] font-medium text-rose-700 mt-1">
-              * Ensure you select 'Request Exception' and provide justification for the flagged line items.
+              * Ensure you select &apos;Request Exception&apos; and provide justification for the flagged line items.
             </div>
           )}
         </div>

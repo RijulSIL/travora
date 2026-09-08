@@ -7,7 +7,6 @@ import {
   Users,
   TrendingUp,
   CheckSquare,
-  FileText,
   Plane,
   Receipt,
   PlusCircle,

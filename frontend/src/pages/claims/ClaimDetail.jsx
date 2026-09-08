@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { FileText, Plane, Eye, Download, Send, AlertTriangle } from 'lucide-react';
 
 import ApprovalStepper from '../../components/claims/ApprovalStepper';

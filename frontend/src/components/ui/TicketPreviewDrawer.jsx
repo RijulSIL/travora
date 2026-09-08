@@ -187,7 +187,7 @@ export default function TicketPreviewDrawer({ open, onClose, title, blob, conten
               </div>
               <h3 className="text-sm font-semibold text-slate-800">Preview Unavailable</h3>
               <p className="text-xs text-slate-500 mt-1 mb-4 leading-relaxed">
-                We couldn't generate a live preview for this file type ({contentType || 'unknown'}). Please download the file to view it locally.
+                We couldn&apos;t generate a live preview for this file type ({contentType || 'unknown'}). Please download the file to view it locally.
               </p>
               <a
                 className="btn-primary h-9 px-4 text-xs inline-flex"

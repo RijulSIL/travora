@@ -27,8 +27,6 @@ export default function ClaimReview() {
   const [payAmount, setPayAmount] = useState('');
   const [payableAmount, setPayableAmount] = useState('');
   const [timeline, setTimeline] = useState([]);
-  const [allInvoices, setAllInvoices] = useState([]);
-  const [allTrips, setAllTrips] = useState([]);
   const [activeTab, setActiveTab] = useState('summary');
   const [expandedInvoiceId, setExpandedInvoiceId] = useState(null);
   const [invoiceExtractions, setInvoiceExtractions] = useState({});

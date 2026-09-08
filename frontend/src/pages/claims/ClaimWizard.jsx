@@ -36,7 +36,6 @@ function addWorkingDays(date, days) {
 export default function ClaimWizard() {
   useSetPageTitle('Claim Wizard');
   const navigate = useNavigate();
-  const profile = useAuthStore((s) => s.profile);
   const user = useAuthStore((s) => s.user);
   const { id } = useParams();
   const [searchParams] = useSearchParams();

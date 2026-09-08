@@ -19,12 +19,12 @@ def send_email_sync(to_email: str, subject: str, body_text: str, body_html: str 
     """
     host = settings.smtp_host
     if not host or host == "smtp.example.com" or "example.com" in host.lower():
-        print(f"\n==================================================")
-        print(f"[SMTP SIMULATOR] OUTGOING EMAIL")
+        print("\n==================================================")
+        print("[SMTP SIMULATOR] OUTGOING EMAIL")
         print(f"To:      {to_email}")
         print(f"Subject: {subject}")
         print(f"Body:\n{body_text}")
-        print(f"==================================================\n")
+        print("==================================================\n")
         return
 
     # Real SMTP send

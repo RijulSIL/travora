@@ -1,6 +1,5 @@
-import logging
 import asyncio
-import traceback
+import logging
 
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
@@ -49,10 +48,10 @@ async def unhandled_exception_handler(_request: Request, exc: Exception) -> JSON
 
 
 async def _run_monitors():
-    from app.workers.sla_monitor import monitor_slas
-    from app.workers.advance_monitor import monitor_advances
-    from app.services.workflow_service import process_auto_approvals
     from app.core.database import AsyncSessionLocal
+    from app.services.workflow_service import process_auto_approvals
+    from app.workers.advance_monitor import monitor_advances
+    from app.workers.sla_monitor import monitor_slas
     
     async def run_hourly():
         while True:

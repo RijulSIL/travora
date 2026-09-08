@@ -2,9 +2,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
 import {
-  Plus, Plane, Train, Bus, FileText, ArrowRight, MapPin,
-  Calendar, AlertCircle, Clock, Info, ShieldAlert, ArrowUpRight,
-  X, CheckCircle
+  Plus, Plane, Train, Bus, FileText, ArrowRight,
+  Clock, Info, ShieldAlert, ArrowUpRight,
+  X
 } from 'lucide-react';
 import { useAuthStore, selectResolvedRole } from '../../store/authStore';
 
@@ -44,7 +44,6 @@ function getStatusDetails(status) {
 
 export default function TravelRequestsPage() {
   useSetPageTitle('Travel Requests');
-  const role = useAuthStore(selectResolvedRole);
   const profile = useAuthStore((s) => s.profile);
   const { showToast } = useToast();
   const [tab, setTab] = useState('requests');
