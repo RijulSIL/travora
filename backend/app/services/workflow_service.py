@@ -221,11 +221,11 @@ def _validate_workflow_config(config: dict) -> None:
         )
     try:
         max_days_val = int(raw_max)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as exc:
         raise HTTPException(
             status_code=422,
             detail="max_working_days_after_return must be an integer >= 1",
-        )
+        ) from exc
     if max_days_val < 1:
         raise HTTPException(
             status_code=422,
@@ -244,11 +244,11 @@ def _validate_workflow_config(config: dict) -> None:
         raise HTTPException(status_code=422, detail="auto_approve_below_amount is required")
     try:
         auto_amt = Decimal(str(raw_auto))
-    except InvalidOperation:
+    except InvalidOperation as exc:
         raise HTTPException(
             status_code=422,
             detail="auto_approve_below_amount must be a valid decimal amount",
-        )
+        ) from exc
     if auto_amt < 0:
         raise HTTPException(
             status_code=422,
@@ -381,7 +381,7 @@ async def _can_user_act_on_exception(
         now = _now()
         delegators_q = select(Delegation.delegator_id).where(
             Delegation.delegatee_id == user.id,
-            Delegation.is_active == True,
+            Delegation.is_active,
             Delegation.start_date <= now,
             Delegation.end_date >= now
         )
@@ -502,7 +502,6 @@ async def init_claim_approval_chain(claim: ClaimDraft, db: AsyncSession) -> None
     cfg = await get_workflow_config(db)
     stage_defs = _normalize_stage_defs(cfg)
     now = _now()
-    threshold = parse_auto_approve_threshold(cfg)
     total = total_claimed_from_report(claim)
 
     await db.execute(delete(ClaimApprovalStage).where(ClaimApprovalStage.claim_id == claim.id))
@@ -566,10 +565,13 @@ async def init_claim_approval_chain(claim: ClaimDraft, db: AsyncSession) -> None
             return True
             
         try:
-            if op == ">": return target > Decimal(str(val))
-            if op == "<": return target < Decimal(str(val))
-            if op == "==": return str(target).lower() == str(val).lower()
-        except:
+            if op == ">":
+                return target > Decimal(str(val))
+            if op == "<":
+                return target < Decimal(str(val))
+            if op == "==":
+                return str(target).lower() == str(val).lower()
+        except Exception:
             return True
         return True
 
@@ -1177,7 +1179,7 @@ async def list_pending_approvals(user_id: int, db: AsyncSession) -> list[dict]:
     now = _now()
     active_delegators_q = select(Delegation.delegator_id).where(
         Delegation.delegatee_id == user_id,
-        Delegation.is_active == True,
+        Delegation.is_active,
         Delegation.start_date <= now,
         Delegation.end_date >= now
     )

@@ -73,15 +73,15 @@ async def create_delegation(
     try:
         start = datetime.fromisoformat(payload.start_date)
         end = datetime.fromisoformat(payload.end_date)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid date format")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid date format") from exc
 
     if end < start:
         raise HTTPException(status_code=400, detail="End date must be after start date")
 
     # Deactivate existing active delegations for this delegator
     active_result = await db.execute(
-        select(Delegation).where(Delegation.delegator_id == user_id, Delegation.is_active == True)
+        select(Delegation).where(Delegation.delegator_id == user_id, Delegation.is_active)
     )
     for existing in active_result.scalars():
         existing.is_active = False
@@ -142,7 +142,7 @@ async def search_users(
         select(User.id, User.email, User.full_name)
         .where(
             User.id != user_id,
-            User.is_active == True,
+            User.is_active,
             (User.full_name.ilike(f"%{q}%")) | (User.email.ilike(f"%{q}%"))
         )
         .limit(10)

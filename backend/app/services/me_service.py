@@ -120,7 +120,7 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
     now = datetime.utcnow()
     delegation_q = select(Delegation.id).where(
         Delegation.delegatee_id == user_id,
-        Delegation.is_active == True,
+        Delegation.is_active,
         Delegation.start_date <= now,
         Delegation.end_date >= now
     )

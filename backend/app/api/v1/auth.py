@@ -119,8 +119,8 @@ async def verify_otp(
     from jose import jwt
     try:
         claims = jwt.decode(payload.mfa_token, settings.secret_key, algorithms=[settings.algorithm])
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid MFA token")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid MFA token") from exc
         
     if claims.get("type") != "mfa":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token type")

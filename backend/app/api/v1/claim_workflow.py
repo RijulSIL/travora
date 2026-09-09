@@ -90,7 +90,7 @@ async def get_claim_detail(
         print(f"GET CLAIM DETAIL ERROR: {e}")
         traceback.print_exc()
         print("="*50)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/{claim_id}/approval-chain")

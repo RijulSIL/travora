@@ -401,7 +401,7 @@ async def list_pending_travel_requests_for_manager(manager_user_id: int, db: Asy
     now = datetime.utcnow()
     delegators_q = select(Delegation.delegator_id).where(
         Delegation.delegatee_id == manager_user_id,
-        Delegation.is_active == True,
+        Delegation.is_active,
         Delegation.start_date <= now,
         Delegation.end_date >= now
     )
@@ -539,7 +539,7 @@ async def _actor_is_reporting_manager_for(
     now = datetime.utcnow()
     delegators_q = select(Delegation.delegator_id).where(
         Delegation.delegatee_id == manager_user_id,
-        Delegation.is_active == True,
+        Delegation.is_active,
         Delegation.start_date <= now,
         Delegation.end_date >= now
     )

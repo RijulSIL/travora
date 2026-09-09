@@ -57,7 +57,7 @@ async def upload_invoice(
         print(f"UPLOAD ERROR: {e}")
         traceback.print_exc()
         print("="*50)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get(

@@ -136,7 +136,7 @@ def require_any_permission(*actions: str) -> Callable:
             now = datetime.utcnow()
             delegation_q = select(Delegation.id).where(
                 Delegation.delegatee_id == user_id,
-                Delegation.is_active == True,
+                Delegation.is_active,
                 Delegation.start_date <= now,
                 Delegation.end_date >= now
             )
@@ -165,7 +165,7 @@ def require_role(*allowed_roles: Role) -> Callable:
                     now = datetime.utcnow()
                     delegation_q = select(Delegation.id).where(
                         Delegation.delegatee_id == user_id,
-                        Delegation.is_active == True,
+                        Delegation.is_active,
                         Delegation.start_date <= now,
                         Delegation.end_date >= now
                     )

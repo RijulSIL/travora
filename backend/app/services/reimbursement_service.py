@@ -3,8 +3,6 @@ import hashlib
 import logging
 import re
 from collections import defaultdict
-
-logger = logging.getLogger(__name__)
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
