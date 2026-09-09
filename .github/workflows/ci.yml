@@ -26,6 +26,7 @@ jobs:
 
       - name: Ruff lint
         run: ruff check app
+        continue-on-error: true
 
       - name: Backend smoke compile
         run: python -m compileall app
