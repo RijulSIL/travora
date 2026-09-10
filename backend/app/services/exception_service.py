@@ -20,6 +20,14 @@ async def detect_claim_exceptions(claim: ClaimDraft, expenses: list[ClaimExpense
                     "description": f"Hotel expense of {exp.amount} exceeds policy cap of {exp.cap_amount}."
                 })
 
+    # 1b. Day Visit External Meeting Expenses exceeding policy cap
+    for exp in expenses:
+        if "day" in exp.category_name.lower() and exp.policy_status in ("HARD_BLOCK", "SOFT_FLAG"):
+            exceptions.append({
+                "type": "DAY_VISIT_EXTERNAL_MEETING",
+                "description": f"Day visit expense of {exp.amount} exceeds policy cap of {exp.cap_amount}."
+            })
+
     # 2. Air Travel for Level 5/6 (or conditional/no eligibility)
     user = await db.get(User, claim.employee_user_id)
     if user and user.employee_id:

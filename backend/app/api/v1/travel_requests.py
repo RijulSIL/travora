@@ -19,6 +19,7 @@ from app.schemas.travel_request import (
     EntitlementNoteOut,
     TravelRejectIn,
     TravelRequestCreate,
+    TravelRequestExceptionCreate,
     TravelRequestListItemOut,
     TravelRequestOut,
     TravelRequestTicketAttachmentOut,
@@ -59,6 +60,34 @@ async def create_request(
         preferred_class=body.preferred_class,
         notes=body.notes,
         legs=body.legs,
+        db=db,
+    )
+    return TravelRequestOut.model_validate(row)
+
+
+@router.post(
+    "/request-with-exception",
+    response_model=TravelRequestOut,
+    dependencies=[Depends(require_permission("submit_claim"))],
+)
+async def create_request_with_exception(
+    body: TravelRequestExceptionCreate,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> TravelRequestOut:
+    row = await svc.create_travel_request_with_exception(
+        user_id=int(claims["sub"]),
+        trip_type=body.trip_type,
+        travel_mode=body.travel_mode,
+        from_city=body.from_city,
+        to_city=body.to_city,
+        travel_date=body.travel_date,
+        return_date=body.return_date,
+        purpose=body.purpose,
+        preferred_class=body.preferred_class,
+        notes=body.notes,
+        legs=body.legs,
+        justification=body.justification,
         db=db,
     )
     return TravelRequestOut.model_validate(row)

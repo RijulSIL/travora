@@ -3,7 +3,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.rbac import get_current_claims
 from app.schemas.common import (
+    ChangePasswordConfirm,
+    ChangePasswordRequestOTP,
     ForgotPasswordRequest,
     LoginRequest,
     MFAVerifyRequest,
@@ -12,14 +15,16 @@ from app.schemas.common import (
 )
 from app.services.auth_service import (
     authenticate_user,
+    confirm_password_change,
+    confirm_password_reset,
     create_access_token,
     create_mfa_token,
     create_refresh_token,
     create_trusted_device_token,
     generate_and_send_login_otp,
-    generate_password_reset_token,
     is_trusted_device,
-    reset_password_with_token,
+    request_password_change_otp,
+    request_password_reset_otp,
     revoke_refresh_token,
     rotate_refresh_token,
     verify_login_otp,
@@ -33,8 +38,8 @@ async def forgot_password(
     payload: ForgotPasswordRequest,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
-    await generate_password_reset_token(payload.email, db)
-    return {"message": "If an account with that email exists, a password reset link has been sent."}
+    await request_password_reset_otp(payload.email, db)
+    return {"message": "If an account with that email exists, an OTP has been sent."}
 
 
 @router.post("/reset-password")
@@ -42,8 +47,28 @@ async def reset_password(
     payload: ResetPasswordRequest,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
-    await reset_password_with_token(payload.email, payload.token, payload.new_password, db)
+    await confirm_password_reset(payload.email, payload.otp_code, payload.new_password, db)
     return {"message": "Password successfully reset."}
+
+
+@router.post("/change-password/request-otp")
+async def change_password_request_otp(
+    payload: ChangePasswordRequestOTP,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    await request_password_change_otp(int(claims["sub"]), payload.current_password, db)
+    return {"message": "OTP sent to your email."}
+
+
+@router.post("/change-password/confirm")
+async def change_password_confirm(
+    payload: ChangePasswordConfirm,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    await confirm_password_change(int(claims["sub"]), payload.otp_code, payload.new_password, db)
+    return {"message": "Password successfully changed."}
 
 
 def _set_refresh_cookie(response: Response, token: str) -> None:

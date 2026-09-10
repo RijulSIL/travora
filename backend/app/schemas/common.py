@@ -28,26 +28,44 @@ class ForgotPasswordRequest(BaseModel):
     email: str
 
 
+def _validate_password_complexity(value: str) -> str:
+    import re
+    if len(value) < 8:
+        raise ValueError("Password must be at least 8 characters long")
+    if not re.search(r"[A-Z]", value):
+        raise ValueError("Password must contain at least one uppercase letter")
+    if not re.search(r"[a-z]", value):
+        raise ValueError("Password must contain at least one lowercase letter")
+    if not re.search(r"[0-9]", value):
+        raise ValueError("Password must contain at least one number")
+    if not re.search(r"[!@#$%^&*()_+={}\[\]|\\:;\"'<>,.?/~`-]", value):
+        raise ValueError("Password must contain at least one special character")
+    return value
+
+
 class ResetPasswordRequest(BaseModel):
     email: str
-    token: str
+    otp_code: str
     new_password: str
 
     @field_validator("new_password")
     @classmethod
     def validate_password_complexity(cls, value: str) -> str:
-        import re
-        if len(value) < 8:
-            raise ValueError("Password must be at least 8 characters long")
-        if not re.search(r"[A-Z]", value):
-            raise ValueError("Password must contain at least one uppercase letter")
-        if not re.search(r"[a-z]", value):
-            raise ValueError("Password must contain at least one lowercase letter")
-        if not re.search(r"[0-9]", value):
-            raise ValueError("Password must contain at least one number")
-        if not re.search(r"[!@#$%^&*()_+={}\[\]|\\:;\"'<>,.?/~`-]", value):
-            raise ValueError("Password must contain at least one special character")
-        return value
+        return _validate_password_complexity(value)
+
+
+class ChangePasswordRequestOTP(BaseModel):
+    current_password: str
+
+
+class ChangePasswordConfirm(BaseModel):
+    otp_code: str
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_password_complexity(cls, value: str) -> str:
+        return _validate_password_complexity(value)
 
 
 

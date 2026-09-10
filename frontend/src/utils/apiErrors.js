@@ -26,7 +26,8 @@ export function normalizeApiError(error) {
     return { kind: 'server', status, message: 'Server error. Please try again in a moment.', fieldErrors: {}, raw: error };
   }
   if (status === 403) {
-    return { kind: 'forbidden', status, message: "You don't have permission for this action.", fieldErrors: {}, raw: error };
+    const message = typeof data?.detail === 'string' ? data.detail : "You don't have permission for this action.";
+    return { kind: 'forbidden', status, message, fieldErrors: {}, raw: error };
   }
   if (status === 422) {
     const fieldErrors = parseFastApi422(data?.detail);

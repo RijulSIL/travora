@@ -36,15 +36,17 @@ api.interceptors.response.use(
       originalRequest?.url?.includes('/auth/login')
     ) {
       const normalized = normalizeApiError(error);
-      if (normalized.kind === 'network') {
-        showToast(normalized.message, 'error', {
-          label: 'Retry',
-          onClick: () => {
-            if (originalRequest) api(originalRequest);
-          },
-        });
-      } else if (normalized.kind === 'server' || normalized.kind === 'forbidden') {
-        showToast(normalized.message, 'error');
+      if (!originalRequest?.suppressErrorToast) {
+        if (normalized.kind === 'network') {
+          showToast(normalized.message, 'error', {
+            label: 'Retry',
+            onClick: () => {
+              if (originalRequest) api(originalRequest);
+            },
+          });
+        } else if (normalized.kind === 'server' || normalized.kind === 'forbidden') {
+          showToast(normalized.message, 'error');
+        }
       }
       error.normalized = normalized;
       return Promise.reject(error);

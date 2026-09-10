@@ -12,7 +12,9 @@ export const reimbursementApi = {
   travelRequestsMy: () => api.get('travel-requests/my'),
   travelRequestsManagerPending: () => api.get('travel-requests/manager/pending'),
   travelRequestsTeamCalendar: () => api.get('travel-requests/manager/team-calendar'),
-  travelRequestsCreate: (payload) => api.post('travel-requests', payload),
+  travelRequestsCreate: (payload, config) => api.post('travel-requests', payload, config),
+  travelRequestsCreateWithException: (payload, config) =>
+    api.post('travel-requests/request-with-exception', payload, config),
   travelRequestDelete: (id) => api.delete(`travel-requests/${id}`),
   travelEntitlementNote: () => api.get('travel-requests/entitlement-note'),
   travelCitySuggestions: (q, limit) =>

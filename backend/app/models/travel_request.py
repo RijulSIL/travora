@@ -16,6 +16,7 @@ class TravelRequestMode(str, enum.Enum):
 
 class TravelRequestStatus(str, enum.Enum):
     PENDING = "PENDING"
+    PENDING_EXCEPTION = "PENDING_EXCEPTION"
     APPROVED = "APPROVED"
     BOOKED = "BOOKED"
     REJECTED = "REJECTED"

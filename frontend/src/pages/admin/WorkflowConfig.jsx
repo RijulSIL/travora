@@ -23,6 +23,8 @@ const EXCEPTION_TYPES = {
   "AIR_TRAVEL_L5_L6": "Exception: Air Travel L5/L6",
   "HIRED_TAXI_UNAUTHORIZED": "Exception: Unauthorized Hired Taxi",
   "MODE_DEVIATION": "Exception: Travel Mode Deviation",
+  "DAY_VISIT_EXTERNAL_MEETING": "Exception: Day Visit External Meeting Expenses",
+  "POLICY_EXCEPTION_GENERAL": "Exception: Policy Exception (General)",
 };
 
 function sanitizeMaxWorkingDaysAfterReturn(raw) {
@@ -262,6 +264,9 @@ export default function WorkflowConfig() {
                     <option value="HRBP_HR">HRBP / HR</option>
                     <option value="PAYROLL">Payroll</option>
                     <option value="FINANCE">Finance</option>
+                    <option value="CEO">CEO</option>
+                    <option value="GROUP_HEAD_HR">Group Head HR</option>
+                    <option value="IT_ADMIN">IT Admin</option>
                   </select>
                 </td>
                 <td className="px-4 py-3">

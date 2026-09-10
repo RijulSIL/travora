@@ -90,7 +90,8 @@ class ExceptionRequest(Base):
     __tablename__ = "exception_requests"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    claim_id: Mapped[int] = mapped_column(ForeignKey("claim_drafts.id"), nullable=False, index=True)
+    claim_id: Mapped[int | None] = mapped_column(ForeignKey("claim_drafts.id"), nullable=True, index=True)
+    travel_request_id: Mapped[int | None] = mapped_column(ForeignKey("travel_requests.id"), nullable=True, index=True)
     requested_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     exception_type: Mapped[str] = mapped_column(String(128), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)

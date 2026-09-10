@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
 import {
@@ -33,6 +33,8 @@ function getStatusDetails(status) {
       return { label: 'Approved', bg: 'bg-brand/10 text-brand' };
     case 'PENDING':
       return { label: 'Pending', bg: 'bg-amber-100 text-amber-800' };
+    case 'PENDING_EXCEPTION':
+      return { label: 'Under Review (Exception)', bg: 'bg-orange-100 text-orange-800' };
     case 'REJECTED':
       return { label: 'Rejected', bg: 'bg-rose-100 text-rose-800' };
     case 'CANCELLED':
@@ -148,8 +150,30 @@ export default function TravelRequestsPage() {
   const [policyError, setPolicyError] = useState(null);
   const [exceptionReason, setExceptionReason] = useState('');
   const [submittingException, setSubmittingException] = useState(false);
+  const policyErrorRef = useRef(null);
+
+  useEffect(() => {
+    if (policyError && policyErrorRef.current) {
+      policyErrorRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [policyError]);
 
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  function buildTravelRequestPayload() {
+    return {
+      trip_type: form.values.trip_type,
+      travel_mode: form.values.travel_mode,
+      from_city: form.values.trip_type !== 'MULTI_CITY' ? form.values.from_city : null,
+      to_city: form.values.trip_type !== 'MULTI_CITY' ? form.values.to_city : null,
+      travel_date: form.values.trip_type !== 'MULTI_CITY' ? form.values.travel_date : null,
+      return_date: form.values.trip_type === 'ROUND_TRIP' ? form.values.return_date || null : null,
+      purpose: form.values.purpose || null,
+      preferred_class: form.values.preferred_class || null,
+      notes: form.values.notes || null,
+      legs: form.values.trip_type === 'MULTI_CITY' ? form.values.legs.filter(l => l.from_city && l.to_city && l.travel_date) : [],
+    };
+  }
 
   async function onCreate(e) {
     e.preventDefault();
@@ -161,18 +185,7 @@ export default function TravelRequestsPage() {
       setIsSubmitting(true);
       setSubmissionState({ active: true, status: 'submitting', mode });
 
-      await reimbursementApi.travelRequestsCreate({
-        trip_type: form.values.trip_type,
-        travel_mode: form.values.travel_mode,
-        from_city: form.values.trip_type !== 'MULTI_CITY' ? form.values.from_city : null,
-        to_city: form.values.trip_type !== 'MULTI_CITY' ? form.values.to_city : null,
-        travel_date: form.values.trip_type !== 'MULTI_CITY' ? form.values.travel_date : null,
-        return_date: form.values.trip_type === 'ROUND_TRIP' ? form.values.return_date || null : null,
-        purpose: form.values.purpose || null,
-        preferred_class: form.values.preferred_class || null,
-        notes: form.values.notes || null,
-        legs: form.values.trip_type === 'MULTI_CITY' ? form.values.legs.filter(l => l.from_city && l.to_city && l.travel_date) : [],
-      });
+      await reimbursementApi.travelRequestsCreate(buildTravelRequestPayload(), { suppressErrorToast: true });
 
       setIsSubmitting(false);
       setModalOpen(false);
@@ -218,25 +231,38 @@ export default function TravelRequestsPage() {
       return;
     }
 
+    const mode = form.values.travel_mode;
     setSubmittingException(true);
+    setSubmissionState({ active: true, status: 'submitting', mode });
     try {
-      let type = 'FLIGHT_ADVANCE_BOOKING_OVERRIDE';
-      if (policyError.includes('locked for your level')) {
-        type = 'AIR_TRAVEL_UNLOCK';
-      } else if (policyError.includes('not allowed for your impact level')) {
-        type = 'FLIGHT_COST_DELTA';
-      }
+      await reimbursementApi.travelRequestsCreateWithException(
+        { ...buildTravelRequestPayload(), justification: exceptionReason },
+        { suppressErrorToast: true },
+      );
 
-      await reimbursementApi.requestException({
-        exception_type: type,
-        description: exceptionReason,
-      });
-
-      showToast('Policy exception request submitted to your Manager.', 'success');
+      setSubmissionState(s => ({ ...s, status: 'success' }));
+      showToast('Travel request submitted — under review pending exception approval.', 'success');
       setPolicyError(null);
       setExceptionReason('');
       setModalOpen(false);
+
+      const my = await reimbursementApi.travelRequestsMy();
+      setRows(my.data || []);
+
+      form.setValues({
+        trip_type: 'ONE_WAY',
+        travel_mode: 'FLIGHT',
+        from_city: '',
+        to_city: '',
+        travel_date: '',
+        return_date: '',
+        purpose: '',
+        preferred_class: '',
+        notes: '',
+        legs: [{ travel_mode: '', from_city: '', to_city: '', travel_date: '', preferred_time: '' }]
+      });
     } catch (err) {
+      setSubmissionState({ active: false, status: 'idle', mode: null });
       showToast(err.response?.data?.detail || err.message || 'Failed to submit exception', 'error');
     } finally {
       setSubmittingException(false);
@@ -437,7 +463,7 @@ export default function TravelRequestsPage() {
                                 View Ticket
                               </button>
                             ) : null}
-                            {request.status === 'PENDING' ? (
+                            {request.status === 'PENDING' || request.status === 'PENDING_EXCEPTION' ? (
                               <button
                                 type="button"
                                 className="inline-flex h-7 items-center justify-center rounded border border-rose-200 hover:bg-rose-50 text-[10px] font-bold text-rose-700 px-3 transition-all"
@@ -537,10 +563,10 @@ export default function TravelRequestsPage() {
       {/* Modal: New Request Dialog */}
       {modalOpen ? createPortal(
         <div className="fixed inset-0 z-[100] grid place-items-center bg-slate-900/40 p-4 backdrop-blur-[2px]">
-          <div className="panel w-full max-w-lg rounded-xl border border-slate-200 bg-white p-5 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-200">
+          <div className="panel flex w-full max-w-lg flex-col rounded-xl border border-slate-200 bg-white shadow-2xl max-h-[90vh] overflow-hidden animate-in fade-in zoom-in-95 duration-200">
 
             {/* Modal Header */}
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+            <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-5 pt-5 pb-3">
               <h2 className="text-sm font-bold text-slate-800">Submit Travel Request</h2>
               <button
                 type="button"
@@ -556,13 +582,14 @@ export default function TravelRequestsPage() {
             </div>
 
             {entitlement?.text && (
-              <div className="flex items-start gap-2.5 rounded-lg border border-slate-200 bg-slate-50 p-3 text-[11px] text-slate-600">
+              <div className="mx-5 mt-4 flex shrink-0 items-start gap-2.5 rounded-lg border border-slate-200 bg-slate-50 p-3 text-[11px] text-slate-600">
                 <Info size={14} className="text-brand shrink-0 mt-0.5" />
                 <span className="font-semibold">{entitlement.text}</span>
               </div>
             )}
 
-            <form className="space-y-4" onSubmit={onCreate}>
+            <form className="flex min-h-0 flex-1 flex-col" onSubmit={onCreate}>
+              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
               {/* Travel Mode */}
               <div className="space-y-1">
                 <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Travel Mode *</span>
@@ -790,7 +817,7 @@ export default function TravelRequestsPage() {
 
               {/* Exception Warning Block */}
               {policyError && (
-                <div className="rounded-xl border border-rose-200 bg-rose-50/20 p-4 space-y-3">
+                <div ref={policyErrorRef} className="rounded-xl border border-rose-200 bg-rose-50/20 p-4 space-y-3">
                   <div className="flex items-start gap-2.5 text-rose-900 text-[11px] font-bold">
                     <ShieldAlert size={16} className="text-rose-650 shrink-0 mt-0.5" />
                     <div>
@@ -821,8 +848,10 @@ export default function TravelRequestsPage() {
                 </div>
               )}
 
+              </div>
+
               {/* Actions Footer */}
-              <div className="flex justify-end gap-2.5 border-t border-slate-100 pt-3">
+              <div className="flex shrink-0 justify-end gap-2.5 border-t border-slate-100 px-5 py-3">
                 <button
                   type="button"
                   className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-xs font-bold text-slate-700 px-4 transition-colors"

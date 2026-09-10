@@ -3,6 +3,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import PageHeader from '../components/ui/PageHeader';
 import { useSetPageTitle } from '../context/PageTitleContext';
 import { reimbursementApi } from '../services/reimbursementApi';
+import { formatExceptionType } from '../utils/formatters';
 
 const fmtMoney = (val) =>
   Number(val || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -146,7 +147,7 @@ export default function ComplianceDashboard() {
                     <td className="px-3 py-2">{row.exception_id}</td>
                     <td className="px-3 py-2">{row.claim_ref || '-'}</td>
                     <td className="px-3 py-2">{row.employee || '-'}</td>
-                    <td className="px-3 py-2">{row.exception_type}</td>
+                    <td className="px-3 py-2">{formatExceptionType(row.exception_type)}</td>
                     <td className="px-3 py-2">{row.status}</td>
                     <td className="px-3 py-2">{new Date(row.requested_on).toLocaleDateString()}</td>
                     <td className="px-3 py-2">{row.decided_by || '-'}</td>

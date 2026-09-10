@@ -58,7 +58,7 @@ export default function InvoicePreviewDrawer({ open, onClose, invoice }) {
               {!fileUrl ? (
                 <div className="p-4 text-sm text-slate-500">Loading preview...</div>
               ) : isPdf ? (
-                <iframe title="Invoice file" src={`${fileUrl}#toolbar=0`} className="h-full w-full border-0" />
+                <iframe title="Invoice file" src={`${fileUrl}#toolbar=0&zoom=page-width`} className="h-full w-full border-0" />
               ) : (
                 <img src={fileUrl} alt={invoice.original_filename} className="h-full w-full object-contain" />
               )}

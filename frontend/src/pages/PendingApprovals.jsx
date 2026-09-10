@@ -10,6 +10,7 @@ import { useAsyncAction } from '../hooks/useAsyncAction';
 import useToast from '../hooks/useToast';
 import { reimbursementApi } from '../services/reimbursementApi';
 import { formatCurrency } from '../utils/formatters';
+import { normalizeApiError } from '../utils/apiErrors';
 
 function slaClass(bucket) {
   if (bucket === 'breached') return 'sla-breached';
@@ -77,7 +78,7 @@ export default function PendingApprovals() {
       showToast('Request approved', 'success');
       await load();
     } catch (e) {
-      showToast(e.response?.data?.detail || e.message || 'Approval failed', 'error');
+      showToast(normalizeApiError(e).message, 'error');
       if (e.response?.status === 409) {
         await load();
       }
@@ -87,12 +88,16 @@ export default function PendingApprovals() {
   const onRejectTravel = async (id) => {
     const reason = window.prompt('Enter reason for rejection:');
     if (reason === null) return;
+    if (!reason.trim()) {
+      showToast('A rejection reason is required', 'error');
+      return;
+    }
     try {
-      await reimbursementApi.travelReject(id, { reason });
+      await reimbursementApi.travelReject(id, { reason: reason.trim() });
       showToast('Request rejected', 'success');
       await load();
     } catch (e) {
-      showToast(e.response?.data?.detail || e.message || 'Rejection failed', 'error');
+      showToast(normalizeApiError(e).message, 'error');
       if (e.response?.status === 409) {
         await load();
       }

@@ -10,7 +10,6 @@ import ParticleBackground from './components/ui/ParticleBackground';
 import PublicIndex from './pages/PublicIndex';
 const LoginPage = lazy(() => import('./pages/auth/LoginPage'));
 const ForgotPasswordPage = lazy(() => import('./pages/auth/ForgotPasswordPage'));
-const ResetPasswordPage = lazy(() => import('./pages/auth/ResetPasswordPage'));
 const AccessDenied = lazy(() => import('./pages/AccessDenied'));
 const ProfilePage = lazy(() => import('./pages/ProfilePage'));
 const ClaimReview = lazy(() => import('./pages/ClaimReview'));
@@ -56,7 +55,7 @@ export default function App() {
         <Route path="/" element={<PublicIndex />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
-        <Route path="/reset-password" element={<ResetPasswordPage />} />
+        <Route path="/reset-password" element={<Navigate to="/forgot-password" replace />} />
         <Route path="/access-denied" element={<AccessDenied />} />
         <Route element={<ProtectedRoute />}>
           <Route element={<AppLayout />}>

@@ -123,21 +123,10 @@ async def city_suggestions(prefix: str, limit: int, db: AsyncSession) -> list[st
     return [str(r) for r in rows]
 
 
-async def create_travel_request(
-    *,
-    user_id: int,
-    trip_type: str,
-    travel_mode: TravelRequestMode | str,
-    from_city: str | None,
-    to_city: str | None,
-    travel_date: date | None,
-    return_date: date | None,
-    purpose: str | None,
-    preferred_class: str | None,
-    notes: str | None,
-    legs: list | None,
-    db: AsyncSession,
-) -> TravelRequest:
+async def _validate_common_travel_request_fields(
+    *, user_id: int, travel_mode: TravelRequestMode | str, travel_date: date | None, legs: list | None, db: AsyncSession
+) -> tuple[object, str]:
+    """Shared, non-exception-related validation. Returns (user, normalized mode_val)."""
     user = await db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
@@ -153,32 +142,69 @@ async def create_travel_request(
     elif legs and len(legs) > 0:
         _validate_lead_time(legs[0].travel_date, settings.travel_request_min_lead_working_days)
 
-    impact_level = await _get_user_impact_level_code(user_id, db)
-    if mode_val == "FLIGHT":
-        first_date = travel_date if travel_date else (legs[0].travel_date if legs else None)
-        if first_date:
-            days_in_advance = (first_date - date.today()).days
-            min_advance_enforced = days_in_advance < 7
-            has_advance_override = await _has_completed_exception_chain(
-                user_id, "FLIGHT_ADVANCE_BOOKING_OVERRIDE", db
-            )
-            if min_advance_enforced and not has_advance_override:
-                raise HTTPException(
-                    status_code=422,
-                    detail="Minimum 7-day advance booking window for flights is enforced.",
-                )
+    return user, mode_val
 
-        if impact_level in LEVELS_REQUIRING_AIR_UNLOCK:
-            has_unlock = await _has_completed_exception_chain(user_id, "AIR_TRAVEL_UNLOCK", db)
-            if not has_unlock:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=(
-                        "Air travel is locked for your level until Function Head + Group Head HR + CEO "
-                        "exception approval is recorded."
-                    ),
-                )
-        
+
+async def _determine_blocking_exception(
+    *, user_id: int, mode_val: str, impact_level: str, travel_date: date | None, legs: list | None, db: AsyncSession
+) -> tuple[str, str] | None:
+    """Returns (exception_type, message) if this request needs a policy exception to proceed, else None."""
+    if mode_val != "FLIGHT":
+        return None
+
+    first_date = travel_date if travel_date else (legs[0].travel_date if legs else None)
+    if first_date:
+        days_in_advance = (first_date - date.today()).days
+        min_advance_enforced = days_in_advance < 7
+        has_advance_override = await _has_completed_exception_chain(
+            user_id, "FLIGHT_ADVANCE_BOOKING_OVERRIDE", db
+        )
+        if min_advance_enforced and not has_advance_override:
+            return (
+                "FLIGHT_ADVANCE_BOOKING_OVERRIDE",
+                "Minimum 7-day advance booking window for flights is enforced.",
+            )
+
+    if impact_level in LEVELS_REQUIRING_AIR_UNLOCK:
+        has_unlock = await _has_completed_exception_chain(user_id, "AIR_TRAVEL_UNLOCK", db)
+        if not has_unlock:
+            return (
+                "AIR_TRAVEL_UNLOCK",
+                "Air travel is locked for your level until Reporting Manager + Group Head HR + CEO "
+                "exception approval is recorded.",
+            )
+
+    return None
+
+
+async def create_travel_request(
+    *,
+    user_id: int,
+    trip_type: str,
+    travel_mode: TravelRequestMode | str,
+    from_city: str | None,
+    to_city: str | None,
+    travel_date: date | None,
+    return_date: date | None,
+    purpose: str | None,
+    preferred_class: str | None,
+    notes: str | None,
+    legs: list | None,
+    db: AsyncSession,
+) -> TravelRequest:
+    user, mode_val = await _validate_common_travel_request_fields(
+        user_id=user_id, travel_mode=travel_mode, travel_date=travel_date, legs=legs, db=db
+    )
+
+    impact_level = await _get_user_impact_level_code(user_id, db)
+    blocking = await _determine_blocking_exception(
+        user_id=user_id, mode_val=mode_val, impact_level=impact_level, travel_date=travel_date, legs=legs, db=db
+    )
+    if blocking:
+        _exception_type, message = blocking
+        status_code = status.HTTP_403_FORBIDDEN if _exception_type == "AIR_TRAVEL_UNLOCK" else 422
+        raise HTTPException(status_code=status_code, detail=message)
+
     if preferred_class:
         if mode_val == "FLIGHT":
             allowed = FLIGHT_ALLOWED_CLASSES.get(impact_level, {"ECONOMY"})
@@ -195,36 +221,21 @@ async def create_travel_request(
                     detail=f"Preferred class {preferred_class} is not allowed for your impact level ({impact_level}).",
                 )
 
-    row = TravelRequest(
-        employee_user_id=user_id,
+    row = await _insert_travel_request_row(
+        user_id=user_id,
         trip_type=trip_type,
-        travel_mode=mode_val,
-        from_city=(from_city.strip() if from_city else None),
-        to_city=(to_city.strip() if to_city else None),
+        mode_val=mode_val,
+        from_city=from_city,
+        to_city=to_city,
         travel_date=travel_date,
         return_date=return_date,
         purpose=purpose,
         preferred_class=preferred_class,
         notes=notes,
-        status=TravelRequestStatus.PENDING.value,
+        legs=legs,
+        status_value=TravelRequestStatus.PENDING.value,
+        db=db,
     )
-    db.add(row)
-    await db.commit()
-    await db.refresh(row)
-
-    if legs and trip_type == TripType.MULTI_CITY.value:
-        for i, leg in enumerate(legs):
-            db.add(TravelRequestLeg(
-                travel_request_id=row.id,
-                leg_sequence=i+1,
-                travel_mode=leg.travel_mode.upper() if leg.travel_mode else mode_val,
-                from_city=leg.from_city,
-                to_city=leg.to_city,
-                travel_date=leg.travel_date,
-                preferred_time=leg.preferred_time
-            ))
-        await db.commit()
-        await db.refresh(row)
 
     # Create notification for manager
     try:
@@ -249,10 +260,133 @@ async def create_travel_request(
     except Exception as e:
         print(f"Failed to create notification: {e}")
 
-    stmt = select(TravelRequest).options(selectinload(TravelRequest.legs)).where(TravelRequest.id == row.id)
-    row_with_legs = (await db.execute(stmt)).scalar_one()
+    return await _reload_travel_request_with_legs(row.id, db)
 
-    return row_with_legs
+
+async def _insert_travel_request_row(
+    *,
+    user_id: int,
+    trip_type: str,
+    mode_val: str,
+    from_city: str | None,
+    to_city: str | None,
+    travel_date: date | None,
+    return_date: date | None,
+    purpose: str | None,
+    preferred_class: str | None,
+    notes: str | None,
+    legs: list | None,
+    status_value: str,
+    db: AsyncSession,
+) -> TravelRequest:
+    row = TravelRequest(
+        employee_user_id=user_id,
+        trip_type=trip_type,
+        travel_mode=mode_val,
+        from_city=(from_city.strip() if from_city else None),
+        to_city=(to_city.strip() if to_city else None),
+        travel_date=travel_date,
+        return_date=return_date,
+        purpose=purpose,
+        preferred_class=preferred_class,
+        notes=notes,
+        status=status_value,
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+
+    if legs and trip_type == TripType.MULTI_CITY.value:
+        for i, leg in enumerate(legs):
+            db.add(TravelRequestLeg(
+                travel_request_id=row.id,
+                leg_sequence=i+1,
+                travel_mode=leg.travel_mode.upper() if leg.travel_mode else mode_val,
+                from_city=leg.from_city,
+                to_city=leg.to_city,
+                travel_date=leg.travel_date,
+                preferred_time=leg.preferred_time
+            ))
+        await db.commit()
+        await db.refresh(row)
+
+    return row
+
+
+async def _reload_travel_request_with_legs(request_id: int, db: AsyncSession) -> TravelRequest:
+    stmt = select(TravelRequest).options(selectinload(TravelRequest.legs)).where(TravelRequest.id == request_id)
+    return (await db.execute(stmt)).scalar_one()
+
+
+async def create_travel_request_with_exception(
+    *,
+    user_id: int,
+    trip_type: str,
+    travel_mode: TravelRequestMode | str,
+    from_city: str | None,
+    to_city: str | None,
+    travel_date: date | None,
+    return_date: date | None,
+    purpose: str | None,
+    preferred_class: str | None,
+    notes: str | None,
+    legs: list | None,
+    justification: str,
+    db: AsyncSession,
+) -> TravelRequest:
+    """Same validation as create_travel_request, but when the request is only blocked by a
+    policy exception, creates it anyway in PENDING_EXCEPTION status and raises the exception
+    request instead of rejecting the submission outright."""
+    await _validate_common_travel_request_fields(
+        user_id=user_id, travel_mode=travel_mode, travel_date=travel_date, legs=legs, db=db
+    )
+    mode_val = travel_mode.value if isinstance(travel_mode, TravelRequestMode) else str(travel_mode).upper()
+
+    impact_level = await _get_user_impact_level_code(user_id, db)
+    blocking = await _determine_blocking_exception(
+        user_id=user_id, mode_val=mode_val, impact_level=impact_level, travel_date=travel_date, legs=legs, db=db
+    )
+
+    if blocking is None:
+        # Nothing actually blocks this — no exception needed, submit normally.
+        return await create_travel_request(
+            user_id=user_id,
+            trip_type=trip_type,
+            travel_mode=travel_mode,
+            from_city=from_city,
+            to_city=to_city,
+            travel_date=travel_date,
+            return_date=return_date,
+            purpose=purpose,
+            preferred_class=preferred_class,
+            notes=notes,
+            legs=legs,
+            db=db,
+        )
+
+    exception_type, _message = blocking
+
+    row = await _insert_travel_request_row(
+        user_id=user_id,
+        trip_type=trip_type,
+        mode_val=mode_val,
+        from_city=from_city,
+        to_city=to_city,
+        travel_date=travel_date,
+        return_date=return_date,
+        purpose=purpose,
+        preferred_class=preferred_class,
+        notes=notes,
+        legs=legs,
+        status_value=TravelRequestStatus.PENDING_EXCEPTION.value,
+        db=db,
+    )
+
+    from app.services.workflow_service import create_travel_exception_request
+
+    await create_travel_exception_request(row.id, user_id, exception_type, justification, db)
+
+    return await _reload_travel_request_with_legs(row.id, db)
 
 
 async def _latest_ticket_for_request(request_id: int, db: AsyncSession) -> TravelRequestTicket | None:
@@ -356,12 +490,12 @@ async def viewer_can_download_ticket(
 
 
 async def list_pending_travel_requests_for_desk(db: AsyncSession) -> list[dict]:
-    """Queue: PENDING and APPROVED, ordered travel_date ASC."""
+    """Queue: APPROVED only. Manager approval happens before Travel Desk ever sees the request."""
     rows = (
         await db.execute(
             select(TravelRequest)
             .options(selectinload(TravelRequest.legs))
-            .where(TravelRequest.status.in_([TravelRequestStatus.PENDING.value, TravelRequestStatus.APPROVED.value]))
+            .where(TravelRequest.status == TravelRequestStatus.APPROVED.value)
             .order_by(TravelRequest.requested_at.asc())
         )
     ).scalars().all()
@@ -640,8 +774,32 @@ async def cancel_travel_request(request_id: int, owner_user_id: int, db: AsyncSe
         raise HTTPException(status_code=404, detail="Travel request not found")
     if req.employee_user_id != owner_user_id:
         raise HTTPException(status_code=403, detail="Forbidden")
-    if req.status != TravelRequestStatus.PENDING.value:
+    if req.status not in (TravelRequestStatus.PENDING.value, TravelRequestStatus.PENDING_EXCEPTION.value):
         raise HTTPException(status_code=409, detail="Only PENDING requests can be cancelled")
+
+    if req.status == TravelRequestStatus.PENDING_EXCEPTION.value:
+        from app.models.claim_workflow import ExceptionApproval, ExceptionRequest, ExceptionRequestStatus
+
+        pending_exceptions = (
+            await db.execute(
+                select(ExceptionRequest).where(
+                    ExceptionRequest.travel_request_id == req.id,
+                    ExceptionRequest.status != ExceptionRequestStatus.REJECTED.value,
+                )
+            )
+        ).scalars().all()
+        for exc in pending_exceptions:
+            exc.status = ExceptionRequestStatus.REJECTED.value
+            exc.decision_comment = "Travel request cancelled by employee."
+            approvals = (
+                await db.execute(
+                    select(ExceptionApproval).where(ExceptionApproval.exception_request_id == exc.id)
+                )
+            ).scalars().all()
+            for a in approvals:
+                if a.status in (ExceptionRequestStatus.PENDING.value, "AWAITING"):
+                    a.status = ExceptionRequestStatus.REJECTED.value
+
     req.status = TravelRequestStatus.CANCELLED.value
     await db.commit()
     await db.refresh(req)

@@ -55,12 +55,6 @@ LEVELS_REQUIRING_AIR_UNLOCK = {"L5A", "L5B", "L5C", "L6A", "L6B", "L6C", "L6D"}
 LEVELS_L2_TO_L4C = {"L2", "L3", "L4A", "L4B", "L4C"}
 LEVELS_L5A_TO_L6D = {"L5A", "L5B", "L5C", "L6A", "L6B", "L6C", "L6D"}
 PREFERRED_BUS_OPERATORS = {"Volvo Travels", "InterCity AC", "Corporate Fleet"}
-EXCEPTION_REQUIRED_ROLES: dict[str, set[str]] = {
-    "AIR_TRAVEL_UNLOCK": {"REPORTING_MANAGER", "HRBP_HR", "IT_ADMIN"},
-    "TRAIN_TATKAL": {"REPORTING_MANAGER", "HRBP_HR"},
-    "FLIGHT_ADVANCE_BOOKING_OVERRIDE": {"REPORTING_MANAGER"},
-    "FLIGHT_COST_DELTA": {"REPORTING_MANAGER", "HRBP_HR"},
-}
 
 
 def _normalize_level(level: str | None) -> str:
@@ -100,7 +94,11 @@ async def _has_completed_exception_chain(user_id: int, exception_type: str, db: 
     candidates = list((await db.execute(q)).scalars().all())
     if not candidates:
         return False
-    required_roles = EXCEPTION_REQUIRED_ROLES.get(exception_type, {"HRBP_HR"})
+
+    from app.services.workflow_service import EXCEPTION_APPROVAL_CHAINS, get_workflow_config
+
+    cfg = await get_workflow_config(db)
+    required_roles = set(cfg.get("exception_chains", EXCEPTION_APPROVAL_CHAINS).get(exception_type, ["HRBP_HR"]))
     for row in candidates:
         approvals = (
             await db.execute(

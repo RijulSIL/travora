@@ -33,7 +33,10 @@ from app.services.notification_service import create_notification
 
 STAGE_STATUS_NOT_STARTED = "NOT_STARTED"
 EXCEPTION_APPROVAL_CHAINS: dict[str, list[str]] = {
-    "AIR_TRAVEL_UNLOCK": ["REPORTING_MANAGER", "HRBP_HR", "IT_ADMIN"],
+    # "Function Head" per the PRD is this employee's own Reporting Manager (no separate role) —
+    # the REPORTING_MANAGER chain entry already resolves to that specific person, see
+    # decide_exception_request()'s REPORTING_MANAGER special-case below.
+    "AIR_TRAVEL_UNLOCK": ["REPORTING_MANAGER", "GROUP_HEAD_HR", "CEO"],
     "TRAIN_TATKAL": ["REPORTING_MANAGER", "HRBP_HR"],
     "FLIGHT_ADVANCE_BOOKING_OVERRIDE": ["REPORTING_MANAGER"],
     "FLIGHT_COST_DELTA": ["REPORTING_MANAGER", "HRBP_HR"],
@@ -44,6 +47,8 @@ EXCEPTION_APPROVAL_CHAINS: dict[str, list[str]] = {
     "AIR_TRAVEL_L5_L6": ["REPORTING_MANAGER", "GROUP_HEAD_HR", "CEO"],
     "HIRED_TAXI_UNAUTHORIZED": ["REPORTING_MANAGER", "HRBP_HR", "CEO"],
     "MODE_DEVIATION": ["REPORTING_MANAGER", "HRBP_HR", "CEO"],
+    "DAY_VISIT_EXTERNAL_MEETING": ["CEO"],
+    "POLICY_EXCEPTION_GENERAL": ["REPORTING_MANAGER", "HRBP_HR"],
 }
 
 
@@ -1320,6 +1325,129 @@ async def _user_ids_for_exception_role(claim: ClaimDraft, role: str, db: AsyncSe
         return []
 
 
+async def _user_ids_for_exception_role_for_travel(travel_request, role: str, db: AsyncSession) -> list[int]:
+    subject = await db.get(User, travel_request.employee_user_id)
+    employee_id = subject.employee_id if subject else None
+
+    if role == "REPORTING_MANAGER":
+        if not employee_id:
+            return []
+        employee = await db.get(Employee, employee_id)
+        if employee is None or not employee.reporting_manager_id:
+            return []
+        result = await db.execute(
+            select(User.id).where(
+                User.employee_id == employee.reporting_manager_id,
+                User.role == Role.REPORTING_MANAGER,
+            )
+        )
+        return [int(user_id) for user_id in result.scalars().all()]
+    if role == "FUNCTION_HEAD":
+        if not employee_id:
+            return []
+        fh = await _get_function_head(employee_id, db)
+        if not fh:
+            return []
+        result = await db.execute(select(User.id).where(User.employee_id == fh.employee_id))
+        return [int(user_id) for user_id in result.scalars().all()]
+
+    try:
+        r_enum = Role(role)
+        result = await db.execute(select(User.id).where(User.role == r_enum))
+        return [int(user_id) for user_id in result.scalars().all()]
+    except ValueError:
+        return []
+
+
+async def _notify_travel_exception_approver(travel_request, req: ExceptionRequest, role: str, db: AsyncSession) -> None:
+    recipients = await _user_ids_for_exception_role_for_travel(travel_request, role, db)
+    for user_id in recipients:
+        await create_notification(
+            user_id=user_id,
+            title=f"Exception Approval Required: Travel Request #{travel_request.id}",
+            body=f"Exception '{req.exception_type}' requires your review.",
+            link="/hr/exceptions",
+            category=NotificationCategory.EXCEPTION.value,
+            db=db,
+        )
+
+
+async def _notify_travel_manager_of_pending_request(travel_request, db: AsyncSession) -> None:
+    user = await db.get(User, travel_request.employee_user_id)
+    if user is None or not user.employee_id:
+        return
+    employee = await db.get(Employee, user.employee_id)
+    if employee is None or not employee.reporting_manager_id:
+        return
+    manager_user = (
+        await db.execute(select(User).where(User.employee_id == employee.reporting_manager_id))
+    ).scalar_one_or_none()
+    if manager_user is None:
+        return
+    await create_notification(
+        user_id=manager_user.id,
+        title="Travel Request Ready for Review",
+        body=(
+            f"Travel request from {user.full_name or user.email} cleared its policy exception "
+            "and now needs your approval."
+        ),
+        link="/pending-approvals",
+        category=NotificationCategory.APPROVAL_REQUIRED.value,
+        db=db,
+    )
+
+
+async def create_travel_exception_request(
+    travel_request_id: int, user_id: int, exception_type: str, description: str | None, db: AsyncSession
+) -> ExceptionRequest:
+    from app.models.travel_request import TravelRequest
+
+    travel_request = await db.get(TravelRequest, travel_request_id)
+    if travel_request is None:
+        raise HTTPException(status_code=404, detail="Travel request not found")
+
+    row = ExceptionRequest(
+        claim_id=None,
+        travel_request_id=travel_request_id,
+        requested_by_user_id=user_id,
+        exception_type=exception_type,
+        description=description,
+        status=ExceptionRequestStatus.PENDING.value,
+    )
+    db.add(row)
+    await db.flush()
+
+    cfg = await get_workflow_config(db)
+    required_roles = cfg.get("exception_chains", EXCEPTION_APPROVAL_CHAINS).get(exception_type, ["HRBP_HR"])
+    for i, role in enumerate(required_roles):
+        status_val = ExceptionRequestStatus.PENDING.value if i == 0 else "AWAITING"
+        db.add(
+            ExceptionApproval(
+                exception_request_id=row.id,
+                required_role=role,
+                status=status_val,
+            )
+        )
+    await db.commit()
+    await db.refresh(row)
+
+    if required_roles:
+        first_role = required_roles[0]
+        target_uids = await _user_ids_for_exception_role_for_travel(travel_request, first_role, db)
+        for target_uid in target_uids:
+            await create_notification(
+                user_id=target_uid,
+                title=f"Exception Approval Required: Travel Request #{travel_request.id}",
+                body=f"Exception Type: {exception_type}. Justification: {description}",
+                link="/hr/exceptions",
+                category=NotificationCategory.EXCEPTION.value,
+                db=db,
+            )
+    await db.commit()
+
+    return row
+
+
 async def create_exception_request(
     claim_id: int, user_id: int, exception_type: str, description: str | None, db: AsyncSession
 ) -> ExceptionRequest:
@@ -1360,7 +1488,8 @@ async def create_exception_request(
         for exp in expense_rows:
             exp.exception_requested = True
 
-    required_roles = EXCEPTION_APPROVAL_CHAINS.get(exception_type, ["HRBP_HR"])
+    cfg = await get_workflow_config(db)
+    required_roles = cfg.get("exception_chains", EXCEPTION_APPROVAL_CHAINS).get(exception_type, ["HRBP_HR"])
     for i, role in enumerate(required_roles):
         status_val = ExceptionRequestStatus.PENDING.value if i == 0 else "AWAITING"
         db.add(
@@ -1410,9 +1539,22 @@ async def decide_exception_request(
     if approver is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    claim = await db.get(ClaimDraft, row.claim_id)
-    if claim is None:
-        raise HTTPException(status_code=404, detail="Claim not found")
+    claim = None
+    travel_request = None
+    subject_employee_id = None
+    if row.claim_id is not None:
+        claim = await db.get(ClaimDraft, row.claim_id)
+        if claim is None:
+            raise HTTPException(status_code=404, detail="Claim not found")
+        subject_employee_id = claim.employee_id
+    else:
+        from app.models.travel_request import TravelRequest
+
+        travel_request = await db.get(TravelRequest, row.travel_request_id)
+        if travel_request is None:
+            raise HTTPException(status_code=404, detail="Travel request not found")
+        subject_user = await db.get(User, travel_request.employee_user_id)
+        subject_employee_id = subject_user.employee_id if subject_user else None
 
     approvals = (
         await db.execute(
@@ -1438,12 +1580,12 @@ async def decide_exception_request(
     is_match = False
     if approver.role.value == active_stage.required_role:
         is_match = True
-    elif active_stage.required_role == "REPORTING_MANAGER" and claim.employee_id:
-        employee = await db.get(Employee, claim.employee_id)
+    elif active_stage.required_role == "REPORTING_MANAGER" and subject_employee_id:
+        employee = await db.get(Employee, subject_employee_id)
         if employee and employee.reporting_manager_id == approver.employee_id:
             is_match = True
-    elif active_stage.required_role == "FUNCTION_HEAD" and claim.employee_id:
-        fh = await _get_function_head(claim.employee_id, db)
+    elif active_stage.required_role == "FUNCTION_HEAD" and subject_employee_id:
+        fh = await _get_function_head(subject_employee_id, db)
         if fh and fh.employee_id == approver.employee_id:
             is_match = True
 
@@ -1471,6 +1613,12 @@ async def decide_exception_request(
         for a in sorted_approvals:
             if a.status in (ExceptionRequestStatus.PENDING.value, "AWAITING"):
                 a.status = ExceptionRequestStatus.REJECTED.value
+
+        if travel_request is not None:
+            from app.models.travel_request import TravelRequestStatus
+
+            travel_request.status = TravelRequestStatus.REJECTED.value
+            travel_request.rejection_reason = comment or f"Exception '{row.exception_type}' was rejected."
     else:
         # Check if there is a next stage in "AWAITING" state
         next_stage = None
@@ -1482,31 +1630,50 @@ async def decide_exception_request(
             next_stage.status = ExceptionRequestStatus.PENDING.value
             row.status = ExceptionRequestStatus.PENDING.value
             # Notify the next stage approver
-            await _notify_exception_approver(claim, row, next_stage.required_role, db)
+            if claim is not None:
+                await _notify_exception_approver(claim, row, next_stage.required_role, db)
+            else:
+                await _notify_travel_exception_approver(travel_request, row, next_stage.required_role, db)
         else:
             row.status = ExceptionRequestStatus.APPROVED.value
             row.decided_at = now
             row.decided_by_user_id = approver_id
             row.decision_comment = "Exception approved by all required approver roles."
 
-            # Check if all exceptions on this claim are now approved
-            active_exceptions_stmt = select(ExceptionRequest).where(
-                ExceptionRequest.claim_id == claim.id,
-                ExceptionRequest.status != ExceptionRequestStatus.APPROVED.value
-            )
-            other_active = (await db.execute(active_exceptions_stmt)).scalars().first()
-            if not other_active:
-                claim.status = ClaimStatus.IN_APPROVAL
-                await init_claim_approval_chain(claim, db)
+            if claim is not None:
+                # Check if all exceptions on this claim are now approved
+                active_exceptions_stmt = select(ExceptionRequest).where(
+                    ExceptionRequest.claim_id == claim.id,
+                    ExceptionRequest.status != ExceptionRequestStatus.APPROVED.value
+                )
+                other_active = (await db.execute(active_exceptions_stmt)).scalars().first()
+                if not other_active:
+                    claim.status = ClaimStatus.IN_APPROVAL
+                    await init_claim_approval_chain(claim, db)
+            else:
+                from app.models.travel_request import TravelRequestStatus
+
+                active_exceptions_stmt = select(ExceptionRequest).where(
+                    ExceptionRequest.travel_request_id == travel_request.id,
+                    ExceptionRequest.status != ExceptionRequestStatus.APPROVED.value
+                )
+                other_active = (await db.execute(active_exceptions_stmt)).scalars().first()
+                if not other_active:
+                    travel_request.status = TravelRequestStatus.PENDING.value
+                    await _notify_travel_manager_of_pending_request(travel_request, db)
 
     await db.commit()
     await db.refresh(row)
 
     # Notify employee of the decision update
-    claim = await db.get(ClaimDraft, row.claim_id)
-    claim_ref = claim.claim_reference or f"CLM-{claim.id}" if claim else f"Claim #{row.claim_id}"
-    link = f"/claims/{row.claim_id}" if claim else "/claims/my"
-    
+    if row.claim_id is not None:
+        claim = await db.get(ClaimDraft, row.claim_id)
+        claim_ref = claim.claim_reference or f"CLM-{claim.id}" if claim else f"Claim #{row.claim_id}"
+        link = f"/claims/{row.claim_id}" if claim else "/claims/my"
+    else:
+        claim_ref = f"Travel Request #{row.travel_request_id}"
+        link = "/travel-requests"
+
     if row.status == ExceptionRequestStatus.REJECTED.value:
         title = f"Exception Request Rejected: {claim_ref}"
         body = f"Your exception request for {row.exception_type} was rejected by {approver.role.value}."

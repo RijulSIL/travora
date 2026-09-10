@@ -8,6 +8,7 @@ import { adminApi } from '../../services/adminApi';
 import { reimbursementApi } from '../../services/reimbursementApi';
 import Skeleton from '../../components/ui/Skeleton';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
+import { formatRole } from '../../utils/formatters';
 
 const roles = ['EMPLOYEE', 'REPORTING_MANAGER', 'HRBP_HR', 'PAYROLL', 'FINANCE', 'IT_ADMIN', 'CEO', 'GROUP_HEAD_HR'];
 
@@ -24,6 +25,8 @@ const departmentsList = [
   'Design',
   'Product',
 ];
+
+const USERS_PAGE_SIZE = 10;
 
 const emptyCreateForm = {
   email: '',
@@ -66,12 +69,13 @@ export default function UserManagement() {
   const [officeLocations, setOfficeLocations] = useState([]);
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState({});
+  const [currentPage, setCurrentPage] = useState(1);
 
   const loadUsers = useCallback(async () => {
     try {
       setLoadError(null);
       const params = Object.fromEntries(Object.entries(filters).filter(([, value]) => value));
-      const response = await adminApi.users(params);
+      const response = await adminApi.users({ ...params, limit: 200 });
       setUsers(response.data);
 
 
@@ -79,6 +83,17 @@ export default function UserManagement() {
       setLoadError(error);
     }
   }, [filters]);
+
+  const totalUserPages = Math.max(1, Math.ceil(users.length / USERS_PAGE_SIZE));
+
+  useEffect(() => {
+    setCurrentPage((page) => Math.min(page, totalUserPages));
+  }, [totalUserPages]);
+
+  const pagedUsers = users.slice(
+    (currentPage - 1) * USERS_PAGE_SIZE,
+    currentPage * USERS_PAGE_SIZE,
+  );
 
   useEffect(() => {
     loadUsers();
@@ -268,7 +283,7 @@ export default function UserManagement() {
               onChange={(event) => setFilters({ ...filters, role: event.target.value })}
             >
               <option value="">Any role</option>
-              {roles.map((role) => <option key={role} value={role}>{role}</option>)}
+              {roles.map((role) => <option key={role} value={role}>{formatRole(role)}</option>)}
             </select>
           </div>
           <button className="btn-primary shrink-0 h-9" onClick={searchAction.run} disabled={searchAction.loading}>
@@ -293,7 +308,7 @@ export default function UserManagement() {
             </tr>
           </thead>
           <tbody>
-            {users.map((user) => {
+            {pagedUsers.map((user) => {
               const currentRole = selectedRole(user);
               const isRoleChanged = currentRole !== (user.role || 'EMPLOYEE');
               return (
@@ -332,7 +347,7 @@ export default function UserManagement() {
                         value={currentRole} 
                         onChange={(event) => setSelectedRole(user, event.target.value)}
                       >
-                        {roles.map((role) => <option key={role} value={role}>{role}</option>)}
+                        {roles.map((role) => <option key={role} value={role}>{formatRole(role)}</option>)}
                       </select>
                       <ChevronDown size={14} className={`pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 transition-colors ${isRoleChanged ? 'text-amber-500' : 'text-slate-400'}`} />
                     </div>
@@ -376,6 +391,33 @@ export default function UserManagement() {
 
           </tbody>
         </table>
+        {users.length === 0 ? null : (
+          <div className="flex items-center justify-between border-t border-line px-4 py-3 text-xs font-medium text-slate-500">
+            <span>
+              Showing {(currentPage - 1) * USERS_PAGE_SIZE + 1}
+              –{Math.min(currentPage * USERS_PAGE_SIZE, users.length)} of {users.length} users
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="btn-secondary px-3 py-1.5 text-xs disabled:opacity-50"
+                onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                disabled={currentPage <= 1}
+              >
+                Previous
+              </button>
+              <span className="text-slate-600">Page {currentPage} of {totalUserPages}</span>
+              <button
+                type="button"
+                className="btn-secondary px-3 py-1.5 text-xs disabled:opacity-50"
+                onClick={() => setCurrentPage((page) => Math.min(totalUserPages, page + 1))}
+                disabled={currentPage >= totalUserPages}
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
       </section>
       {createOpen ? (
         <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/40 p-4">
@@ -461,7 +503,7 @@ export default function UserManagement() {
                 >
                   {roles.map((role) => (
                     <option key={role} value={role}>
-                      {role}
+                      {formatRole(role)}
                     </option>
                   ))}
                 </select>
@@ -684,7 +726,7 @@ export default function UserManagement() {
                       }
                       setEditForm(nextForm);
                     }}>
-                      {roles.map((role) => <option key={role} value={role}>{role}</option>)}
+                      {roles.map((role) => <option key={role} value={role}>{formatRole(role)}</option>)}
                     </select>
                   </div>
                   <div>
@@ -735,7 +777,7 @@ export default function UserManagement() {
                     <div>
                       <h3 className="text-xl font-bold text-slate-900">{selectedUser.full_name || 'No Name Provided'}</h3>
                       <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-slate-500">
-                        <span className="font-semibold text-slate-700">{selectedUser.role}</span>
+                        <span className="font-semibold text-slate-700">{formatRole(selectedUser.role)}</span>
                         <span className="text-slate-300">•</span>
                         <span>{selectedUser.email}</span>
                       </div>

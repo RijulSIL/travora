@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Search, Plane, Train, Bus, FileText, CheckCircle2,
-  XCircle, ArrowRight, UploadCloud,
+  ArrowRight, UploadCloud,
   Clock, AlertCircle
 } from 'lucide-react';
 
@@ -21,9 +21,11 @@ function getStatusDetails(status) {
     case 'BOOKED':
       return { label: 'Booked', bg: 'bg-emerald-100 text-emerald-800' };
     case 'APPROVED':
-      return { label: 'Approved', bg: 'bg-brand/10 text-brand' };
+      return { label: 'Approved - Awaiting Ticketing', bg: 'bg-brand/10 text-brand' };
     case 'PENDING':
-      return { label: 'Pending Ticketing', bg: 'bg-amber-100 text-amber-800' };
+      return { label: 'Pending Manager Approval', bg: 'bg-amber-100 text-amber-800' };
+    case 'PENDING_EXCEPTION':
+      return { label: 'Under Review (Exception)', bg: 'bg-orange-100 text-orange-800' };
     case 'REJECTED':
       return { label: 'Rejected', bg: 'bg-rose-100 text-rose-800' };
     case 'CANCELLED':
@@ -41,7 +43,6 @@ export default function TravelDeskPage() {
   const [allRows, setAllRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedKey, setSelectedKey] = useState(null);
-  const [rejectReason, setRejectReason] = useState('');
   const [busy, setBusy] = useState(false);
 
   const [upload, setUpload] = useState({
@@ -102,41 +103,6 @@ export default function TravelDeskPage() {
     return () => clearTimeout(t);
   }, [mode, allQ, statusFilter]);
 
-  async function onApprove() {
-    if (!selectedRow) return;
-    setBusy(true);
-    try {
-      await reimbursementApi.travelApprove(selectedRow.request.id);
-      showToast('Request approved', 'success');
-      setRejectReason('');
-      await loadQueue();
-    } catch (e) {
-      const d = e.response?.data?.detail;
-      showToast(typeof d === 'string' ? d : 'Approve failed', 'error');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onReject() {
-    if (!selectedRow || !rejectReason.trim()) {
-      showToast('Enter a rejection reason', 'error');
-      return;
-    }
-    setBusy(true);
-    try {
-      await reimbursementApi.travelReject(selectedRow.request.id, { reason: rejectReason.trim() });
-      showToast('Request rejected', 'success');
-      setRejectReason('');
-      await loadQueue();
-    } catch (e) {
-      const d = e.response?.data?.detail;
-      showToast(typeof d === 'string' ? d : 'Reject failed', 'error');
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function onUpload(e) {
     e.preventDefault();
     if (!selectedRow || selectedRow.request.status !== 'APPROVED') return;
@@ -177,7 +143,7 @@ export default function TravelDeskPage() {
     }
   }
 
-  const pendingQueueCount = useMemo(() => queue.filter(r => r.request.status === 'PENDING').length, [queue]);
+  const queueCount = queue.length;
 
   return (
     <section className="mx-auto max-w-6xl space-y-6 px-4 py-4">
@@ -203,9 +169,9 @@ export default function TravelDeskPage() {
             onClick={() => setMode('queue')}
           >
             <span>Active Queue</span>
-            {pendingQueueCount > 0 && (
+            {queueCount > 0 && (
               <span className="inline-flex items-center rounded-full bg-brand/10 px-1.5 py-0.5 text-[10px] font-bold text-brand">
-                {pendingQueueCount}
+                {queueCount}
               </span>
             )}
           </button>
@@ -386,39 +352,6 @@ export default function TravelDeskPage() {
                   </div>
                 )}
 
-                {/* Status PENDING Actions */}
-                {selectedRow.request.status === 'PENDING' ? (
-                  <div className="mt-5 space-y-4 border-t border-slate-100 pt-4">
-                    <div className="flex gap-2">
-                      <button 
-                        type="button" 
-                        disabled={busy} 
-                        className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg bg-brand px-4 text-xs font-bold text-white hover:bg-brand/90 transition-all duration-200 shadow-sm" 
-                        onClick={onApprove}
-                      >
-                        <CheckCircle2 size={13} /> Approve Request
-                      </button>
-                    </div>
-                    
-                    <div className="space-y-2">
-                      <textarea
-                        className="w-full min-h-[4.5rem] p-3 text-xs rounded-lg border border-slate-200 focus:border-slate-400 focus:ring-2 focus:ring-slate-150 outline-none transition-all"
-                        placeholder="Provide rejection feedback / reason (required if rejecting)"
-                        value={rejectReason}
-                        onChange={(e) => setRejectReason(e.target.value)}
-                      />
-                      <button 
-                        type="button" 
-                        disabled={busy} 
-                        className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-slate-250 hover:bg-slate-50 text-xs font-bold text-rose-700 px-4 transition-all duration-200" 
-                        onClick={onReject}
-                      >
-                        <XCircle size={13} /> Reject Request
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-
                 {/* Status APPROVED Form (Ticketing Upload) */}
                 {selectedRow.request.status === 'APPROVED' ? (
                   <form className="mt-5 border-t border-slate-150 pt-4 space-y-3.5" onSubmit={onUpload}>
@@ -564,6 +497,7 @@ export default function TravelDeskPage() {
               >
                 <option value="">All requests</option>
                 <option value="PENDING">PENDING</option>
+                <option value="PENDING_EXCEPTION">PENDING_EXCEPTION</option>
                 <option value="APPROVED">APPROVED</option>
                 <option value="BOOKED">BOOKED</option>
                 <option value="REJECTED">REJECTED</option>

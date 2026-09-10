@@ -153,10 +153,10 @@ export default function TicketPreviewDrawer({ open, onClose, title, blob, conten
               <span className="text-sm font-medium mt-2">Loading preview…</span>
             </div>
           ) : kind === 'pdf' ? (
-            <iframe 
-              title="Ticket PDF" 
-              src={url} 
-              className="h-full w-full rounded-xl border border-slate-200/80 bg-white shadow-sm" 
+            <iframe
+              title="Ticket PDF"
+              src={`${url}#toolbar=0&zoom=page-width`}
+              className="h-full w-full rounded-xl border border-slate-200/80 bg-white shadow-sm"
             />
           ) : kind === 'image' ? (
             <div className="h-full w-full overflow-auto flex p-2 scrollbar-hide">

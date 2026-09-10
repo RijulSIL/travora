@@ -14,6 +14,7 @@ class LoginOTP(Base):
     otp_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    purpose: Mapped[str] = mapped_column(String(20), nullable=False, default="login")
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
 
 

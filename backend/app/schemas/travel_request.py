@@ -54,6 +54,10 @@ class TravelRequestCreate(BaseModel):
     legs: list[TravelRequestLegIn] | None = None
 
 
+class TravelRequestExceptionCreate(TravelRequestCreate):
+    justification: str = Field(..., min_length=1, max_length=2000)
+
+
 class TravelRequestOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

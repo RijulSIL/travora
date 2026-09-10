@@ -9,6 +9,7 @@ import { reimbursementApi } from '../../services/reimbursementApi';
 import { clearSession, selectResolvedRole, useAuthStore } from '../../store/authStore';
 import { getFlatNavItems } from './navConfig';
 import NotificationPanel from '../ui/NotificationPanel';
+import { ROLE_LABELS } from '../../utils/formatters';
 
 import {
   Home, Clock, AlertTriangle, Users, TrendingUp, CheckSquare,
@@ -23,17 +24,6 @@ const ICON_MAP = {
   '💰': DollarSign, '📂': Folder, '📧': Mail, '📅': Calendar,
   '🏢': Building, '📈': TrendingUp, '💳': Receipt, '🏦': Building,
   '👤': User, '📜': History,
-};
-
-const ROLE_LABELS = {
-  EMPLOYEE: 'Employee',
-  REPORTING_MANAGER: 'Manager',
-  HRBP_HR: 'HRBP / HR',
-  PAYROLL: 'Payroll',
-  FINANCE: 'Finance',
-  IT_ADMIN: 'IT Admin',
-  CEO: 'CEO',
-  GROUP_HEAD_HR: 'Group Head HR',
 };
 
 const ROLE_DOT = {

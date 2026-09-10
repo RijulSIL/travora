@@ -360,7 +360,7 @@ export default function InvoiceReview() {
                 {previewError}
               </div>
             ) : isPdf ? (
-              <iframe title="Invoice PDF" src={previewUrl} className="h-full w-full bg-white rounded shadow-sm border border-slate-200" />
+              <iframe title="Invoice PDF" src={`${previewUrl}#toolbar=0&zoom=page-width`} className="h-full w-full bg-white rounded shadow-sm border border-slate-200" />
             ) : previewUrl ? (
               <div className="flex min-h-full items-center justify-center">
                 <img

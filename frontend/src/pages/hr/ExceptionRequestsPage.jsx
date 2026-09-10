@@ -6,6 +6,7 @@ import { useSetPageTitle } from '../../context/PageTitleContext';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
 import { reimbursementApi } from '../../services/reimbursementApi';
 import { selectResolvedRole, useAuthStore } from '../../store/authStore';
+import { EXCEPTION_TYPE_LABELS, formatExceptionType, formatRole } from '../../utils/formatters';
 
 export default function ExceptionRequestsPage() {
   useSetPageTitle('Exception Requests');
@@ -75,12 +76,16 @@ export default function ExceptionRequestsPage() {
           </div>
           <div className="space-y-1">
             <label className="text-xs font-semibold text-slate-500">Exception Type</label>
-            <input
+            <select
               className="field"
-              placeholder="e.g. ROOM_RENT"
               value={filters.exception_type}
               onChange={(e) => setFilters({ ...filters, exception_type: e.target.value })}
-            />
+            >
+              <option value="">All types</option>
+              {Object.entries(EXCEPTION_TYPE_LABELS).map(([type, label]) => (
+                <option key={type} value={type}>{label}</option>
+              ))}
+            </select>
           </div>
           <div className="space-y-1">
             <label className="text-xs font-semibold text-slate-500">From Date</label>
@@ -174,8 +179,11 @@ export default function ExceptionRequestsPage() {
                     </td>
                     <td className="px-4 py-3 text-slate-700">{row.employee || '—'}</td>
                     <td className="px-4 py-3">
-                      <span className="font-mono text-xs bg-slate-100 px-2 py-1 rounded text-slate-700">
-                        {row.exception_type}
+                      <span
+                        className="text-xs font-semibold bg-slate-100 px-2 py-1 rounded text-slate-700"
+                        title={row.exception_type}
+                      >
+                        {formatExceptionType(row.exception_type)}
                       </span>
                     </td>
                     <td className="px-4 py-3">
@@ -206,7 +214,7 @@ export default function ExceptionRequestsPage() {
                               <div className="flex flex-wrap gap-1.5">
                                 {(row.required_approvers || []).map((appr) => (
                                   <span key={appr} className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-800 border border-slate-200">
-                                    {appr}
+                                    {formatRole(appr)}
                                   </span>
                                 ))}
                               </div>
@@ -224,7 +232,7 @@ export default function ExceptionRequestsPage() {
                                   if (d.status === "PENDING") badgeClass = "bg-amber-100 text-amber-800 border border-amber-200";
                                   return (
                                     <div key={idx} className="flex items-center justify-between text-xs p-2 bg-slate-50 rounded-lg border border-slate-100">
-                                      <span className="font-semibold text-slate-600">{d.required_role}</span>
+                                      <span className="font-semibold text-slate-600">{formatRole(d.required_role)}</span>
                                       <div className="flex items-center gap-2">
                                         <span className={`px-2 py-0.5 rounded-full font-semibold ${badgeClass}`}>
                                           {d.status}
@@ -289,7 +297,7 @@ export default function ExceptionRequestsPage() {
                             ) : (
                               <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-4 flex items-center gap-2.5 text-xs text-slate-600 font-semibold">
                                 <span className="text-sm">ℹ</span>
-                                This exception request is pending approval from: {activeDecision?.required_role || 'next stage'}.
+                                This exception request is pending approval from: {activeDecision ? formatRole(activeDecision.required_role) : 'next stage'}.
                               </div>
                             )}
                           </div>
