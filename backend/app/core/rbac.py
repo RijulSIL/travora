@@ -20,7 +20,6 @@ PERMISSION_MATRIX: dict[Role, set[str]] = {
         "view_self",
         "approve_stage_1",
         "view_admin_readonly",
-        "view_workflow_config",
         "approve_exception",
     },
     Role.HRBP_HR: {
@@ -31,16 +30,18 @@ PERMISSION_MATRIX: dict[Role, set[str]] = {
         "view_reports",
         "approve_stage_2",
         "view_sensitive_admin",
-        "edit_workflow_config",
     },
     Role.PAYROLL: {
+        "submit_claim",
+        "view_self",
         "view_reports",
         "process_payments",
         "approve_stage_3",
         "view_admin_readonly",
-        "view_workflow_config",
     },
     Role.FINANCE: {
+        "submit_claim",
+        "view_self",
         "configure_policy",
         "approve_policy",
         "view_reports",
@@ -50,11 +51,14 @@ PERMISSION_MATRIX: dict[Role, set[str]] = {
         "view_sensitive_admin",
     },
     Role.IT_ADMIN: {
+        "submit_claim",
+        "view_self",
         "manage_users",
         "configure_policy",
         "view_reports",
         "export_audit",
         "view_sensitive_admin",
+        "view_workflow_config",
         "edit_workflow_config",
     },
     Role.CEO: {
@@ -65,6 +69,7 @@ PERMISSION_MATRIX: dict[Role, set[str]] = {
         "approve_stage_4",
     },
     Role.GROUP_HEAD_HR: {
+        "submit_claim",
         "view_self",
         "view_reports",
         "approve_exception",

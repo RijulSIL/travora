@@ -15,6 +15,7 @@ class ExpenseCategory(Base):
     bill_mandatory: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     gst_invoice_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     blacklisted_items: Mapped[list | None] = mapped_column(JSON)
+    notes: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     policy_version_id: Mapped[int] = mapped_column(ForeignKey("policy_versions.id"), nullable=False)
 

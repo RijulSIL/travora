@@ -1,4 +1,5 @@
 from app.models.auth import RefreshToken, Role, User
+from app.models.budget import BudgetConfig, DepartmentBudget, ManagerBudget
 from app.models.claim_workflow import (
     AdvanceApprovalStage,
     AdvanceRequest,
@@ -59,6 +60,7 @@ __all__ = [
     "AirEligibility",
     "AirClass",
     "AuditLog",
+    "BudgetConfig",
     "ClaimApprovalStage",
     "ClaimDraft",
     "ClaimExpense",
@@ -70,6 +72,7 @@ __all__ = [
     "CityGroupType",
     "CompanyHoliday",
     "CompanyProfile",
+    "DepartmentBudget",
     "Employee",
     "ExceptionRequest",
     "ExpenseCategory",
@@ -80,6 +83,7 @@ __all__ = [
     "GstinValidationStatus",
     "ImpactLevel",
     "Invoice",
+    "ManagerBudget",
     "Notification",
     "NotificationCategory",
     "NotificationTemplate",

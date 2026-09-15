@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Users, Search, Calendar, Trash2, Plus, AlertCircle, Shield, Lock, KeyRound, Eye, EyeOff, Check } from 'lucide-react';
+import { Users, Search, Calendar, Trash2, Plus, AlertCircle, Shield, Lock, KeyRound, Eye, EyeOff, Check, IndianRupee } from 'lucide-react';
 import { format } from 'date-fns';
 
 import { useAuthStore } from '../store/authStore';
@@ -25,8 +25,49 @@ export default function ProfilePage() {
   useSetPageTitle('My Profile');
   const profile = useAuthStore((s) => s.profile);
   const user = useAuthStore((s) => s.user);
+  const setProfile = useAuthStore((s) => s.setProfile);
   const addToast = useToast();
   const { showToast } = useToast();
+
+  // Auto-approve threshold (Reporting Manager only)
+  const [threshold, setThreshold] = useState('');
+  const [thresholdSaving, setThresholdSaving] = useState(false);
+  const [thresholdError, setThresholdError] = useState(null);
+
+  useEffect(() => {
+    setThreshold(profile?.auto_approve_threshold ?? '');
+  }, [profile?.auto_approve_threshold]);
+
+  async function handleSaveThreshold(e) {
+    e.preventDefault();
+    if (threshold === '') return;
+    setThresholdError(null);
+    setThresholdSaving(true);
+    try {
+      const res = await reimbursementApi.updateAutoApproveThreshold(Number(threshold));
+      setProfile(res.data);
+      showToast('Auto-approve threshold updated', 'success');
+    } catch (err) {
+      setThresholdError(err.response?.data?.detail || 'Failed to update threshold');
+    } finally {
+      setThresholdSaving(false);
+    }
+  }
+
+  async function handleDisableThreshold() {
+    setThresholdError(null);
+    setThresholdSaving(true);
+    try {
+      const res = await reimbursementApi.updateAutoApproveThreshold(null);
+      setProfile(res.data);
+      setThreshold('');
+      showToast('Auto-approve threshold disabled — claims will always wait for your manual review', 'success');
+    } catch (err) {
+      showToast(err.response?.data?.detail || 'Failed to disable threshold', 'error');
+    } finally {
+      setThresholdSaving(false);
+    }
+  }
 
   const [delegations, setDelegations] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -375,6 +416,82 @@ export default function ProfilePage() {
           )}
         </div>
       </div>
+
+      {/* Auto-Approve Threshold (Reporting Manager only) */}
+      {profile?.role === 'REPORTING_MANAGER' ? (
+        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+          <div className="p-6 border-b border-slate-200">
+            <h2 className="text-lg font-semibold text-ink flex items-center gap-2">
+              <IndianRupee className="h-5 w-5 text-brand" />
+              Auto-Approve Threshold
+            </h2>
+            <p className="text-sm text-slate-500 mt-1">
+              Claims below this amount skip your manual review and are approved automatically once they reach you.
+              {profile.org_auto_approve_ceiling ? (
+                <> Capped at your organization&apos;s ceiling of ₹{profile.org_auto_approve_ceiling}.</>
+              ) : null}
+            </p>
+          </div>
+
+          <div className="p-6">
+            {thresholdError && (
+              <div className="mb-4 rounded-lg border border-rose-200 bg-rose-50 p-3 flex items-start gap-2 text-rose-700 text-sm font-medium">
+                <AlertCircle size={16} className="shrink-0 mt-0.5" />
+                <span>{thresholdError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveThreshold} className="max-w-sm space-y-4">
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-slate-700">Your threshold (₹)</label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+                    <IndianRupee size={16} />
+                  </div>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    className="w-full pl-9 pr-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand focus:border-brand shadow-sm text-sm h-11"
+                    placeholder="Disabled — always require manual review"
+                    value={threshold}
+                    onChange={(e) => {
+                      setThreshold(e.target.value);
+                      if (thresholdError) setThresholdError(null);
+                    }}
+                    disabled={thresholdSaving}
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  type="submit"
+                  disabled={thresholdSaving || threshold === ''}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-brand text-white text-sm font-medium rounded-md hover:bg-brand-dark disabled:opacity-50"
+                >
+                  {thresholdSaving ? (
+                    <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                  ) : (
+                    <Check className="h-4 w-4" />
+                  )}
+                  Save
+                </button>
+                {profile.auto_approve_threshold != null ? (
+                  <button
+                    type="button"
+                    onClick={handleDisableThreshold}
+                    disabled={thresholdSaving}
+                    className="text-sm font-medium text-slate-500 hover:text-slate-700"
+                  >
+                    Disable (always review manually)
+                  </button>
+                ) : null}
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
 
       {/* Delegation / Out of Office Section */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">

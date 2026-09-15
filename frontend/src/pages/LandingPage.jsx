@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   CreditCard,
@@ -80,6 +80,42 @@ const WORKFLOW_STEPS = [
   { num: '03', title: 'Compliance Check', desc: 'GST validation & exception handling', icon: ShieldCheck },
   { num: '04', title: 'Payment', desc: 'Direct to finance queue with audit trail', icon: CreditCard },
 ];
+
+function useReveal(threshold = 0.15) {
+  const ref = useRef(null);
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setVisible(true);
+          observer.disconnect();
+        }
+      },
+      { threshold }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [threshold]);
+
+  return [ref, visible];
+}
+
+function Reveal({ children, delay = 0, className = '' }) {
+  const [ref, visible] = useReveal();
+  return (
+    <div
+      ref={ref}
+      className={`transition-all duration-700 ease-out ${visible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-6'} ${className}`}
+      style={{ transitionDelay: visible ? `${delay}ms` : '0ms' }}
+    >
+      {children}
+    </div>
+  );
+}
 
 function AnimatedWorkflow() {
   const [activeStep, setActiveStep] = useState(0);
@@ -272,19 +308,20 @@ export default function LandingPage() {
             style={{
               backgroundImage: 'url(/hero_travel_image.png)',
               backgroundSize: 'cover',
-              backgroundPosition: 'center'
+              backgroundPosition: 'center 35%'
             }}
             aria-hidden
           />
-          <div className="absolute inset-0 bg-gradient-to-r from-slate-50/95 via-slate-50/60 to-transparent" aria-hidden />
-          <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-slate-50" aria-hidden />
+          <div className="absolute inset-0 bg-gradient-to-r from-slate-50 via-slate-50/45 to-transparent" aria-hidden />
+          <div className="absolute inset-0 bg-gradient-to-b from-slate-50/25 via-transparent to-slate-50" aria-hidden />
+          <div className="absolute inset-0 bg-gradient-to-br from-emerald-900/5 via-transparent to-transparent" aria-hidden />
 
           {/* ── HERO ── */}
           <section className="relative z-10">
             <div className="mx-auto max-w-6xl px-5 pb-16 pt-6 md:px-8 md:pb-24 md:pt-10">
               <div className="grid gap-10 lg:grid-cols-[1.1fr_0.9fr] lg:items-center lg:gap-16">
                 {/* Left column */}
-                <div className="space-y-7">
+                <div className="space-y-7 animate-slide-up-fade">
                   <div className="inline-flex items-center gap-1.5 rounded-full border border-brand/15 bg-brand/5 px-3.5 py-1.5 text-[11px] font-bold uppercase tracking-wider text-brand">
                     <Zap className="h-3 w-3" />
                     Enterprise-grade reimbursement
@@ -317,7 +354,7 @@ export default function LandingPage() {
                 </div>
 
                 {/* Right column — At a Glance card */}
-                <div className="relative">
+                <div className="relative animate-slide-up-fade" style={{ animationDelay: '150ms', animationFillMode: 'backwards' }}>
                   <div className="absolute -right-6 -top-6 -z-10 h-40 w-40 rounded-full bg-brand/5 blur-3xl" aria-hidden />
                   <div className="rounded-3xl bg-white p-7 shadow-xl shadow-slate-200/50 md:p-8">
                     <div className="flex items-center gap-2 mb-6">
@@ -365,14 +402,16 @@ export default function LandingPage() {
         {/* ── WORKFLOW STEPS ── */}
         <section id="how-it-works" className="py-16 md:py-20 relative z-0">
           <div className="mx-auto max-w-6xl px-5 md:px-8">
-            <div className="text-center max-w-2xl mx-auto">
+            <Reveal className="text-center max-w-2xl mx-auto">
               <h2 className="text-2xl font-extrabold tracking-tight text-ink md:text-[1.85rem]">How it works</h2>
               <p className="mt-3 text-[14px] leading-relaxed text-slate-500">
                 From expense submission to final payment — every step is tracked, compliant, and transparent.
               </p>
-            </div>
+            </Reveal>
 
-            <AnimatedWorkflow />
+            <Reveal delay={100}>
+              <AnimatedWorkflow />
+            </Reveal>
           </div>
         </section>
 
@@ -381,27 +420,26 @@ export default function LandingPage() {
           <div className="absolute top-1/2 left-0 -translate-y-1/2 -z-10 h-96 w-96 rounded-full bg-teal-500/5 blur-3xl" aria-hidden />
           <div className="absolute bottom-0 right-0 -z-10 h-80 w-80 rounded-full bg-emerald-500/5 blur-3xl" aria-hidden />
           <div className="mx-auto max-w-6xl px-5 md:px-8">
-            <div className="text-center max-w-2xl mx-auto">
+            <Reveal className="text-center max-w-2xl mx-auto">
               <h2 className="text-2xl font-extrabold tracking-tight text-ink md:text-[1.85rem]">Built for your whole organization</h2>
               <p className="mt-3 text-[14px] leading-relaxed text-slate-500">
                 Same platform, different lenses — so every team collaborates without duplicating data.
               </p>
-            </div>
+            </Reveal>
 
             <div className="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-              {AUDIENCES.map((item) => {
+              {AUDIENCES.map((item, idx) => {
                 const IconComponent = item.icon;
                 return (
-                  <div
-                    key={item.label}
-                    className="group relative rounded-3xl bg-white p-6 shadow-xl shadow-slate-200/40 transition-all duration-300 hover:-translate-y-1 hover:shadow-2xl hover:shadow-slate-200/50"
-                  >
-                    <div className={`flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br ${item.gradient} text-white shadow-sm mb-5 transition-transform duration-300 group-hover:scale-110`}>
-                      <IconComponent className="h-5 w-5" />
+                  <Reveal key={item.label} delay={idx * 80}>
+                    <div className="group relative h-full rounded-3xl bg-white p-6 shadow-xl shadow-slate-200/40 transition-all duration-300 hover:-translate-y-1 hover:shadow-2xl hover:shadow-slate-200/50">
+                      <div className={`flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br ${item.gradient} text-white shadow-sm mb-5 transition-transform duration-300 group-hover:scale-110`}>
+                        <IconComponent className="h-5 w-5" />
+                      </div>
+                      <h3 className="text-[15px] font-bold text-ink">{item.label}</h3>
+                      <p className="mt-2 text-[13px] leading-relaxed text-slate-400">{item.detail}</p>
                     </div>
-                    <h3 className="text-[15px] font-bold text-ink">{item.label}</h3>
-                    <p className="mt-2 text-[13px] leading-relaxed text-slate-400">{item.detail}</p>
-                  </div>
+                  </Reveal>
                 );
               })}
             </div>
@@ -412,24 +450,23 @@ export default function LandingPage() {
         <section className="py-16 md:py-20 relative z-0">
           <div className="absolute top-0 right-1/4 -z-10 h-96 w-96 rounded-full bg-green-500/5 blur-3xl" aria-hidden />
           <div className="mx-auto max-w-6xl px-5 md:px-8">
-            <div className="text-center max-w-2xl mx-auto">
+            <Reveal className="text-center max-w-2xl mx-auto">
               <h2 className="text-2xl font-extrabold tracking-tight text-ink md:text-[1.85rem]">Why teams choose Travora</h2>
               <p className="mt-3 text-[14px] text-slate-500 leading-relaxed">Fewer bottlenecks, clearer accountability, and faster reimbursement cycles.</p>
-            </div>
+            </Reveal>
 
             <div className="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-              {FEATURES.map((f) => {
+              {FEATURES.map((f, idx) => {
                 return (
-                  <div
-                    key={f.title}
-                    className="group rounded-3xl bg-white p-7 shadow-xl shadow-slate-200/40 transition-all duration-300 hover:shadow-2xl hover:shadow-slate-200/50 hover:-translate-y-0.5"
-                  >
-                    <div className="flex items-center gap-3 mb-4">
-                      <div className={`h-2 w-2 rounded-full ${f.accent}`} />
-                      <h3 className="text-[15px] font-bold text-ink">{f.title}</h3>
+                  <Reveal key={f.title} delay={idx * 80}>
+                    <div className="group h-full rounded-3xl bg-white p-7 shadow-xl shadow-slate-200/40 transition-all duration-300 hover:shadow-2xl hover:shadow-slate-200/50 hover:-translate-y-0.5">
+                      <div className="flex items-center gap-3 mb-4">
+                        <div className={`h-2 w-2 rounded-full ${f.accent}`} />
+                        <h3 className="text-[15px] font-bold text-ink">{f.title}</h3>
+                      </div>
+                      <p className="text-[13px] leading-[1.7] text-slate-400">{f.body}</p>
                     </div>
-                    <p className="text-[13px] leading-[1.7] text-slate-400">{f.body}</p>
-                  </div>
+                  </Reveal>
                 );
               })}
             </div>
@@ -448,7 +485,7 @@ export default function LandingPage() {
           <div className="absolute top-1/2 left-1/4 -translate-y-1/2 h-64 w-64 rounded-full bg-emerald-400/8 blur-[80px]" aria-hidden />
           <div className="absolute top-1/2 right-1/4 -translate-y-1/2 h-48 w-48 rounded-full bg-white/5 blur-[60px]" aria-hidden />
 
-          <div className="relative mx-auto max-w-4xl px-5 py-16 text-center md:py-20 md:px-8">
+          <Reveal className="relative mx-auto max-w-4xl px-5 py-16 text-center md:py-20 md:px-8">
             <h2 className="text-2xl font-extrabold tracking-tight text-white md:text-3xl lg:text-4xl">
               Ready to open the portal?
             </h2>
@@ -465,7 +502,7 @@ export default function LandingPage() {
                 <ArrowRight className="h-4 w-4 transition-transform duration-200 group-hover:translate-x-0.5" />
               </button>
             </div>
-          </div>
+          </Reveal>
         </section>
       </main>
 

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,48 +49,38 @@ async def get_claim_detail(
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    try:
-        print(f"FETCHING CLAIM DETAIL: {claim_id}")
-        claim = await assert_user_can_view_claim_workflow(claim_id, int(claims["sub"]), db)
-        _claim, expenses, invoice_ids, trip_ids = await get_claim_bundle(claim.id, claim.employee_user_id, db)
-        bundle = claim_workflow_bundle_dict(_claim, expenses, invoice_ids, trip_ids)
+    claim = await assert_user_can_view_claim_workflow(claim_id, int(claims["sub"]), db)
+    _claim, expenses, invoice_ids, trip_ids = await get_claim_bundle(claim.id, claim.employee_user_id, db)
+    bundle = claim_workflow_bundle_dict(_claim, expenses, invoice_ids, trip_ids)
 
-        linked_invoices: list[dict] = []
-        if invoice_ids:
-            inv_rows = (
-                await db.execute(select(Invoice).where(Invoice.id.in_(invoice_ids)))
-            ).scalars().all()
-            inv_by_id = {i.id: i for i in inv_rows}
-            linked_invoices = [
-                InvoiceOut.model_validate(inv_by_id[iid]).model_dump()
-                for iid in invoice_ids
-                if iid in inv_by_id
-            ]
+    linked_invoices: list[dict] = []
+    if invoice_ids:
+        inv_rows = (
+            await db.execute(select(Invoice).where(Invoice.id.in_(invoice_ids)))
+        ).scalars().all()
+        inv_by_id = {i.id: i for i in inv_rows}
+        linked_invoices = [
+            InvoiceOut.model_validate(inv_by_id[iid]).model_dump()
+            for iid in invoice_ids
+            if iid in inv_by_id
+        ]
 
-        linked_trips: list[dict] = []
-        if trip_ids:
-            trip_rows = (
-                await db.execute(select(TravelTrip).where(TravelTrip.id.in_(trip_ids)))
-            ).scalars().all()
-            desk_ids = await desk_ticket_ids_for_trips(trip_rows, db)
-            trip_by_id = {t.id: t for t in trip_rows}
-            linked_trips = [
-                TripOut.model_validate(trip_by_id[tid])
-                .model_copy(update={"desk_ticket_id": desk_ids.get(tid)})
-                .model_dump()
-                for tid in trip_ids
-                if tid in trip_by_id
-            ]
+    linked_trips: list[dict] = []
+    if trip_ids:
+        trip_rows = (
+            await db.execute(select(TravelTrip).where(TravelTrip.id.in_(trip_ids)))
+        ).scalars().all()
+        desk_ids = await desk_ticket_ids_for_trips(trip_rows, db)
+        trip_by_id = {t.id: t for t in trip_rows}
+        linked_trips = [
+            TripOut.model_validate(trip_by_id[tid])
+            .model_copy(update={"desk_ticket_id": desk_ids.get(tid)})
+            .model_dump()
+            for tid in trip_ids
+            if tid in trip_by_id
+        ]
 
-        print(f"SUCCESS FETCHING CLAIM DETAIL: {claim_id}")
-        return jsonable_encoder({**bundle, "linked_invoices": linked_invoices, "linked_trips": linked_trips})
-    except Exception as e:
-        import traceback
-        print("="*50)
-        print(f"GET CLAIM DETAIL ERROR: {e}")
-        traceback.print_exc()
-        print("="*50)
-        raise HTTPException(status_code=500, detail=str(e)) from e
+    return jsonable_encoder({**bundle, "linked_invoices": linked_invoices, "linked_trips": linked_trips})
 
 
 @router.get("/{claim_id}/approval-chain")

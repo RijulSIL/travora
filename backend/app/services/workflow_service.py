@@ -52,6 +52,27 @@ EXCEPTION_APPROVAL_CHAINS: dict[str, list[str]] = {
 }
 
 
+def _humanize_token(value: str) -> str:
+    """UPPER_SNAKE_CASE role/exception codes read poorly in emails ("REPORTING_MANAGER");
+    render them as plain title case ("Reporting Manager") wherever they reach a notification body."""
+    return value.replace("_", " ").replace("/", " / ").title()
+
+
+async def _reporting_manager_user_for_claim(claim: ClaimDraft, db: AsyncSession) -> User | None:
+    """The specific User row for the claim owner's reporting manager, if any."""
+    owner_stmt = (
+        select(Employee.reporting_manager_id)
+        .join(User, User.employee_id == Employee.employee_id)
+        .where(User.id == claim.employee_user_id)
+    )
+    mgr_emp_id = (await db.execute(owner_stmt)).scalar_one_or_none()
+    if not mgr_emp_id:
+        return None
+    return (
+        await db.execute(select(User).where(User.employee_id == mgr_emp_id))
+    ).scalar_one_or_none()
+
+
 async def _get_function_head(employee_id: str, db: AsyncSession) -> Employee | None:
     """Walk up the reporting chain until we find someone at Level 3A or above."""
     from app.models.policy import ImpactLevel
@@ -137,7 +158,7 @@ async def _notify_exception_approver(
         await create_notification(
             user_id=user_id,
             title=f"Exception Approval Required: {claim.claim_reference}",
-            body=f"Exception '{req.exception_type}' requires your review.",
+            body=f"Exception '{_humanize_token(req.exception_type)}' requires your review.",
             link=f"/claims/{claim.id}/exceptions",
             category=NotificationCategory.EXCEPTION.value,
             db=db,
@@ -369,15 +390,26 @@ async def _can_user_act_on_exception(
     if active_stage is None or active_stage.status != ExceptionRequestStatus.PENDING.value:
         return False
 
-    claim = await db.get(ClaimDraft, exc.claim_id)
-    if claim is None:
-        return False
+    subject_employee_id = None
+    if exc.claim_id is not None:
+        claim = await db.get(ClaimDraft, exc.claim_id)
+        if claim is None:
+            return False
+        subject_employee_id = claim.employee_id
+    else:
+        from app.models.travel_request import TravelRequest
+
+        travel_request = await db.get(TravelRequest, exc.travel_request_id)
+        if travel_request is None:
+            return False
+        subject_user = await db.get(User, travel_request.employee_user_id)
+        subject_employee_id = subject_user.employee_id if subject_user else None
 
     route_role = active_stage.required_role
     if route_role == Role.REPORTING_MANAGER.value:
-        if not claim.employee_id:
+        if not subject_employee_id:
             return True
-        emp = await db.get(Employee, claim.employee_id)
+        emp = await db.get(Employee, subject_employee_id)
         if emp is None:
             return True
         if emp.reporting_manager_id == user.employee_id:
@@ -410,9 +442,9 @@ async def _can_user_act_on_exception(
     if route_role == Role.IT_ADMIN.value:
         return user.role == Role.IT_ADMIN
     if route_role == "FUNCTION_HEAD":
-        if not claim.employee_id:
+        if not subject_employee_id:
             return False
-        fh = await _get_function_head(claim.employee_id, db)
+        fh = await _get_function_head(subject_employee_id, db)
         return fh and fh.employee_id == user.employee_id
     return False
 
@@ -702,11 +734,26 @@ def _event_rank(event: str) -> int:
 async def get_claim_timeline(claim: ClaimDraft, db: AsyncSession) -> list[dict]:
     events: list[dict] = []
     actor_name, actor_role = await _user_identity(claim.employee_user_id, db)
-    stages = await _load_stages(claim.id, db)
+
+    # AuditLog is the only source read here for decision history (approve/send-back/reject/
+    # payment): it's append-only, whereas ClaimApprovalStage rows for this claim get wiped and
+    # recreated from scratch by init_claim_approval_chain on every resubmission. Deriving the
+    # same events from both sources used to produce duplicate timeline entries for the current
+    # cycle (each source computes its own timestamp independently) and silently dropped a prior
+    # cycle's approval/send-back history the moment the claim was resubmitted.
+    logs = (
+        await db.execute(
+            select(AuditLog)
+            .where(AuditLog.entity_type == "claim_draft", AuditLog.entity_id == str(claim.id))
+            .order_by(AuditLog.timestamp.asc())
+        )
+    ).scalars().all()
+
     sent_back_at = max(
-        (stage.decided_at for stage in stages if stage.status == ClaimApprovalStageStatus.SENT_BACK.value and stage.decided_at),
+        (log.timestamp for log in logs if log.action == "send_back"),
         default=None,
     )
+
     if claim.created_at:
         events.append(
             {
@@ -732,66 +779,37 @@ async def get_claim_timeline(claim: ClaimDraft, db: AsyncSession) -> list[dict]:
                 "utr": None,
             }
         )
-    if claim.payment_recorded_at:
-        finance_actor, finance_role = await _user_identity(claim.payment_recorded_by, db)
-        events.append(
-            {
-                "event": "payment_processed",
-                "actor": finance_actor,
-                "role": finance_role,
-                "timestamp": claim.payment_recorded_at,
-                "comment": None,
-                "stage": 4,
-                "utr": claim.payment_utr,
-            }
-        )
-
-    for stage in stages:
-        if stage.decided_at is None:
+    event_by_action = {
+        "approve_stage": "stage_approved",
+        "approve_stage_partial": "stage_approved",
+        "send_back": "sent_back",
+        "reject_claim": "rejected",
+        "record_payment": "payment_processed",
+    }
+    for log in logs:
+        event_name = event_by_action.get(log.action)
+        if event_name is None:
             continue
-        actor, role = await _user_identity(stage.decided_by_user_id, db)
-        event_name = "stage_approved"
-        if stage.status == ClaimApprovalStageStatus.SENT_BACK.value:
-            event_name = "sent_back"
-        elif stage.status == ClaimApprovalStageStatus.REJECTED.value:
-            event_name = "rejected"
+        actor, role = await _user_identity(log.actor_id, db)
+        new_value = log.new_value or {}
+        if log.action in ("approve_stage", "approve_stage_partial"):
+            stage = new_value.get("approved_stage_number")
+            comment = new_value.get("comment")
+        elif log.action == "reject_claim":
+            stage = new_value.get("stage_number")
+            comment = new_value.get("reject_reason")
+        else:
+            stage = new_value.get("stage_number")
+            comment = new_value.get("comment")
         events.append(
             {
                 "event": event_name,
                 "actor": actor,
                 "role": role,
-                "timestamp": stage.decided_at,
-                "comment": stage.comment,
-                "stage": stage.stage_number,
-                "utr": None,
-            }
-        )
-
-    logs = (
-        await db.execute(
-            select(AuditLog)
-            .where(AuditLog.entity_type == "claim_draft", AuditLog.entity_id == str(claim.id))
-            .order_by(AuditLog.timestamp.asc())
-        )
-    ).scalars().all()
-    for log in logs:
-        if log.action not in {"send_back", "record_payment", "reject_claim"}:
-            continue
-        actor, role = await _user_identity(log.actor_id, db)
-        event = {
-            "send_back": "sent_back",
-            "record_payment": "payment_processed",
-            "reject_claim": "rejected",
-        }[log.action]
-        events.append(
-            {
-                "event": event,
-                "actor": actor,
-                "role": role,
                 "timestamp": log.timestamp,
-                "comment": (log.new_value or {}).get("comment") or (log.new_value or {}).get("reject_reason"),
-                "stage": (log.new_value or {}).get("current_approval_stage"),
-                "utr": (log.new_value or {}).get("payment_utr"),
+                "comment": comment,
+                "stage": stage,
+                "utr": new_value.get("payment_utr"),
             }
         )
 
@@ -901,20 +919,23 @@ async def approve_claim_stage(claim_id: int, user_id: int, comment: str | None, 
                 if ns_def:
                     await _notify_stage_approver(claim, ns_def, db)
 
-    await log_event(
-        entity_type="claim_draft",
-        entity_id=str(claim.id),
-        action="approve_stage",
-        actor_id=user_id,
-        old={"status": previous_status, "current_approval_stage": previous_stage},
-        new={
-            "status": claim.status.value,
-            "current_approval_stage": claim.current_approval_stage,
-            "approved_stage_number": pending.stage_number,
-            "comment": comment,
-        },
-        db=db,
-    )
+    if not still_pending:
+        # The still_pending branch above already logged "approve_stage_partial" for this same
+        # click — logging "approve_stage" here too would double-count it in the claim timeline.
+        await log_event(
+            entity_type="claim_draft",
+            entity_id=str(claim.id),
+            action="approve_stage",
+            actor_id=user_id,
+            old={"status": previous_status, "current_approval_stage": previous_stage},
+            new={
+                "status": claim.status.value,
+                "current_approval_stage": claim.current_approval_stage,
+                "approved_stage_number": pending.stage_number,
+                "comment": comment,
+            },
+            db=db,
+        )
     await db.commit()
     await db.refresh(claim)
     return claim
@@ -966,7 +987,12 @@ async def send_back_claim(claim_id: int, user_id: int, comment: str, db: AsyncSe
         action="send_back",
         actor_id=user_id,
         old={"status": previous_status, "current_approval_stage": previous_stage},
-        new={"status": claim.status.value, "current_approval_stage": claim.current_approval_stage, "comment": comment},
+        new={
+            "status": claim.status.value,
+            "current_approval_stage": claim.current_approval_stage,
+            "comment": comment,
+            "stage_number": previous_stage,
+        },
         db=db,
     )
     await _notify_employee_update(
@@ -1024,7 +1050,7 @@ async def reject_claim(claim_id: int, user_id: int, reason: str, db: AsyncSessio
         action="reject_claim",
         actor_id=user_id,
         old={"status": previous_status, "reject_reason": None},
-        new={"status": claim.status.value, "reject_reason": claim.reject_reason},
+        new={"status": claim.status.value, "reject_reason": claim.reject_reason, "stage_number": pending.stage_number},
         db=db,
     )
     await _notify_employee_update(
@@ -1149,6 +1175,7 @@ async def record_claim_payment(
             "status": claim.status.value,
             "payment_utr": claim.payment_utr,
             "payment_amount": str(claim.payment_amount),
+            "stage_number": stage4.stage_number,
         },
         db=db,
     )
@@ -1364,8 +1391,8 @@ async def _notify_travel_exception_approver(travel_request, req: ExceptionReques
     for user_id in recipients:
         await create_notification(
             user_id=user_id,
-            title=f"Exception Approval Required: Travel Request #{travel_request.id}",
-            body=f"Exception '{req.exception_type}' requires your review.",
+            title=f"Exception Approval Required: TR-{travel_request.id:04d}",
+            body=f"Exception '{_humanize_token(req.exception_type)}' requires your review.",
             link="/hr/exceptions",
             category=NotificationCategory.EXCEPTION.value,
             db=db,
@@ -1437,12 +1464,21 @@ async def create_travel_exception_request(
         for target_uid in target_uids:
             await create_notification(
                 user_id=target_uid,
-                title=f"Exception Approval Required: Travel Request #{travel_request.id}",
-                body=f"Exception Type: {exception_type}. Justification: {description}",
+                title=f"Exception Approval Required: TR-{travel_request.id:04d}",
+                body=f"Exception Type: {_humanize_token(exception_type)}. Justification: {description}",
                 link="/hr/exceptions",
                 category=NotificationCategory.EXCEPTION.value,
                 db=db,
             )
+
+    await create_notification(
+        user_id=user_id,
+        title=f"Exception Request Submitted: TR-{travel_request.id:04d}",
+        body=f"Your {_humanize_token(exception_type)} exception request has been sent for approval.",
+        link="/travel-requests",
+        category=NotificationCategory.EXCEPTION.value,
+        db=db,
+    )
     await db.commit()
 
     return row
@@ -1488,6 +1524,13 @@ async def create_exception_request(
         for exp in expense_rows:
             exp.exception_requested = True
 
+    # A claim with a live, approver-notified exception can no longer be treated as a
+    # private draft: the approvers it now depends on must be able to view it. Mirrors
+    # the status transition already applied when an exception is auto-detected at
+    # submission time (see submit_claim / trigger_exceptions_if_needed).
+    if claim.status in (ClaimStatus.DRAFT, ClaimStatus.SENT_BACK):
+        claim.status = ClaimStatus.PENDING_EXCEPTION
+
     cfg = await get_workflow_config(db)
     required_roles = cfg.get("exception_chains", EXCEPTION_APPROVAL_CHAINS).get(exception_type, ["HRBP_HR"])
     for i, role in enumerate(required_roles):
@@ -1511,11 +1554,20 @@ async def create_exception_request(
             await create_notification(
                 user_id=target_uid,
                 title=f"Exception Approval Required: {claim_ref}",
-                body=f"Exception Type: {exception_type}. Justification: {description}",
+                body=f"Exception Type: {_humanize_token(exception_type)}. Justification: {description}",
                 link="/hr/exceptions",
                 category=NotificationCategory.EXCEPTION.value,
                 db=db,
             )
+
+    await create_notification(
+        user_id=user_id,
+        title=f"Exception Request Submitted: {claim_ref}",
+        body=f"Your {_humanize_token(exception_type)} exception request has been sent for approval.",
+        link=f"/claims/{claim.id}",
+        category=NotificationCategory.EXCEPTION.value,
+        db=db,
+    )
     await db.commit()
 
     return row
@@ -1668,23 +1720,30 @@ async def decide_exception_request(
     # Notify employee of the decision update
     if row.claim_id is not None:
         claim = await db.get(ClaimDraft, row.claim_id)
-        claim_ref = claim.claim_reference or f"CLM-{claim.id}" if claim else f"Claim #{row.claim_id}"
+        claim_ref = claim.claim_reference or f"CLM-{claim.id:04d}" if claim else f"CLM-{row.claim_id:04d}"
         link = f"/claims/{row.claim_id}" if claim else "/claims/my"
     else:
-        claim_ref = f"Travel Request #{row.travel_request_id}"
+        claim_ref = f"TR-{row.travel_request_id:04d}"
         link = "/travel-requests"
 
+    # Only the final decision (approved or rejected) is emailed to the employee — an
+    # intermediate stage pass-through still creates the in-app notification below but
+    # is sent with send_email=False, so approvers earlier in the chain don't each trigger
+    # a separate email to the employee.
+    send_email = True
+    exception_label = _humanize_token(row.exception_type)
     if row.status == ExceptionRequestStatus.REJECTED.value:
         title = f"Exception Request Rejected: {claim_ref}"
-        body = f"Your exception request for {row.exception_type} was rejected by {approver.role.value}."
+        body = f"Your exception request for {exception_label} was rejected by {_humanize_token(approver.role.value)}."
         if comment:
             body += f" Comment: {comment}"
     elif row.status == ExceptionRequestStatus.APPROVED.value:
         title = f"Exception Request Approved: {claim_ref}"
-        body = f"Your exception request for {row.exception_type} has been fully approved!"
+        body = f"Your exception request for {exception_label} has been fully approved!"
     else:
+        send_email = False
         title = f"Exception Stage Approved: {claim_ref}"
-        body = f"Your exception request was approved by {approver.role.value} and is pending remaining roles."
+        body = f"Your exception request was approved by {_humanize_token(approver.role.value)} and is pending remaining roles."
         if comment:
             body += f" Comment: {comment}"
 
@@ -1695,6 +1754,7 @@ async def decide_exception_request(
         link=link,
         category=NotificationCategory.EXCEPTION.value,
         db=db,
+        send_email=send_email,
     )
     await db.commit()
 
@@ -1863,7 +1923,7 @@ async def process_auto_approvals(db: AsyncSession) -> None:
 
     for claim in claims:
         total = total_claimed_from_report(claim)
-        if total <= Decimal("0") or total > threshold:
+        if total <= Decimal("0"):
             continue
 
         stages = await _load_stages(claim.id, db)
@@ -1874,6 +1934,17 @@ async def process_auto_approvals(db: AsyncSession) -> None:
         # Finance stage is never auto-approved
         stage_def = next((s for s in stage_defs if int(s["number"]) == pending.stage_number), None)
         if not stage_def or str(stage_def.get("route_role")) == Role.FINANCE.value:
+            continue
+
+        # The reporting manager's personal threshold can only tighten (never loosen) the
+        # org-wide ceiling for their own stage — see the profile "auto-approve threshold" setting.
+        effective_threshold = threshold
+        if str(stage_def.get("route_role")) == Role.REPORTING_MANAGER.value:
+            manager = await _reporting_manager_user_for_claim(claim, db)
+            if manager is not None and manager.auto_approve_threshold is not None:
+                effective_threshold = min(threshold, manager.auto_approve_threshold)
+
+        if total > effective_threshold:
             continue
 
         # Determine when this stage became pending

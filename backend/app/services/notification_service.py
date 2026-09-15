@@ -100,6 +100,7 @@ async def create_notification(
     link: str | None,
     category: str,
     db: AsyncSession,
+    send_email: bool = True,
 ) -> Notification:
     row = Notification(
         user_id=user_id,
@@ -116,7 +117,7 @@ async def create_notification(
     try:
         user_result = await db.execute(select(User).where(User.id == user_id))
         user = user_result.scalar_one_or_none()
-        if user and user.email:
+        if send_email and user and user.email:
             email_body = body if body else title
             
             # Resolve Theme, Colors, and Badges based on keywords in title
@@ -143,14 +144,24 @@ async def create_notification(
                 theme_color = "#d69e2e"  # Yellow-Gold
                 status_label = "Action Required"
 
-            # Parse out Reason / Remarks callout from the body if present
+            # Parse out a trailing Reason / Remarks / Comment callout from the body, so it
+            # renders as its own separated block instead of running on from the main sentence.
             reason_text = None
+            reason_label = "Remarks"
             main_message = email_body
-            for sep in ["Reason:", "Remarks:", "Reason :", "Remarks :"]:
+            for sep, label in [
+                ("Reason:", "Reason"),
+                ("Reason :", "Reason"),
+                ("Remarks:", "Remarks"),
+                ("Remarks :", "Remarks"),
+                ("Comment:", "Approver Comment"),
+                ("Comment :", "Approver Comment"),
+            ]:
                 if sep in email_body:
                     parts = email_body.split(sep, 1)
                     main_message = parts[0].strip()
                     reason_text = parts[1].strip()
+                    reason_label = label
                     break
 
             # Parse out Route or reference from main message
@@ -203,7 +214,7 @@ async def create_notification(
             if reason_text:
                 reason_box_html = f"""
                 <div style="margin-top: 25px; padding: 18px 24px; background-color: {theme_color}0d; border-left: 4px solid {theme_color}; border-radius: 4px;">
-                    <strong style="color: {theme_color}; font-size: 14px; display: block; margin-bottom: 6px;">Auditor/Approver Remarks:</strong>
+                    <strong style="color: {theme_color}; font-size: 14px; display: block; margin-bottom: 6px;">{reason_label}:</strong>
                     <span style="color: #2d3748; font-size: 14px; font-style: italic;">"{reason_text}"</span>
                 </div>
                 """

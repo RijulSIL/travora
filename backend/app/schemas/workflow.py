@@ -36,7 +36,8 @@ class ExceptionRequestOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    claim_id: int
+    claim_id: int | None = None
+    travel_request_id: int | None = None
     requested_by_user_id: int
     exception_type: str
     description: str | None

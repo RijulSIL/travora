@@ -14,6 +14,7 @@ const createEmptyForm = (policyVersionId = '') => ({
   bill_mandatory: false,
   gst_invoice_required: false,
   blacklisted_items: '',
+  notes: '',
   policy_version_id: policyVersionId,
 });
 
@@ -78,6 +79,7 @@ export default function ExpenseCategoryManager() {
         .split(',')
         .map((item) => item.trim())
         .filter(Boolean),
+      notes: form.notes.trim() || null,
     };
     if (editingId) await adminApi.updateExpenseCategory(editingId, payload);
     else await adminApi.createExpenseCategory(payload);
@@ -142,6 +144,7 @@ export default function ExpenseCategoryManager() {
             <label className="flex items-center gap-1.5 text-sm font-medium text-slate-600"><input type="checkbox" className="rounded border-slate-300 text-brand focus:ring-brand" disabled={isViewOnly} checked={form.gst_invoice_required} onChange={(event) => setForm({ ...form, gst_invoice_required: event.target.checked })} />GST</label>
           </div>
           <input className="field min-w-[200px] flex-1 text-sm py-1.5" readOnly={isViewOnly} placeholder="Blacklist tags (comma sep)" value={form.blacklisted_items} onChange={(event) => setForm({ ...form, blacklisted_items: event.target.value })} />
+          <input className="field min-w-[200px] flex-1 text-sm py-1.5" readOnly={isViewOnly} placeholder="Notes (e.g. book ≥ 7 days in advance)" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} />
           <select className="field min-w-[150px] flex-1 text-sm py-1.5 bg-white" disabled={isViewOnly} value={form.policy_version_id} onChange={(event) => setForm({ ...form, policy_version_id: event.target.value })}>
             {policyVersions
               .filter((version) => version.status === 'DRAFT')
@@ -157,7 +160,7 @@ export default function ExpenseCategoryManager() {
       <section className="panel table-contain overflow-hidden rounded">
         <table className="w-full text-left text-sm">
           <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-wider text-slate-500">
-            <tr><th className="px-4 py-3">Category</th><th className="px-4 py-3">Bill</th><th className="px-4 py-3">GST</th><th className="px-4 py-3">Blacklist</th><th className="px-4 py-3">Actions</th></tr>
+            <tr><th className="px-4 py-3">Category</th><th className="px-4 py-3">Bill</th><th className="px-4 py-3">GST</th><th className="px-4 py-3">Blacklist</th><th className="px-4 py-3">Notes</th><th className="px-4 py-3">Actions</th></tr>
           </thead>
           <tbody>
             {rows.map((category) => (
@@ -170,15 +173,16 @@ export default function ExpenseCategoryManager() {
                   {category.gst_invoice_required ? <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700 ring-1 ring-inset ring-emerald-600/20">Yes</span> : <span className="inline-flex items-center rounded-full bg-slate-50 px-2 py-0.5 text-[11px] font-bold text-slate-600 ring-1 ring-inset ring-slate-500/20">No</span>}
                 </td>
                 <td className="px-4 py-3 text-slate-600">{(category.blacklisted_items || []).join(', ') || '-'}</td>
+                <td className="px-4 py-3 text-slate-500 max-w-[220px] truncate" title={category.notes || ''}>{category.notes || '-'}</td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-1.5">
-                    {!isViewOnly ? <button className="inline-flex items-center justify-center rounded bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-sm ring-1 ring-inset ring-slate-300 hover:bg-slate-50 transition-all" onClick={() => { setForm({ ...category, parent_category_id: category.parent_category_id || '', policy_version_id: category.policy_version_id, blacklisted_items: (category.blacklisted_items || []).join(', ') }); setEditingId(category.id); }}>Edit</button> : null}
+                    {!isViewOnly ? <button className="inline-flex items-center justify-center rounded bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-sm ring-1 ring-inset ring-slate-300 hover:bg-slate-50 transition-all" onClick={() => { setForm({ ...category, parent_category_id: category.parent_category_id || '', policy_version_id: category.policy_version_id, blacklisted_items: (category.blacklisted_items || []).join(', '), notes: category.notes || '' }); setEditingId(category.id); }}>Edit</button> : null}
                     {!isViewOnly ? <button className="inline-flex items-center justify-center rounded bg-white p-1.5 text-slate-400 shadow-sm ring-1 ring-inset ring-slate-300 hover:bg-red-50 hover:text-red-600 disabled:opacity-50 transition-all" onClick={() => deactivateAction.run(category.id)} disabled={deactivateAction.loading} title="Disable Category"><Trash2 size={15} /></button> : null}
                   </div>
                 </td>
               </tr>
             ))}
-            {rows.length === 0 ? <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-500">No categories found for this policy version.</td></tr> : null}
+            {rows.length === 0 ? <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-500">No categories found for this policy version.</td></tr> : null}
           </tbody>
         </table>
       </section>

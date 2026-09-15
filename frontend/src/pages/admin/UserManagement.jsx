@@ -233,6 +233,11 @@ export default function UserManagement() {
     searchAction.error ||
     createUserAction.error;
 
+  const impactLevelById = (id) => {
+    if (!id) return null;
+    return impactLevels.find((l) => l.id === id || l.id === Number(id)) || null;
+  };
+
   const roleDraftKey = (user) => user.user_id;
   const selectedRole = (user) => roleDrafts[roleDraftKey(user)] || user.role || 'EMPLOYEE';
   const setSelectedRole = (user, role) => {
@@ -352,7 +357,20 @@ export default function UserManagement() {
                       <ChevronDown size={14} className={`pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 transition-colors ${isRoleChanged ? 'text-amber-500' : 'text-slate-400'}`} />
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-center">{user.impact_level_id || <span className="text-slate-400">—</span>}</td>
+                  <td className="px-4 py-3 text-center">
+                    {(() => {
+                      const level = impactLevelById(user.impact_level_id);
+                      if (!level) return <span className="text-slate-400">—</span>;
+                      return (
+                        <span
+                          className="inline-flex items-center rounded-md bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700"
+                          title={`${level.level_name}${level.policy_version_id !== activePolicyId ? ' (Legacy policy version)' : ''}`}
+                        >
+                          {level.level_code}
+                        </span>
+                      );
+                    })()}
+                  </td>
                   <td className="px-4 py-3">{user.office_location || <span className="text-slate-400">—</span>}</td>
                   <td className="px-4 py-3">
                     {user.is_active ? (
@@ -809,7 +827,12 @@ export default function UserManagement() {
                     </div>
                     <div>
                       <span className="block text-[11px] font-bold uppercase tracking-wider text-slate-400">Impact Level</span>
-                      <span className="mt-1 block font-medium text-slate-900">{selectedUser.impact_level_id || '-'}</span>
+                      <span className="mt-1 block font-medium text-slate-900">
+                        {(() => {
+                          const level = impactLevelById(selectedUser.impact_level_id);
+                          return level ? `${level.level_code} — ${level.level_name}` : '-';
+                        })()}
+                      </span>
                     </div>
                     <div>
                       <span className="block text-[11px] font-bold uppercase tracking-wider text-slate-400">Reporting Manager</span>

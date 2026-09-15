@@ -53,6 +53,7 @@ class PolicyVersion(Base):
     effective_to: Mapped[date | None] = mapped_column(Date)
     status: Mapped[PolicyStatus] = mapped_column(Enum(PolicyStatus), nullable=False)
     approved_by: Mapped[int | None] = mapped_column(Integer)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_by: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
 

@@ -1,8 +1,9 @@
 import { Fragment, useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { Check, ChevronDown, Clock, Eye, Filter, RotateCcw, X } from 'lucide-react';
+import { Check, ChevronDown, Clock, Eye, Filter, GitBranch, RotateCcw, X } from 'lucide-react';
 import { useAuthStore, selectResolvedRole } from '../store/authStore';
 
+import ClaimReviewModal from '../components/claims/ClaimReviewModal';
+import TravelRequestProgress from '../components/travel/TravelRequestProgress';
 import EmptyState from '../components/ui/EmptyState';
 import Skeleton from '../components/ui/Skeleton';
 import { useSetPageTitle } from '../context/PageTitleContext';
@@ -33,6 +34,7 @@ export default function PendingApprovals() {
   const [slaFilter, setSlaFilter] = useState('ALL');
   const [minAmount, setMinAmount] = useState('');
   const [maxAmount, setMaxAmount] = useState('');
+  const [reviewClaimId, setReviewClaimId] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -282,13 +284,14 @@ export default function PendingApprovals() {
                               }`}
                             />
                           </button>
-                          <Link
+                          <button
+                            type="button"
                             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-all shadow-sm"
-                            to={`/claims/${r.claim_id}/review`}
+                            onClick={() => setReviewClaimId(r.claim_id)}
                           >
                             <Eye size={13} />
                             <span>Review</span>
-                          </Link>
+                          </button>
                           <button
                             type="button"
                             disabled={acting || !quickApproveEligible}
@@ -354,10 +357,22 @@ export default function PendingApprovals() {
                   </td>
                 </tr>
               ) : null}
-              {travelRows.map(({ request, employee_display_name }) => (
+              {travelRows.map(({ request, employee_display_name, impact_level_code }) => (
                 <Fragment key={request.id}>
                   <tr className="border-b border-slate-100 hover:bg-slate-50/50 transition-colors duration-150">
-                    <td className="px-5 py-4 font-medium text-slate-800">{employee_display_name || '—'}</td>
+                    <td className="px-5 py-4 font-medium text-slate-800">
+                      <div className="flex items-center gap-2">
+                        <span>{employee_display_name || '—'}</span>
+                        {impact_level_code ? (
+                          <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">
+                            {impact_level_code}
+                          </span>
+                        ) : null}
+                        {request.exception ? (
+                          <GitBranch size={12} className="text-orange-500" aria-label="Has policy exception" />
+                        ) : null}
+                      </div>
+                    </td>
                     <td className="whitespace-nowrap px-5 py-4 text-slate-600">
                       {request.trip_type === 'MULTI_CITY' && request.legs?.length > 0 ? request.legs[0].travel_date : request.travel_date}
                     </td>
@@ -385,7 +400,11 @@ export default function PendingApprovals() {
                         </div>
                       )}
                     </td>
-                    <td className="px-5 py-4 text-slate-600">{request.travel_mode}</td>
+                    <td className="px-5 py-4 text-slate-600">
+                      {request.trip_type === 'MULTI_CITY' && request.legs?.length > 0
+                        ? [...new Set(request.legs.map((leg) => leg.travel_mode || request.travel_mode))].join(', ')
+                        : request.travel_mode}
+                    </td>
                     <td className="px-5 py-4">
                       <span className="badge badge-in-approval">{request.status}</span>
                     </td>
@@ -425,13 +444,24 @@ export default function PendingApprovals() {
                   </tr>
                   {expanded[`travel_${request.id}`] ? (
                     <tr className="border-b border-slate-100 bg-slate-50/50">
-                      <td colSpan={6} className="px-5 py-3 text-xs text-slate-600">
-                        <div className="grid grid-cols-2 gap-4 pl-4 max-w-xl">
+                      <td colSpan={6} className="px-5 py-4 text-xs text-slate-600">
+                        <div className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-2 pl-4 max-w-3xl">
                           <div><strong>Purpose:</strong> {request.purpose || '—'}</div>
                           <div><strong>Notes:</strong> {request.notes || '—'}</div>
-                          <div><strong>Class:</strong> {request.preferred_class || '—'}</div>
+                          <div><strong>Preferred Class:</strong> {request.preferred_class || '—'}</div>
+                          <div><strong>Trip Type:</strong> {request.trip_type ? request.trip_type.replace('_', ' ') : '—'}</div>
                           {request.return_date && <div><strong>Return Date:</strong> {request.return_date}</div>}
+                          <div><strong>Employee Level:</strong> {impact_level_code || '—'}</div>
+                          <div>
+                            <strong>Requested On:</strong>{' '}
+                            {request.requested_at ? new Date(request.requested_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}
+                          </div>
                         </div>
+                        {request.exception ? (
+                          <div className="mt-4 pl-4 max-w-3xl border-t border-slate-200 pt-3">
+                            <TravelRequestProgress request={request} />
+                          </div>
+                        ) : null}
                       </td>
                     </tr>
                   ) : null}
@@ -441,6 +471,16 @@ export default function PendingApprovals() {
           </table>
         </div>
       )}
+
+      {reviewClaimId ? (
+        <ClaimReviewModal
+          claimId={reviewClaimId}
+          onClose={() => {
+            setReviewClaimId(null);
+            load();
+          }}
+        />
+      ) : null}
     </div>
   );
 }

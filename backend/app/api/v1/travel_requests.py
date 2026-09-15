@@ -1,5 +1,6 @@
 """Authenticated travel-request + Travel Desk endpoints (Phase 1)."""
 
+from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
@@ -17,11 +18,13 @@ from app.models.auth import Role
 from app.schemas.travel_request import (
     DeskQueueItemOut,
     EntitlementNoteOut,
+    TravelExceptionSummaryOut,
     TravelRejectIn,
     TravelRequestCreate,
     TravelRequestExceptionCreate,
     TravelRequestListItemOut,
     TravelRequestOut,
+    TravelRequestSegmentOut,
     TravelRequestTicketAttachmentOut,
 )
 from app.services import travel_request_service as svc
@@ -36,6 +39,25 @@ def _role(claims: dict) -> Role:
         return Role(claims.get("role"))
     except ValueError as exc:
         raise HTTPException(status_code=403, detail="Forbidden") from exc
+
+
+def _build_request_out(req) -> TravelRequestOut:
+    """TravelRequestOut plus per-segment ticket status (one entry per independently-ticketable
+    leg — see `svc.build_segments_out`)."""
+    tout = TravelRequestOut.model_validate(req)
+    tout.segments = [
+        TravelRequestSegmentOut(
+            seq=s["seq"],
+            label=s["label"],
+            mode=s["mode"],
+            from_city=s["from_city"],
+            to_city=s["to_city"],
+            travel_date=s["travel_date"],
+            ticket=TravelRequestTicketAttachmentOut.model_validate(s["ticket"]) if s["ticket"] else None,
+        )
+        for s in svc.build_segments_out(req)
+    ]
+    return tout
 
 
 @router.post(
@@ -62,7 +84,7 @@ async def create_request(
         legs=body.legs,
         db=db,
     )
-    return TravelRequestOut.model_validate(row)
+    return _build_request_out(row)
 
 
 @router.post(
@@ -90,7 +112,7 @@ async def create_request_with_exception(
         justification=body.justification,
         db=db,
     )
-    return TravelRequestOut.model_validate(row)
+    return _build_request_out(row)
 
 
 @router.get(
@@ -103,9 +125,13 @@ async def my_requests(
     db: AsyncSession = Depends(get_db),
 ) -> list[TravelRequestListItemOut]:
     rows = await svc.list_travel_requests_for_employee(int(claims["sub"]), db)
+    exceptions_by_request = await svc.get_latest_exceptions_for_requests([req.id for req, _ in rows], db)
     out: list[TravelRequestListItemOut] = []
     for req, tix in rows:
-        tout = TravelRequestOut.model_validate(req)
+        tout = _build_request_out(req)
+        exc_data = exceptions_by_request.get(req.id)
+        if exc_data:
+            tout.exception = TravelExceptionSummaryOut(**exc_data)
         t_out = TravelRequestTicketAttachmentOut.model_validate(tix) if tix else None
         out.append(TravelRequestListItemOut(request=tout, ticket=t_out))
     return out
@@ -121,14 +147,23 @@ async def manager_pending_requests(
     db: AsyncSession = Depends(get_db),
 ) -> list[DeskQueueItemOut]:
     enriched = await svc.list_pending_travel_requests_for_manager(int(claims["sub"]), db)
-    return [
-        DeskQueueItemOut(
-            request=TravelRequestOut.model_validate(e["request"]),
-            employee_display_name=e["employee_display_name"],
-            impact_level_code=e["impact_level_code"],
+    exceptions_by_request = await svc.get_latest_exceptions_for_requests(
+        [e["request"].id for e in enriched], db
+    )
+    out: list[DeskQueueItemOut] = []
+    for e in enriched:
+        tout = _build_request_out(e["request"])
+        exc_data = exceptions_by_request.get(e["request"].id)
+        if exc_data:
+            tout.exception = TravelExceptionSummaryOut(**exc_data)
+        out.append(
+            DeskQueueItemOut(
+                request=tout,
+                employee_display_name=e["employee_display_name"],
+                impact_level_code=e["impact_level_code"],
+            )
         )
-        for e in enriched
-    ]
+    return out
 
 
 @router.get(
@@ -154,7 +189,7 @@ async def desk_queue(
     enriched = await svc.list_pending_travel_requests_for_desk(db)
     return [
         DeskQueueItemOut(
-            request=TravelRequestOut.model_validate(e["request"]),
+            request=_build_request_out(e["request"]),
             employee_display_name=e["employee_display_name"],
             impact_level_code=e["impact_level_code"],
         )
@@ -164,16 +199,33 @@ async def desk_queue(
 
 @router.get(
     "/desk/all",
-    response_model=list[TravelRequestOut],
+    response_model=list[DeskQueueItemOut],
     dependencies=[Depends(require_role(Role.HRBP_HR))],
 )
 async def desk_all_requests(
     status: str | None = Query(None, description="Filter by travel_requests.status"),
     q: str | None = Query(None, description="Search cities, name, or email"),
+    date_from: date | None = Query(None, description="Earliest travel date (inclusive)"),
+    date_to: date | None = Query(None, description="Latest travel date (inclusive)"),
+    impact_level: str | None = Query(None, description="Filter by impact level code, e.g. L3A"),
     db: AsyncSession = Depends(get_db),
-) -> list[TravelRequestOut]:
-    rows = await svc.list_all_travel_requests_for_desk(db=db, status_filter=status, q=q)
-    return [TravelRequestOut.model_validate(r) for r in rows]
+) -> list[DeskQueueItemOut]:
+    rows = await svc.list_all_travel_requests_for_desk(
+        db=db,
+        status_filter=status,
+        q=q,
+        date_from=date_from,
+        date_to=date_to,
+        impact_level=impact_level,
+    )
+    return [
+        DeskQueueItemOut(
+            request=_build_request_out(row["request"]),
+            employee_display_name=row["employee_display_name"],
+            impact_level_code=row["impact_level_code"],
+        )
+        for row in rows
+    ]
 
 
 @router.get(
@@ -239,7 +291,7 @@ async def get_request(
     role = _role(claims)
     req, tix = await svc.get_travel_request_for_viewer(request_id, int(claims["sub"]), role, db)
     return TravelRequestListItemOut(
-        request=TravelRequestOut.model_validate(req),
+        request=_build_request_out(req),
         ticket=TravelRequestTicketAttachmentOut.model_validate(tix) if tix else None,
     )
 
@@ -255,7 +307,7 @@ async def cancel_request(
     db: AsyncSession = Depends(get_db),
 ) -> TravelRequestOut:
     row = await svc.cancel_travel_request(request_id, int(claims["sub"]), db)
-    return TravelRequestOut.model_validate(row)
+    return _build_request_out(row)
 
 
 @router.post(
@@ -270,7 +322,7 @@ async def approve_request(
 ) -> TravelRequestOut:
     role = _role(claims)
     row = await svc.approve_travel_request(request_id, int(claims["sub"]), role, db)
-    return TravelRequestOut.model_validate(row)
+    return _build_request_out(row)
 
 
 @router.post(
@@ -286,7 +338,7 @@ async def reject_request(
 ) -> TravelRequestOut:
     role = _role(claims)
     row = await svc.reject_travel_request(request_id, int(claims["sub"]), role, body.reason, db)
-    return TravelRequestOut.model_validate(row)
+    return _build_request_out(row)
 
 
 @router.post(
@@ -296,6 +348,7 @@ async def reject_request(
 async def upload_ticket(
     request_id: int,
     file: Annotated[UploadFile, File(...)],
+    leg_sequence: Annotated[int, Form()] = 1,
     pnr_or_booking_ref: Annotated[str | None, Form()] = None,
     ticket_amount: Annotated[str | None, Form()] = None,
     ticket_travel_class: Annotated[str | None, Form()] = None,
@@ -320,10 +373,11 @@ async def upload_ticket(
         uploader_user_id=int(claims["sub"]),
         file=file,
         payload=payload,
+        leg_sequence=leg_sequence,
         db=db,
     )
     return {
-        "request": TravelRequestOut.model_validate(req).model_dump(),
+        "request": _build_request_out(req).model_dump(),
         "ticket": TravelRequestTicketAttachmentOut.model_validate(ticket).model_dump(),
         "trip_id": trip.id,
     }

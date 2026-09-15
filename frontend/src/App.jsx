@@ -37,6 +37,7 @@ const ExpenseCategoryManager = lazy(() => import('./pages/admin/ExpenseCategoryM
 const ExpenseLimitsMatrix = lazy(() => import('./pages/admin/ExpenseLimitsMatrix'));
 const ImpactLevelMaster = lazy(() => import('./pages/admin/ImpactLevelMaster'));
 const PolicyVersionManager = lazy(() => import('./pages/admin/PolicyVersionManager'));
+const TeamBudgets = lazy(() => import('./pages/admin/TeamBudgets'));
 const UserManagement = lazy(() => import('./pages/admin/UserManagement'));
 const NotificationTemplates = lazy(() => import('./pages/admin/NotificationTemplates'));
 const WorkflowConfig = lazy(() => import('./pages/admin/WorkflowConfig'));
@@ -108,6 +109,7 @@ export default function App() {
               <Route path="admin" element={<Outlet />}>
                 <Route index element={<Dashboard />} />
                 <Route path="policy-versions" element={<PolicyVersionManager />} />
+                <Route path="team-budgets" element={<TeamBudgets />} />
                 <Route path="expense-limits" element={<ExpenseLimitsMatrix />} />
                 <Route path="expense-categories" element={<ExpenseCategoryManager />} />
                 <Route path="impact-levels" element={<ImpactLevelMaster />} />
@@ -115,7 +117,7 @@ export default function App() {
                 <Route
                   path="workflow-config"
                   element={
-                    <RoleGuard anyOf={['configure_policy', 'view_workflow_config']}>
+                    <RoleGuard anyOf={['view_workflow_config', 'edit_workflow_config']}>
                       <WorkflowConfig />
                     </RoleGuard>
                   }
@@ -172,11 +174,11 @@ export default function App() {
             >
               <Route path="hr/exceptions" element={<ExceptionRequestsPage />} />
             </Route>
-            <Route element={<RoleGuard roles={['HRBP_HR', 'HRBP']} />}>
+            <Route element={<RoleGuard roles={['HRBP_HR', 'HRBP', 'GROUP_HEAD_HR']} />}>
               <Route path="compliance" element={<ComplianceDashboard />} />
               <Route path="compliance/reports" element={<Navigate to="/compliance" replace />} />
             </Route>
-
+ 
             <Route element={<RoleGuard anyOf={['view_reports', 'process_payments']} />}>
               <Route path="claims/all" element={<AllClaimsPage />} />
             </Route>

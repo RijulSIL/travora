@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -6,9 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.rbac import get_current_claims
-from app.models.auth import Delegation, User
-from app.schemas.me import DelegationIn, DelegationOut, MeOut
+from app.models.auth import Delegation, Role, User
+from app.schemas.me import AutoApproveThresholdIn, DelegationIn, DelegationOut, MeOut
+from app.services.claim_submission_rules import parse_auto_approve_threshold
 from app.services.me_service import build_me_profile
+from app.services.workflow_service import get_workflow_config
 
 router = APIRouter(tags=["me"])
 
@@ -22,6 +25,43 @@ async def read_me(
         return await build_me_profile(int(claims["sub"]), db)
     except ValueError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found") from None
+
+
+@router.patch("/me/auto-approve-threshold", response_model=MeOut)
+async def update_auto_approve_threshold(
+    payload: AutoApproveThresholdIn,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> MeOut:
+    user_id = int(claims["sub"])
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.role != Role.REPORTING_MANAGER:
+        raise HTTPException(
+            status_code=403,
+            detail="Only reporting managers can set a personal auto-approve threshold",
+        )
+
+    if payload.threshold is not None:
+        cfg = await get_workflow_config(db)
+        ceiling = parse_auto_approve_threshold(cfg)
+        if payload.threshold > ceiling:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Your threshold cannot exceed the org-wide auto-approve ceiling of "
+                    f"₹{ceiling.quantize(Decimal('0.01'))}, set by your administrator."
+                ),
+            )
+
+    user.auto_approve_threshold = payload.threshold
+    await db.commit()
+
+    try:
+        return await build_me_profile(user_id, db)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="User not found") from None
 
 
 @router.get("/me/delegations", response_model=list[DelegationOut])

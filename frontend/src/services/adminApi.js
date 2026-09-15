@@ -46,4 +46,13 @@ export const adminApi = {
   createHoliday: (payload) => api.post('/admin/holidays', payload),
   updateHoliday: (id, payload) => api.put(`/admin/holidays/${id}`, payload),
   deleteHoliday: (id) => api.delete(`/admin/holidays/${id}`),
+  budgetConfig: () => api.get('/admin/budgets/config'),
+  updateBudgetConfig: (payload) => api.put('/admin/budgets/config', payload),
+  budgetOptions: () => api.get('/admin/budgets/options'),
+  departmentBudgets: () => api.get('/admin/budgets/departments'),
+  upsertDepartmentBudget: (payload) => api.post('/admin/budgets/departments', payload),
+  deleteDepartmentBudget: (id) => api.delete(`/admin/budgets/departments/${id}`),
+  managerBudgets: () => api.get('/admin/budgets/managers'),
+  upsertManagerBudget: (payload) => api.post('/admin/budgets/managers', payload),
+  deleteManagerBudget: (id) => api.delete(`/admin/budgets/managers/${id}`),
 };

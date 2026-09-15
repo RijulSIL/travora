@@ -5,6 +5,7 @@ export const ADMIN_CITY_GROUP_RESOLVE_PATH = 'admin/city-groups/resolve';
 
 export const reimbursementApi = {
   me: () => api.get('me'),
+  updateAutoApproveThreshold: (threshold) => api.patch('me/auto-approve-threshold', { threshold }),
   getDelegations: () => api.get('me/delegations'),
   createDelegation: (payload) => api.post('me/delegations', payload),
   deleteDelegation: (id) => api.delete(`me/delegations/${id}`),

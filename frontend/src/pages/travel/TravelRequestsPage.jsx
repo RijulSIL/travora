@@ -1,14 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
 import {
   Plus, Plane, Train, Bus, FileText, ArrowRight,
   Clock, Info, ShieldAlert, ArrowUpRight,
-  X
+  X, ChevronDown, ChevronUp, GitBranch
 } from 'lucide-react';
 import { useAuthStore, selectResolvedRole } from '../../store/authStore';
 
 import TicketPreviewDrawer from '../../components/ui/TicketPreviewDrawer';
+import TravelRequestProgress from '../../components/travel/TravelRequestProgress';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import SubmissionAnimation from '../../components/ui/SubmissionAnimation';
 import { useSetPageTitle } from '../../context/PageTitleContext';
@@ -29,6 +30,8 @@ function getStatusDetails(status) {
   switch (status) {
     case 'BOOKED':
       return { label: 'Booked', bg: 'bg-emerald-100 text-emerald-800' };
+    case 'PARTIALLY_BOOKED':
+      return { label: 'Partially Booked', bg: 'bg-sky-100 text-sky-800' };
     case 'APPROVED':
       return { label: 'Approved', bg: 'bg-brand/10 text-brand' };
     case 'PENDING':
@@ -68,7 +71,7 @@ export default function TravelRequestsPage() {
       purpose: '',
       preferred_class: '',
       notes: '',
-      legs: [{ travel_mode: '', from_city: '', to_city: '', travel_date: '', preferred_time: '' }]
+      legs: [{ travel_mode: 'FLIGHT', from_city: '', to_city: '', travel_date: '', preferred_time: '' }]
     },
     rules: {
       trip_type: [required()],
@@ -86,6 +89,16 @@ export default function TravelRequestsPage() {
   const [cityOptions, setCityOptions] = useState([]);
   const [preview, setPreview] = useState({ open: false, blob: null, name: '', type: '', title: '' });
   const [confirmCancelId, setConfirmCancelId] = useState(null);
+  const [expandedIds, setExpandedIds] = useState(() => new Set());
+
+  function toggleExpand(id) {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   useEffect(() => {
     reimbursementApi
@@ -161,9 +174,12 @@ export default function TravelRequestsPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   function buildTravelRequestPayload() {
+    const legs = form.values.trip_type === 'MULTI_CITY'
+      ? form.values.legs.filter(l => l.from_city && l.to_city && l.travel_date)
+      : [];
     return {
       trip_type: form.values.trip_type,
-      travel_mode: form.values.travel_mode,
+      travel_mode: form.values.trip_type === 'MULTI_CITY' ? (legs[0]?.travel_mode || 'FLIGHT') : form.values.travel_mode,
       from_city: form.values.trip_type !== 'MULTI_CITY' ? form.values.from_city : null,
       to_city: form.values.trip_type !== 'MULTI_CITY' ? form.values.to_city : null,
       travel_date: form.values.trip_type !== 'MULTI_CITY' ? form.values.travel_date : null,
@@ -171,7 +187,7 @@ export default function TravelRequestsPage() {
       purpose: form.values.purpose || null,
       preferred_class: form.values.preferred_class || null,
       notes: form.values.notes || null,
-      legs: form.values.trip_type === 'MULTI_CITY' ? form.values.legs.filter(l => l.from_city && l.to_city && l.travel_date) : [],
+      legs,
     };
   }
 
@@ -181,7 +197,7 @@ export default function TravelRequestsPage() {
     try {
       if (!form.validateAll()) return;
 
-      const mode = form.values.travel_mode;
+      const mode = form.values.trip_type === 'MULTI_CITY' ? (form.values.legs[0]?.travel_mode || 'FLIGHT') : form.values.travel_mode;
       setIsSubmitting(true);
       setSubmissionState({ active: true, status: 'submitting', mode });
 
@@ -204,7 +220,7 @@ export default function TravelRequestsPage() {
         purpose: '',
         preferred_class: '',
         notes: '',
-        legs: [{ travel_mode: '', from_city: '', to_city: '', travel_date: '', preferred_time: '' }]
+        legs: [{ travel_mode: 'FLIGHT', from_city: '', to_city: '', travel_date: '', preferred_time: '' }]
       });
 
     } catch (err) {
@@ -231,7 +247,7 @@ export default function TravelRequestsPage() {
       return;
     }
 
-    const mode = form.values.travel_mode;
+    const mode = form.values.trip_type === 'MULTI_CITY' ? (form.values.legs[0]?.travel_mode || 'FLIGHT') : form.values.travel_mode;
     setSubmittingException(true);
     setSubmissionState({ active: true, status: 'submitting', mode });
     try {
@@ -259,7 +275,7 @@ export default function TravelRequestsPage() {
         purpose: '',
         preferred_class: '',
         notes: '',
-        legs: [{ travel_mode: '', from_city: '', to_city: '', travel_date: '', preferred_time: '' }]
+        legs: [{ travel_mode: 'FLIGHT', from_city: '', to_city: '', travel_date: '', preferred_time: '' }]
       });
     } catch (err) {
       setSubmissionState({ active: false, status: 'idle', mode: null });
@@ -304,19 +320,18 @@ export default function TravelRequestsPage() {
     }
   }
 
-  async function viewTicket(row) {
-    const ticketId = row.ticket?.id;
-    if (!ticketId) return;
+  async function viewTicket(ticket, title) {
+    if (!ticket?.id) return;
     try {
-      const resp = await reimbursementApi.travelTicketFileBlob(ticketId);
-      const filename = row.ticket?.original_filename || 'ticket.pdf';
-      const ctype = row.ticket?.content_type || resp.headers['content-type'] || '';
+      const resp = await reimbursementApi.travelTicketFileBlob(ticket.id);
+      const filename = ticket.original_filename || 'ticket.pdf';
+      const ctype = ticket.content_type || resp.headers['content-type'] || '';
       setPreview({
         open: true,
         blob: resp.data,
         name: filename,
         type: ctype,
-        title: `Ticket · ${row.request.from_city} → ${row.request.to_city}`,
+        title: title || 'Ticket',
       });
     } catch (e) {
       showToast('Could not load ticket preview', 'error');
@@ -394,6 +409,7 @@ export default function TravelRequestsPage() {
             <table className="w-full text-left text-xs border-collapse min-w-[720px]">
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-100/60 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                  <th className="w-8 px-2 py-3" />
                   <th className="px-5 py-3">Travel Date</th>
                   <th className="px-5 py-3">Route</th>
                   <th className="px-5 py-3">Mode</th>
@@ -404,77 +420,116 @@ export default function TravelRequestsPage() {
               <tbody className="divide-y divide-slate-150 font-medium text-slate-700">
                 {(rows || []).length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="px-5 py-8 text-center text-slate-400 italic">
+                    <td colSpan={6} className="px-5 py-8 text-center text-slate-400 italic">
                       No travel requests created yet.
                     </td>
                   </tr>
                 ) : (
-                  rows.map(({ request, ticket }) => {
+                  rows.map(({ request }) => {
                     const statusDetails = getStatusDetails(request.status);
+                    const isExpanded = expandedIds.has(request.id);
 
                     return (
-                      <tr key={request.id} className="hover:bg-slate-50/50 transition-colors">
-                        <td className="whitespace-nowrap px-5 py-3">
-                          {request.trip_type === 'MULTI_CITY' && request.legs?.length > 0 ? request.legs[0].travel_date : request.travel_date}
-                        </td>
-                        <td className="px-5 py-3">
-                          {request.trip_type === 'MULTI_CITY' && request.legs && request.legs.length > 0 ? (
-                            <div className="flex flex-col gap-1">
-                              {request.legs.map((leg, i) => (
-                                <div key={i} className="flex items-center gap-1 font-bold text-slate-800 text-[11px]">
-                                  <span>{leg.from_city}</span>
-                                  <ArrowRight size={8} className="text-slate-400" />
-                                  <span>{leg.to_city}</span>
-                                  <span className="text-slate-400 font-normal ml-1">({leg.travel_date})</span>
-                                </div>
+                      <Fragment key={request.id}>
+                        <tr className="hover:bg-slate-50/50 transition-colors">
+                          <td className="px-2 py-3">
+                            <button
+                              type="button"
+                              className="flex h-6 w-6 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors"
+                              onClick={() => toggleExpand(request.id)}
+                              aria-label={isExpanded ? 'Hide approval progress' : 'Show approval progress'}
+                              title={isExpanded ? 'Hide approval progress' : 'Show approval progress'}
+                            >
+                              {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                            </button>
+                          </td>
+                          <td className="whitespace-nowrap px-5 py-3">
+                            {request.trip_type === 'MULTI_CITY' && request.legs?.length > 0 ? request.legs[0].travel_date : request.travel_date}
+                          </td>
+                          <td className="px-5 py-3">
+                            {request.trip_type === 'MULTI_CITY' && request.legs && request.legs.length > 0 ? (
+                              <div className="flex flex-col gap-1">
+                                {request.legs.map((leg, i) => (
+                                  <div key={i} className="flex items-center gap-1 font-bold text-slate-800 text-[11px]">
+                                    <ModeIcon mode={leg.travel_mode || request.travel_mode} className="text-slate-400" />
+                                    <span>{leg.from_city}</span>
+                                    <ArrowRight size={8} className="text-slate-400" />
+                                    <span>{leg.to_city}</span>
+                                    <span className="text-slate-400 font-normal ml-1">({leg.travel_date})</span>
+                                  </div>
+                                ))}
+                                <div className="mt-0.5"><span className="inline-flex items-center rounded-sm bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600">Multi City</span></div>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1 font-bold text-slate-800">
+                                <span>{request.from_city}</span>
+                                <ArrowRight size={10} className="text-slate-400" />
+                                <span>{request.to_city}</span>
+                                {request.trip_type === 'ROUND_TRIP' && (
+                                  <span className="ml-1 inline-flex items-center rounded-sm bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600">Round Trip</span>
+                                )}
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-5 py-3">
+                            {request.trip_type === 'MULTI_CITY' && request.legs?.length > 0 ? (
+                              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                {[...new Set(request.legs.map((leg) => leg.travel_mode || request.travel_mode))].map((m) => (
+                                  <span key={m} className="flex items-center gap-1">
+                                    <ModeIcon mode={m} className="text-slate-400" />
+                                    <span>{m}</span>
+                                  </span>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1.5">
+                                <ModeIcon mode={request.travel_mode} className="text-slate-400" />
+                                <span>{request.travel_mode}</span>
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-5 py-3">
+                            <div className="flex items-center gap-1.5">
+                              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[9px] font-bold tracking-tight uppercase ${statusDetails.bg}`}>
+                                {statusDetails.label}
+                              </span>
+                              {request.exception ? (
+                                <GitBranch size={11} className="text-orange-500" aria-label="Has policy exception" />
+                              ) : null}
+                            </div>
+                          </td>
+                          <td className="whitespace-nowrap px-5 py-3 text-right">
+                            <div className="flex justify-end gap-2">
+                              {(request.segments || []).filter((s) => s.ticket).map((seg) => (
+                                <button
+                                  key={seg.seq}
+                                  type="button"
+                                  className="inline-flex h-7 items-center justify-center rounded border border-slate-205 hover:bg-slate-50 text-[10px] font-bold text-slate-700 px-3 transition-all"
+                                  onClick={() => viewTicket(seg.ticket, `Ticket · ${seg.label}`)}
+                                >
+                                  {(request.segments || []).length > 1 ? `View Ticket (${seg.label})` : 'View Ticket'}
+                                </button>
                               ))}
-                              <div className="mt-0.5"><span className="inline-flex items-center rounded-sm bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600">Multi City</span></div>
+                              {request.status === 'PENDING' || request.status === 'PENDING_EXCEPTION' ? (
+                                <button
+                                  type="button"
+                                  className="inline-flex h-7 items-center justify-center rounded border border-rose-200 hover:bg-rose-50 text-[10px] font-bold text-rose-700 px-3 transition-all"
+                                  onClick={() => setConfirmCancelId(request.id)}
+                                >
+                                  Cancel Request
+                                </button>
+                              ) : null}
                             </div>
-                          ) : (
-                            <div className="flex items-center gap-1 font-bold text-slate-800">
-                              <span>{request.from_city}</span>
-                              <ArrowRight size={10} className="text-slate-400" />
-                              <span>{request.to_city}</span>
-                              {request.trip_type === 'ROUND_TRIP' && (
-                                <span className="ml-1 inline-flex items-center rounded-sm bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600">Round Trip</span>
-                              )}
-                            </div>
-                          )}
-                        </td>
-                        <td className="px-5 py-3">
-                          <div className="flex items-center gap-1.5">
-                            <ModeIcon mode={request.travel_mode} className="text-slate-400" />
-                            <span>{request.travel_mode}</span>
-                          </div>
-                        </td>
-                        <td className="px-5 py-3">
-                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[9px] font-bold tracking-tight uppercase ${statusDetails.bg}`}>
-                            {statusDetails.label}
-                          </span>
-                        </td>
-                        <td className="whitespace-nowrap px-5 py-3 text-right">
-                          <div className="flex justify-end gap-2">
-                            {request.status === 'BOOKED' && ticket ? (
-                              <button
-                                type="button"
-                                className="inline-flex h-7 items-center justify-center rounded border border-slate-205 hover:bg-slate-50 text-[10px] font-bold text-slate-700 px-3 transition-all"
-                                onClick={() => viewTicket({ request, ticket })}
-                              >
-                                View Ticket
-                              </button>
-                            ) : null}
-                            {request.status === 'PENDING' || request.status === 'PENDING_EXCEPTION' ? (
-                              <button
-                                type="button"
-                                className="inline-flex h-7 items-center justify-center rounded border border-rose-200 hover:bg-rose-50 text-[10px] font-bold text-rose-700 px-3 transition-all"
-                                onClick={() => setConfirmCancelId(request.id)}
-                              >
-                                Cancel Request
-                              </button>
-                            ) : null}
-                          </div>
-                        </td>
-                      </tr>
+                          </td>
+                        </tr>
+                        {isExpanded ? (
+                          <tr className="bg-slate-50/60">
+                            <td colSpan={6} className="px-5 py-4 border-b border-slate-150">
+                              <TravelRequestProgress request={request} />
+                            </td>
+                          </tr>
+                        ) : null}
+                      </Fragment>
                     );
                   })
                 )}
@@ -590,20 +645,22 @@ export default function TravelRequestsPage() {
 
             <form className="flex min-h-0 flex-1 flex-col" onSubmit={onCreate}>
               <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
-              {/* Travel Mode */}
-              <div className="space-y-1">
-                <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Travel Mode *</span>
-                <select
-                  className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none bg-white transition-all"
-                  value={form.values.travel_mode}
-                  onChange={(e) => form.handleChange('travel_mode', e.target.value)}
-                  onBlur={() => form.handleBlur('travel_mode')}
-                >
-                  <option value="FLIGHT">Flight</option>
-                  <option value="TRAIN">Train</option>
-                  <option value="BUS">Bus</option>
-                </select>
-              </div>
+              {/* Travel Mode (multi-city sets this per leg instead) */}
+              {form.values.trip_type !== 'MULTI_CITY' && (
+                <div className="space-y-1">
+                  <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Travel Mode *</span>
+                  <select
+                    className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none bg-white transition-all"
+                    value={form.values.travel_mode}
+                    onChange={(e) => form.handleChange('travel_mode', e.target.value)}
+                    onBlur={() => form.handleBlur('travel_mode')}
+                  >
+                    <option value="FLIGHT">Flight</option>
+                    <option value="TRAIN">Train</option>
+                    <option value="BUS">Bus</option>
+                  </select>
+                </div>
+              )}
 
               {/* Trip Type */}
               <div className="space-y-1 border-b border-slate-100 pb-4">
@@ -667,7 +724,24 @@ export default function TravelRequestsPage() {
                   <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Trip Legs *</span>
                   {form.values.legs.map((leg, i) => (
                     <div key={i} className="p-3 bg-slate-50 border border-slate-200 rounded-lg relative">
-                      <div className="grid gap-3 md:grid-cols-3">
+                      <div className="grid gap-3 md:grid-cols-4">
+                        <div className="space-y-1">
+                          <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Mode *</span>
+                          <select
+                            className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none bg-white transition-all"
+                            required
+                            value={leg.travel_mode || 'FLIGHT'}
+                            onChange={(e) => {
+                              const newLegs = [...form.values.legs];
+                              newLegs[i].travel_mode = e.target.value;
+                              form.handleChange('legs', newLegs);
+                            }}
+                          >
+                            <option value="FLIGHT">Flight</option>
+                            <option value="TRAIN">Train</option>
+                            <option value="BUS">Bus</option>
+                          </select>
+                        </div>
                         <div className="space-y-1">
                           <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">From City *</span>
                           <input
@@ -726,7 +800,7 @@ export default function TravelRequestsPage() {
                     </div>
                   ))}
                   <button type="button" onClick={() => {
-                    form.handleChange('legs', [...form.values.legs, { travel_mode: '', from_city: '', to_city: '', travel_date: '', preferred_time: '' }]);
+                    form.handleChange('legs', [...form.values.legs, { travel_mode: 'FLIGHT', from_city: '', to_city: '', travel_date: '', preferred_time: '' }]);
                   }} className="text-[12px] font-medium text-brand flex items-center gap-1 hover:underline">
                     <Plus size={14} /> Add another leg
                   </button>

@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     invoice_storage_dir: str = "storage/invoices"
     travel_ticket_storage_dir: str = "storage/travel_tickets"
     travel_request_min_lead_working_days: int = 2
+    flight_advance_booking_min_days: int = 7
     # Optional GSTN live validation.
     gstn_public_api_base: str | None = None
     gstn_http_timeout_seconds: float = 8.0

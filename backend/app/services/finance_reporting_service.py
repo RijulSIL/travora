@@ -519,7 +519,7 @@ async def list_exception_requests_log(
             User.email,
             User.full_name,
         )
-        .join(ClaimDraft, ClaimDraft.id == ExceptionRequest.claim_id)
+        .outerjoin(ClaimDraft, ClaimDraft.id == ExceptionRequest.claim_id)
         .outerjoin(User, User.id == ExceptionRequest.requested_by_user_id)
     )
     start, end = _date_bounds(from_date, to_date)
@@ -558,11 +558,24 @@ async def list_exception_requests_log(
             from app.services.workflow_service import _can_user_act_on_exception
             if not await _can_user_act_on_exception(current_user, exc, approvals, db):
                 continue
+        # Every reference in this log follows the same "PREFIX-0000" shape (matching the
+        # persisted CLM-YYYY-NNNN claim_reference) instead of mixing a bare id, a padded
+        # code, and a spelled-out "Travel Request #N" string across the three id types.
+        if claim_ref:
+            resolved_ref = claim_ref
+        elif exc.claim_id:
+            resolved_ref = f"CLM-{exc.claim_id:04d}"
+        elif exc.travel_request_id:
+            resolved_ref = f"TR-{exc.travel_request_id:04d}"
+        else:
+            resolved_ref = None
+
         response.append(
             {
                 "exception_id": exc.id,
+                "exception_ref": f"EXC-{exc.id:04d}",
                 "claim_id": exc.claim_id,
-                "claim_ref": claim_ref,
+                "claim_ref": resolved_ref,
                 "employee": full_name or email,
                 "employee_id": employee_id,
                 "exception_type": exc.exception_type,

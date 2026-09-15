@@ -134,6 +134,7 @@ class ExceptionApprovalDecisionOut(BaseModel):
 
 class ExceptionRequestLogOut(BaseModel):
     exception_id: int
+    exception_ref: str | None = None
     claim_id: int | None = None
     claim_ref: str | None = None
     employee: str | None = None

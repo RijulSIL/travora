@@ -23,8 +23,17 @@ const emptyForm = {
   policy_version_id: null,
 };
 
-const defaultTrainClasses = '3A,CC,SL';
 const defaultConveyanceModes = 'Own Vehicle 4W,Own Vehicle 2W,Hired Taxi,Auto/Cab';
+
+// PRD 2.2: "Train class(es) allowed: multi-select from 1AC, 2AC, 3AC, CC, EC, SL"
+const TRAIN_CLASS_OPTIONS = ['1AC', '2AC', '3AC', 'CC', 'EC', 'SL'];
+const normalizeTrainClass = (code) => {
+  const upper = String(code).trim().toUpperCase();
+  if (upper === '1A') return '1AC';
+  if (upper === '2A') return '2AC';
+  if (upper === '3A') return '3AC';
+  return upper;
+};
 
 export default function ImpactLevelMaster() {
   useSetPageTitle('Impact Levels');
@@ -34,7 +43,6 @@ export default function ImpactLevelMaster() {
   const [selectedVersionId, setSelectedVersionId] = useState('');
   const [form, setForm] = useState(emptyForm);
   const [airApprovalRequired, setAirApprovalRequired] = useState(false);
-  const [trainClassesText, setTrainClassesText] = useState(defaultTrainClasses);
   const [conveyanceText, setConveyanceText] = useState(defaultConveyanceModes);
   const [editingId, setEditingId] = useState(null);
   const [loadError, setLoadError] = useState(null);
@@ -90,7 +98,6 @@ export default function ImpactLevelMaster() {
       policy_version_id: selectedVersionId ? Number(selectedVersionId) : null,
     });
     setAirApprovalRequired(false);
-    setTrainClassesText(defaultTrainClasses);
     setConveyanceText(defaultConveyanceModes);
     setEditingId(null);
   };
@@ -99,10 +106,6 @@ export default function ImpactLevelMaster() {
     if (!selectedVersionId) {
       throw new Error('Select a draft policy version first');
     }
-    const trainClassesAllowed = trainClassesText
-      .split(',')
-      .map((item) => item.trim())
-      .filter(Boolean);
     const localConveyanceModes = conveyanceText
       .split(',')
       .map((item) => item.trim())
@@ -112,7 +115,7 @@ export default function ImpactLevelMaster() {
       policy_version_id: Number(selectedVersionId),
       air_class_allowed: form.air_class_allowed || null,
       air_eligibility_conditions: { approval_required: airApprovalRequired },
-      train_classes_allowed: trainClassesAllowed,
+      train_classes_allowed: form.train_classes_allowed || [],
       local_conveyance_modes: localConveyanceModes,
       vehicle_rate_4w: form.vehicle_rate_4w || null,
       vehicle_rate_2w: form.vehicle_rate_2w || null,
@@ -216,7 +219,29 @@ export default function ImpactLevelMaster() {
           <div className="col-span-full grid gap-6 lg:grid-cols-2 mt-2">
             <div>
               <label className="mb-1.5 block text-xs font-bold text-slate-600 uppercase tracking-wider">Train Classes</label>
-              <textarea className="field w-full min-h-[100px] text-sm text-slate-900" placeholder="3A, CC, SL (comma-separated)" value={trainClassesText} onChange={(event) => setTrainClassesText(event.target.value)} />
+              <div className="field w-full min-h-[100px] flex flex-wrap content-start gap-x-4 gap-y-2 py-3">
+                {TRAIN_CLASS_OPTIONS.map((code) => {
+                  const checked = (form.train_classes_allowed || []).includes(code);
+                  return (
+                    <label key={code} className="flex items-center gap-1.5 text-sm font-semibold text-slate-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand"
+                        disabled={isViewOnly}
+                        checked={checked}
+                        onChange={(event) => {
+                          const current = form.train_classes_allowed || [];
+                          const next = event.target.checked
+                            ? [...current, code]
+                            : current.filter((c) => c !== code);
+                          setForm({ ...form, train_classes_allowed: next });
+                        }}
+                      />
+                      {code}
+                    </label>
+                  );
+                })}
+              </div>
             </div>
             <div>
               <label className="mb-1.5 block text-xs font-bold text-slate-600 uppercase tracking-wider">Local Conveyance Modes</label>
@@ -295,9 +320,11 @@ export default function ImpactLevelMaster() {
                           air_class_allowed: level.air_class_allowed || '',
                           vehicle_rate_4w: level.vehicle_rate_4w ?? '',
                           vehicle_rate_2w: level.vehicle_rate_2w ?? '',
+                          train_classes_allowed: Array.from(
+                            new Set((level.train_classes_allowed || []).map(normalizeTrainClass)),
+                          ),
                         });
                         setAirApprovalRequired(level.air_eligibility_conditions?.approval_required || false);
-                        setTrainClassesText((level.train_classes_allowed || []).join(','));
                         setConveyanceText((level.local_conveyance_modes || []).join(','));
                         setEditingId(level.id);
                       }}>Edit</button>

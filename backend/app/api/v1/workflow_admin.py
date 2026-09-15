@@ -13,7 +13,7 @@ from app.services.workflow_service import get_workflow_config, save_workflow_con
 
 router = APIRouter(prefix="/workflow", tags=["workflow"])
 
-_READ_WORKFLOW = [Depends(require_any_permission("configure_policy", "view_workflow_config"))]
+_READ_WORKFLOW = [Depends(require_any_permission("view_workflow_config", "edit_workflow_config"))]
 _WRITE_WORKFLOW = [Depends(require_permission("edit_workflow_config")), Depends(require_mfa)]
 
 

@@ -10,8 +10,20 @@ from app.core.rbac import get_current_claims
 from app.models.auth import Role, User
 from app.models.employee import Employee
 from app.models.reimbursement import ClaimDraft, ClaimExpense
+from app.services.budget_service import get_effective_budget, is_budgets_enabled
 
 router = APIRouter(prefix="/reports/manager", tags=["reports"])
+
+
+def _empty_response(budgets_enabled: bool) -> dict:
+    return {
+        "spend_by_month": [],
+        "spend_by_category": [],
+        "budgets_enabled": budgets_enabled,
+        "team_monthly_budget": None,
+        "budget_source": None,
+    }
+
 
 @router.get("/team-spend")
 async def get_team_spend(
@@ -22,26 +34,34 @@ async def get_team_spend(
         role = Role(claims.get("role"))
     except ValueError:
         role = Role.EMPLOYEE
-        
+
     if role != Role.REPORTING_MANAGER:
         raise HTTPException(status_code=403, detail="Forbidden")
 
     current_user_id = int(claims["sub"])
+    budgets_enabled = await is_budgets_enabled(db)
+
     mgr = await db.get(User, current_user_id)
     if not mgr or not mgr.employee_id:
-        return {"spend_by_month": [], "spend_by_category": []}
+        return _empty_response(budgets_enabled)
 
     # Find subordinates
     sub_stmt = select(Employee.employee_id).where(Employee.reporting_manager_id == mgr.employee_id)
     sub_emp_ids = (await db.execute(sub_stmt)).scalars().all()
     if not sub_emp_ids:
-        return {"spend_by_month": [], "spend_by_category": []}
+        return _empty_response(budgets_enabled)
 
     user_stmt = select(User.id).where(User.employee_id.in_(sub_emp_ids))
     team_user_ids = (await db.execute(user_stmt)).scalars().all()
-    
+
     if not team_user_ids:
-        return {"spend_by_month": [], "spend_by_category": []}
+        return _empty_response(budgets_enabled)
+
+    team_monthly_budget: float | None = None
+    budget_source: str | None = None
+    if budgets_enabled:
+        effective_budget, budget_source = await get_effective_budget(current_user_id, db)
+        team_monthly_budget = float(effective_budget) if effective_budget is not None else None
 
     # Aggregate spend by month for the last 6 months
     today = date.today()
@@ -64,7 +84,7 @@ async def get_team_spend(
     for i in range(6):
         d = start_date + relativedelta(months=i)
         month_label = d.strftime("%b")
-        monthly_totals[month_label] = {"month": month_label, "budget": 50000, "spend": 0}
+        monthly_totals[month_label] = {"month": month_label, "budget": team_monthly_budget, "spend": 0}
 
     category_totals = {}
 
@@ -84,5 +104,8 @@ async def get_team_spend(
     
     return {
         "spend_by_month": spend_by_month,
-        "spend_by_category": sorted_cats
+        "spend_by_category": sorted_cats,
+        "budgets_enabled": budgets_enabled,
+        "team_monthly_budget": team_monthly_budget,
+        "budget_source": budget_source,
     }

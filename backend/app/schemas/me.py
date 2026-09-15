@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from pydantic import BaseModel, Field
 
 
@@ -21,11 +23,21 @@ class MeOut(BaseModel):
     payment_queue_total_inr: str | None = None
     exception_requests_pending_count: int = 0
     advance_deductions_flagged_count: int = 0
+    # Only populated for HRBP_HR: requests awaiting ticketing (APPROVED or PARTIALLY_BOOKED).
+    travel_desk_queue_count: int = 0
     # From company profile (allowed for all authenticated users — no bank / GSTIN payload).
     company_office_locations: list[str] = Field(default_factory=list)
     workflow_submission_deadline_mode: str = "hard_block"
     workflow_submission_max_working_days: int = 5
     is_acting_delegate: bool = False
+    # Only populated for REPORTING_MANAGER: their personal claim auto-approve threshold
+    # (null = disabled, always require manual review) and the org-wide ceiling it is capped at.
+    auto_approve_threshold: str | None = None
+    org_auto_approve_ceiling: str | None = None
+
+
+class AutoApproveThresholdIn(BaseModel):
+    threshold: Decimal | None = Field(default=None, ge=0)
 
 
 class DelegationIn(BaseModel):

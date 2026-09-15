@@ -140,6 +140,7 @@ class PolicyVersionOut(PolicyVersionIn):
 
     id: int
     approved_by: int | None = None
+    approved_at: datetime | None = None
     created_by: int | None = None
     created_at: datetime
 
@@ -208,6 +209,7 @@ class ExpenseCategoryIn(BaseModel):
     bill_mandatory: bool = False
     gst_invoice_required: bool = False
     blacklisted_items: list[str] | None = None
+    notes: str | None = None
     policy_version_id: int
 
 

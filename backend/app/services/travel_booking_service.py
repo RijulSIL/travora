@@ -7,6 +7,7 @@ from fastapi import HTTPException, UploadFile, status
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.auth import User
 from app.models.claim_workflow import ExceptionApproval, ExceptionRequest, ExceptionRequestStatus
 from app.models.employee import Employee
@@ -81,6 +82,31 @@ async def _get_user_impact_level_code(user_id: int, db: AsyncSession) -> str:
     if impact is None:
         return "L5A"
     return _normalize_level(impact.level_code)
+
+
+def _canonical_train_class(code: str) -> str:
+    """Normalizes the two class-code conventions seen in this codebase ("2AC" vs "2A")
+    so admin-configured class lists and free-text preferred_class inputs compare equal
+    regardless of which convention was used to enter them."""
+    normalized = code.strip().upper()
+    if normalized in {"1AC", "2AC", "3AC"}:
+        return normalized[:-1]
+    return normalized
+
+
+async def _get_configured_train_classes(user_id: int, db: AsyncSession) -> set[str] | None:
+    """Returns the admin-configured train_classes_allowed for the user's Impact Level,
+    or None if nothing is configured (caller should fall back to the built-in default)."""
+    user = await db.get(User, user_id)
+    if user is None or not user.employee_id:
+        return None
+    employee = await db.get(Employee, user.employee_id)
+    if employee is None or employee.impact_level_id is None:
+        return None
+    impact = await db.get(ImpactLevel, employee.impact_level_id)
+    if impact is None or not impact.train_classes_allowed:
+        return None
+    return {_canonical_train_class(str(code)) for code in impact.train_classes_allowed}
 
 
 async def _has_completed_exception_chain(user_id: int, exception_type: str, db: AsyncSession) -> bool:
@@ -171,14 +197,15 @@ async def search_flights(from_city: str, to_city: str, travel_date: date, user_i
                 ),
             )
 
-    min_advance_enforced = days_in_advance < 7
+    min_days = settings.flight_advance_booking_min_days
+    min_advance_enforced = days_in_advance < min_days
     has_advance_override = await _has_completed_exception_chain(
         user_id, "FLIGHT_ADVANCE_BOOKING_OVERRIDE", db
     )
     if min_advance_enforced and not has_advance_override:
         raise HTTPException(
             status_code=422,
-            detail="Minimum 7-day advance booking window is enforced.",
+            detail=f"Minimum {min_days}-day advance booking window is enforced.",
         )
 
     eligible = [row for row in inventory if row["travel_class"] in allowed]

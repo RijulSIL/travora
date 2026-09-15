@@ -106,6 +106,7 @@ function NavRow({ to, end, emoji, label, onNavigate, badge, badgeVariant, extra 
 function resolveBadge(item, profile) {
   if (item.badge === 'pending') return profile?.pending_approvals_count;
   if (item.badge === 'exceptions') return profile?.exception_requests_pending_count;
+  if (item.badge === 'travel_desk') return profile?.travel_desk_queue_count;
   return null;
 }
 

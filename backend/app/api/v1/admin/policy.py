@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
@@ -25,8 +25,10 @@ from app.schemas.common import (
     PolicyVersionIn,
     PolicyVersionOut,
 )
+from app.services.audit_service import log_event
 from app.services.policy_engine import (
     diff_policy_versions,
+    enforce_city_group_immutability,
     enforce_immutability,
     resolve_city_group,
     validate_city_group_overlap,
@@ -103,6 +105,7 @@ async def _clone_policy_snapshot_from_source(
             bill_mandatory=source_category.bill_mandatory,
             gst_invoice_required=source_category.gst_invoice_required,
             blacklisted_items=source_category.blacklisted_items,
+            notes=source_category.notes,
             is_active=source_category.is_active,
             policy_version_id=target_version_id,
         )
@@ -198,6 +201,7 @@ async def update_city_group(
     item = await db.get(CityGroup, item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="City group not found")
+    enforce_city_group_immutability(item)
     if payload.effective_to is not None and payload.effective_to <= payload.effective_from:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -232,6 +236,7 @@ async def delete_city_group(item_id: int, db: AsyncSession = Depends(get_db)) ->
     item = await db.get(CityGroup, item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="City group not found")
+    enforce_city_group_immutability(item)
     await db.delete(item)
     await db.commit()
     return {"status": "deleted"}
@@ -317,6 +322,15 @@ async def create_policy_version(
         ).scalars().first()
     if source_version is not None:
         await _clone_policy_snapshot_from_source(source_version.id, item.id, db)
+    await log_event(
+        entity_type="policy_version",
+        entity_id=str(item.id),
+        action="policy_version_created",
+        actor_id=user_id,
+        old=None,
+        new={"version_number": item.version_number, "effective_from": item.effective_from.isoformat()},
+        db=db,
+    )
     await db.commit()
     await db.refresh(item)
     return item
@@ -341,7 +355,11 @@ async def update_policy_version(
 
 
 @router.post("/policy-versions/{version_id}/submit", dependencies=_WRITE_ADMIN_POLICY)
-async def submit_policy_version(version_id: int, db: AsyncSession = Depends(get_db)) -> dict[str, str]:
+async def submit_policy_version(
+    version_id: int,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
     item = await db.get(PolicyVersion, version_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Policy version not found")
@@ -349,6 +367,15 @@ async def submit_policy_version(version_id: int, db: AsyncSession = Depends(get_
     if item.status != PolicyStatus.DRAFT:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only drafts can be submitted")
     item.status = PolicyStatus.PENDING_HRBP
+    await log_event(
+        entity_type="policy_version",
+        entity_id=str(item.id),
+        action="policy_version_submitted",
+        actor_id=int(claims["sub"]),
+        old={"status": PolicyStatus.DRAFT.value},
+        new={"status": PolicyStatus.PENDING_HRBP.value},
+        db=db,
+    )
     await db.commit()
     return {"status": "pending_hrbp"}
 
@@ -375,8 +402,19 @@ async def approve_policy_version(
     for active in active_versions:
         active.status = PolicyStatus.ARCHIVED
         active.effective_to = item.effective_from
+    approver_id = int(claims["sub"])
     item.status = PolicyStatus.ACTIVE
-    item.approved_by = int(claims["sub"])
+    item.approved_by = approver_id
+    item.approved_at = datetime.utcnow()
+    await log_event(
+        entity_type="policy_version",
+        entity_id=str(item.id),
+        action="policy_version_approved",
+        actor_id=approver_id,
+        old={"status": PolicyStatus.PENDING_HRBP.value},
+        new={"status": PolicyStatus.ACTIVE.value, "approved_at": item.approved_at.isoformat()},
+        db=db,
+    )
     await db.commit()
     return {"status": "active"}
 

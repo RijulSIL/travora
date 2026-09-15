@@ -13,6 +13,7 @@ from app.models.expense_category import CompanyProfile
 from app.models.policy import CityGroupType, ExpenseLimit, ImpactLevel, PolicyStatus, PolicyVersion
 from app.models.reimbursement import ClaimDraft, ClaimStatus
 from app.schemas.me import MeOut
+from app.services.claim_submission_rules import parse_auto_approve_threshold
 from app.services.workflow_service import get_workflow_config, list_pending_approvals
 
 
@@ -69,6 +70,11 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
         travel_reqs = await list_pending_travel_requests_for_manager(user_id, db)
         pending_count += len(travel_reqs)
 
+    travel_desk_queue_count = 0
+    if user.role == Role.HRBP_HR:
+        from app.services.travel_request_service import count_pending_travel_requests_for_desk
+        travel_desk_queue_count = await count_pending_travel_requests_for_desk(db)
+
     pq_total_str: str | None = None
     if user.role == Role.FINANCE and pending_rows:
         total = sum(Decimal(str(row.get("amount", "0") or "0")) for row in pending_rows)
@@ -117,6 +123,13 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
     deadline_mode = submission_cfg.get("deadline_mode", "hard_block")
     max_days = int(submission_cfg.get("max_working_days_after_return", 5))
 
+    auto_approve_threshold_str: str | None = None
+    org_auto_approve_ceiling_str: str | None = None
+    if user.role == Role.REPORTING_MANAGER:
+        org_auto_approve_ceiling_str = _fmt_inr(parse_auto_approve_threshold(workflow_cfg))
+        if user.auto_approve_threshold is not None:
+            auto_approve_threshold_str = _fmt_inr(user.auto_approve_threshold)
+
     now = datetime.utcnow()
     delegation_q = select(Delegation.id).where(
         Delegation.delegatee_id == user_id,
@@ -144,8 +157,11 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
         payment_queue_total_inr=pq_total_str,
         exception_requests_pending_count=int(exc_pending),
         advance_deductions_flagged_count=0,
+        travel_desk_queue_count=travel_desk_queue_count,
         company_office_locations=company_office_locations,
         workflow_submission_deadline_mode=deadline_mode,
         workflow_submission_max_working_days=max_days,
         is_acting_delegate=is_acting_delegate,
+        auto_approve_threshold=auto_approve_threshold_str,
+        org_auto_approve_ceiling=org_auto_approve_ceiling_str,
     )

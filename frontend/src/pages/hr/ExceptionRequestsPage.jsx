@@ -164,14 +164,16 @@ export default function ExceptionRequestsPage() {
                         setExpandedId(expandedId === row.exception_id ? null : row.exception_id)
                       }
                     >
-                    <td className="px-4 py-3 font-semibold text-slate-800">#{row.exception_id}</td>
+                    <td className="px-4 py-3 font-semibold text-slate-800">
+                      {row.exception_ref || `EXC-${String(row.exception_id).padStart(4, '0')}`}
+                    </td>
                     <td className="px-4 py-3 font-medium text-slate-600" onClick={(e) => e.stopPropagation()}>
                       {row.claim_id ? (
                         <Link
                           to={`/claims/${row.claim_id}`}
                           className="text-brand hover:underline font-semibold flex items-center gap-1"
                         >
-                          {row.claim_ref || `CLM-${row.claim_id}`} ↗
+                          {row.claim_ref} ↗
                         </Link>
                       ) : (
                         row.claim_ref || '—'

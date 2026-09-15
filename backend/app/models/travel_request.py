@@ -18,6 +18,7 @@ class TravelRequestStatus(str, enum.Enum):
     PENDING = "PENDING"
     PENDING_EXCEPTION = "PENDING_EXCEPTION"
     APPROVED = "APPROVED"
+    PARTIALLY_BOOKED = "PARTIALLY_BOOKED"
     BOOKED = "BOOKED"
     REJECTED = "REJECTED"
     CANCELLED = "CANCELLED"
@@ -56,6 +57,11 @@ class TravelRequest(Base):
         cascade="all, delete-orphan",
         order_by="TravelRequestLeg.leg_sequence"
     )
+    tickets = relationship(
+        "TravelRequestTicket",
+        order_by="TravelRequestTicket.leg_sequence, TravelRequestTicket.uploaded_at",
+        viewonly=True,
+    )
 
 class TravelRequestLeg(Base):
     __tablename__ = "travel_request_legs"
@@ -79,6 +85,7 @@ class TravelRequestTicket(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     travel_request_id: Mapped[int] = mapped_column(ForeignKey("travel_requests.id"), nullable=False, index=True)
     travel_trip_id: Mapped[int | None] = mapped_column(ForeignKey("travel_trips.id"), nullable=True, index=True)
+    leg_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     uploaded_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     file_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     original_filename: Mapped[str] = mapped_column(String(255), nullable=False)

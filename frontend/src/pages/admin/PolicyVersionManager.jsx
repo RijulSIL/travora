@@ -205,7 +205,7 @@ export default function PolicyVersionManager() {
                       </>
                     ) : null}
                     {!isViewOnly && version.status === 'DRAFT' ? <button className="btn-primary h-8 px-3 text-[11px] font-bold bg-slate-800 hover:bg-slate-700" onClick={() => submitAction.run(version.id)} disabled={submitAction.loading}><Send size={14} />Submit for Review</button> : null}
-                    {!isViewOnly && version.status === 'SUBMITTED' && role === 'HRBP_HR' ? <button className="btn-primary h-8 px-3 text-[11px] font-bold bg-brand hover:bg-brand/90" onClick={() => approveAction.run(version.id)} disabled={approveAction.loading}><CheckCircle size={14} />Approve Policy</button> : null}
+                    {!isViewOnly && version.status === 'PENDING_HRBP' && role === 'HRBP_HR' ? <button className="btn-primary h-8 px-3 text-[11px] font-bold bg-brand hover:bg-brand/90" onClick={() => approveAction.run(version.id)} disabled={approveAction.loading}><CheckCircle size={14} />Approve Policy</button> : null}
                   </div>
                 </td>
               </tr>

@@ -10,6 +10,14 @@ function S(items) {
   return [{ title: null, items }];
 }
 
+/** Every role gets these regardless of permission level, alongside their own role-specific pages. */
+const SELF_SERVICE_ITEMS = [
+  { to: '/claims/my', label: 'My Claims', emoji: '📋' },
+  { to: '/claims/new', label: 'New Claim', emoji: '➕' },
+  { to: '/travel-requests', label: 'My Travel Requests', emoji: '✈️' },
+  { to: '/invoices', label: 'Upload Invoice', emoji: '🧾' },
+];
+
 export const navByRole = {
   EMPLOYEE: {
     sections: S([
@@ -36,12 +44,15 @@ export const navByRole = {
   },
 
   GROUP_HEAD_HR: {
-    sections: S([
-      { to: '/dashboard', label: 'Home', emoji: '🏠', end: true },
-      { to: '/claims/pending', label: 'Pending Approvals', emoji: '⏳', badge: 'pending', badgeVariant: 'red' },
-      { to: '/hr/exceptions', label: 'Exception Requests', emoji: '🚨', badge: 'exceptions', badgeVariant: 'red' },
-      { to: '/compliance', label: 'Compliance', emoji: '📊' },
-    ]),
+    sections: [
+      ...S([
+        { to: '/dashboard', label: 'Home', emoji: '🏠', end: true },
+        { to: '/claims/pending', label: 'Pending Approvals', emoji: '⏳', badge: 'pending', badgeVariant: 'red' },
+        { to: '/hr/exceptions', label: 'Exception Requests', emoji: '🚨', badge: 'exceptions', badgeVariant: 'red' },
+        { to: '/compliance', label: 'Compliance', emoji: '📊' },
+      ]),
+      { title: 'My Claims & Travel', items: SELF_SERVICE_ITEMS },
+    ],
     mobile: ['/dashboard', '/claims/pending', '/hr/exceptions', '/compliance'],
   },
 
@@ -58,9 +69,10 @@ export const navByRole = {
       { to: '/hr/exceptions', label: 'Exception Requests', emoji: '🚨', badge: 'exceptions', badgeVariant: 'red' },
       { to: '/team/claims', label: 'My Team Claims', emoji: '👥' },
       { to: '/team/spend', label: 'Team Spend', emoji: '📊' },
-      { to: '/admin/workflow-config', label: 'Approval matrix', emoji: '✅' },
       { to: '/claims/my', label: 'My Own Claims', emoji: '📋' },
+      { to: '/claims/new', label: 'New Claim', emoji: '➕' },
       { to: '/travel-requests', label: 'My Travel Requests', emoji: '✈️' },
+      { to: '/invoices', label: 'Upload Invoice', emoji: '🧾' },
     ]),
     mobile: ['/dashboard', '/claims/pending', '/hr/exceptions', '/claims/my'],
   },
@@ -79,82 +91,93 @@ export const navByRole = {
             badgeVariant: 'red',
           },
           { to: '/hr/exceptions', label: 'Exception Requests', emoji: '🚨', badge: 'exceptions', badgeVariant: 'red' },
-          { to: '/travel-desk', label: 'Travel Desk', emoji: '🏢' },
+          { to: '/travel-desk', label: 'Travel Desk', emoji: '🏢', badge: 'travel_desk', badgeVariant: 'red' },
           { to: '/compliance', label: 'Compliance', emoji: '📊' },
           { to: '/reports', label: 'Compliance Reports', emoji: '📈' },
         ],
       },
       {
-        title: 'Admin Console',
+        title: 'Policy Administration',
         items: [
           { to: '/admin/policy-versions', label: 'Policy Versions', emoji: '⚙️' },
           { to: '/admin/impact-levels', label: 'Impact Levels', emoji: '📊' },
           { to: '/admin/city-groups', label: 'City Groups', emoji: '🏙️' },
           { to: '/admin/expense-limits', label: 'Expense Limits', emoji: '💰' },
           { to: '/admin/expense-categories', label: 'Expense Categories', emoji: '📂' },
-          { to: '/admin/workflow-config', label: 'Approval Matrix', emoji: '✅' },
+          { to: '/admin/team-budgets', label: 'Team Budgets', emoji: '💰' },
         ],
       },
+      { title: 'My Claims & Travel', items: SELF_SERVICE_ITEMS },
     ],
     mobile: ['/dashboard', '/claims/pending', '/travel-desk', '/admin/policy-versions'],
   },
 
   PAYROLL: {
-    sections: S([
-      { to: '/dashboard', label: 'Home', emoji: '🏠', end: true },
-      {
-        to: '/claims/pending',
-        label: 'Payroll Queue',
-        emoji: '⏳',
-        badge: 'pending',
-        badgeVariant: 'red',
-      },
-      { to: '/claims/all', label: 'All Claims (view only)', emoji: '📋' },
-      { to: '/reports', label: 'Reports', emoji: '📈' },
-    ]),
+    sections: [
+      ...S([
+        { to: '/dashboard', label: 'Home', emoji: '🏠', end: true },
+        {
+          to: '/claims/pending',
+          label: 'Payroll Queue',
+          emoji: '⏳',
+          badge: 'pending',
+          badgeVariant: 'red',
+        },
+        { to: '/claims/all', label: 'All Claims (view only)', emoji: '📋' },
+        { to: '/reports', label: 'Reports', emoji: '📈' },
+      ]),
+      { title: 'My Claims & Travel', items: SELF_SERVICE_ITEMS },
+    ],
     mobile: ['/dashboard', '/claims/pending', '/claims/all', '/reports'],
   },
 
   FINANCE: {
-    sections: S([
-      { to: '/dashboard', label: 'Home', emoji: '🏠', end: true },
-      {
-        to: '/finance/payment-queue',
-        label: 'Payment Queue',
-        emoji: '💳',
-        badge: 'pending',
-        badgeVariant: 'red',
-        extra: 'payment_queue_sum',
-      },
-      { to: '/finance/gst-dashboard', label: 'GST Dashboard', emoji: '📊' },
-      { to: '/reports', label: 'Reports', emoji: '📈' },
-      { to: '/finance/erp-ledger', label: 'ERP Ledger', emoji: '🏦' },
-      { to: '/claims/all', label: 'All Claims (view only)', emoji: '📋' },
-    ]),
+    sections: [
+      ...S([
+        { to: '/dashboard', label: 'Home', emoji: '🏠', end: true },
+        {
+          to: '/finance/payment-queue',
+          label: 'Payment Queue',
+          emoji: '💳',
+          badge: 'pending',
+          badgeVariant: 'red',
+          extra: 'payment_queue_sum',
+        },
+        { to: '/finance/gst-dashboard', label: 'GST Dashboard', emoji: '📊' },
+        { to: '/reports', label: 'Reports', emoji: '📈' },
+        { to: '/finance/erp-ledger', label: 'ERP Ledger', emoji: '🏦' },
+        { to: '/claims/all', label: 'All Claims (view only)', emoji: '📋' },
+      ]),
+      { title: 'My Claims & Travel', items: SELF_SERVICE_ITEMS },
+    ],
     mobile: ['/dashboard', '/finance/payment-queue', '/finance/gst-dashboard', '/reports'],
   },
 
   IT_ADMIN: {
-    sections: S([
-      { to: '/dashboard', label: 'Home', emoji: '🏠', end: true },
-      { to: '/admin/users', label: 'User Management', emoji: '👤' },
-      { to: '/admin/policy-versions', label: 'Policy Versions', emoji: '⚙️' },
-      { to: '/admin/city-groups', label: 'City Groups', emoji: '🏙️' },
-      { to: '/admin/impact-levels', label: 'Impact Levels', emoji: '📊' },
-      { to: '/admin/expense-limits', label: 'Expense Limits', emoji: '💰' },
-      { to: '/admin/expense-categories', label: 'Expense Categories', emoji: '📂' },
-      { to: '/admin/workflow-config', label: 'Approval Matrix', emoji: '✅' },
-      { to: '/admin/notification-templates', label: 'Notification Templates', emoji: '📧' },
-      { to: '/admin/holiday-calendar', label: 'Holiday Calendar', emoji: '📅' },
-      { to: '/reports', label: 'Reports', emoji: '📈' },
-      {
-        to: '/admin/company-profile',
-        label: 'Company Profile',
-        emoji: '🏢',
-        anyOf: ['view_sensitive_admin'],
-      },
-      { to: '/admin/audit-logs', label: 'Audit Logs', emoji: '📜' },
-    ]),
+    sections: [
+      ...S([
+        { to: '/dashboard', label: 'Home', emoji: '🏠', end: true },
+        { to: '/admin/users', label: 'User Management', emoji: '👤' },
+        { to: '/admin/policy-versions', label: 'Policy Versions', emoji: '⚙️' },
+        { to: '/admin/city-groups', label: 'City Groups', emoji: '🏙️' },
+        { to: '/admin/impact-levels', label: 'Impact Levels', emoji: '📊' },
+        { to: '/admin/expense-limits', label: 'Expense Limits', emoji: '💰' },
+        { to: '/admin/expense-categories', label: 'Expense Categories', emoji: '📂' },
+        { to: '/admin/team-budgets', label: 'Team Budgets', emoji: '💰' },
+        { to: '/admin/workflow-config', label: 'Approval Matrix', emoji: '✅' },
+        { to: '/admin/notification-templates', label: 'Notification Templates', emoji: '📧' },
+        { to: '/admin/holiday-calendar', label: 'Holiday Calendar', emoji: '📅' },
+        { to: '/reports', label: 'Reports', emoji: '📈' },
+        {
+          to: '/admin/company-profile',
+          label: 'Company Profile',
+          emoji: '🏢',
+          anyOf: ['view_sensitive_admin'],
+        },
+        { to: '/admin/audit-logs', label: 'Audit Logs', emoji: '📜' },
+      ]),
+      { title: 'My Claims & Travel', items: SELF_SERVICE_ITEMS },
+    ],
     mobile: ['/dashboard', '/admin/users', '/admin/policy-versions', '/admin/audit-logs'],
   },
 };

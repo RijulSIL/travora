@@ -132,23 +132,23 @@ async def seed() -> None:
                 )
 
         categories = [
-            ("Air Travel", None, True, True, ["Business Class", "First Class"]),
-            ("Train Travel", None, True, False, []),
-            ("Bus Travel", None, True, False, []),
-            ("Local Conveyance", None, False, False, []),
-            ("Cab/Taxi", 4, True, True, []),
-            ("Uber", 4, True, True, []),
-            ("Auto", 4, True, False, []),
-            ("Metro", 4, True, False, []),
-            ("Personal Vehicle", 4, False, False, []),
-            ("Hotel/Accommodation", None, True, True, []),
-            ("Food & Meals", None, True, False, ["Alcohol", "Cigarettes"]),
-            ("Breakfast", 11, True, False, ["Alcohol", "Cigarettes"]),
-            ("Lunch", 11, True, False, ["Alcohol", "Cigarettes"]),
-            ("Dinner", 11, True, False, ["Alcohol", "Cigarettes"]),
-            ("Incidental Expenses", None, False, False, []),
-            ("Communication", None, True, True, []),
-            ("Day Visit Expenses", None, False, False, []),
+            ("Air Travel", None, True, True, ["Business Class", "First Class"], "Book ≥ 7 days in advance"),
+            ("Train Travel", None, True, False, [], "Tatkal needs pre-approval"),
+            ("Bus Travel", None, True, False, [], None),
+            ("Local Conveyance", None, False, False, [], None),
+            ("Cab/Taxi", 4, True, True, [], None),
+            ("Uber", 4, True, True, [], None),
+            ("Auto", 4, True, False, [], None),
+            ("Metro", 4, True, False, [], None),
+            ("Personal Vehicle", 4, False, False, [], "₹8.50/km (4W), ₹4/km (2W)"),
+            ("Hotel/Accommodation", None, True, True, [], "Guest house stay = food + IE only"),
+            ("Food & Meals", None, True, False, ["Alcohol", "Cigarettes"], "Only for outstation overnight travel"),
+            ("Breakfast", 11, True, False, ["Alcohol", "Cigarettes"], None),
+            ("Lunch", 11, True, False, ["Alcohol", "Cigarettes"], None),
+            ("Dinner", 11, True, False, ["Alcohol", "Cigarettes"], None),
+            ("Incidental Expenses", None, False, False, [], "Capped per level/night"),
+            ("Communication", None, True, True, [], None),
+            ("Day Visit Expenses", None, False, False, [], "Prior CEO approval for external meetings"),
         ]
         for index, row in enumerate(categories, start=1):
             db.add(
@@ -159,6 +159,7 @@ async def seed() -> None:
                     bill_mandatory=row[2],
                     gst_invoice_required=row[3],
                     blacklisted_items=row[4],
+                    notes=row[5],
                     policy_version_id=1,
                 )
             )

@@ -14,7 +14,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import HTTPException, UploadFile, status
-from sqlalchemy import and_, asc, distinct, func, or_, select
+from sqlalchemy import and_, asc, case, distinct, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -37,6 +37,8 @@ from app.models.travel_request import (
 # Re-use entitlement lookups from booking service
 from app.services.travel_booking_service import (
     FLIGHT_ALLOWED_CLASSES,
+    _canonical_train_class,
+    _get_configured_train_classes,
     LEVELS_REQUIRING_AIR_UNLOCK,
     TRAIN_ALLOWED_CLASSES,
     _get_user_impact_level_code,
@@ -148,31 +150,44 @@ async def _validate_common_travel_request_fields(
 async def _determine_blocking_exception(
     *, user_id: int, mode_val: str, impact_level: str, travel_date: date | None, legs: list | None, db: AsyncSession
 ) -> tuple[str, str] | None:
-    """Returns (exception_type, message) if this request needs a policy exception to proceed, else None."""
-    if mode_val != "FLIGHT":
+    """Returns (exception_type, message) if this request needs a policy exception to proceed, else None.
+
+    Checks the primary trip fields plus every MULTI_CITY leg individually — a flight buried in leg 2
+    or 3 of a mixed-mode trip must trigger the same checks as a single-leg flight request.
+    """
+    flight_dates: list[date] = []
+    if mode_val == "FLIGHT" and travel_date:
+        flight_dates.append(travel_date)
+    for leg in legs or []:
+        leg_mode = leg.travel_mode.upper() if leg.travel_mode else mode_val
+        if leg_mode == "FLIGHT" and leg.travel_date:
+            flight_dates.append(leg.travel_date)
+
+    if not flight_dates:
         return None
 
-    first_date = travel_date if travel_date else (legs[0].travel_date if legs else None)
-    if first_date:
-        days_in_advance = (first_date - date.today()).days
-        min_advance_enforced = days_in_advance < 7
-        has_advance_override = await _has_completed_exception_chain(
-            user_id, "FLIGHT_ADVANCE_BOOKING_OVERRIDE", db
+    earliest_flight_date = min(flight_dates)
+    min_days = settings.flight_advance_booking_min_days
+    days_in_advance = (earliest_flight_date - date.today()).days
+    min_advance_enforced = days_in_advance < min_days
+    has_advance_override = await _has_completed_exception_chain(
+        user_id, "FLIGHT_ADVANCE_BOOKING_OVERRIDE", db
+    )
+    if min_advance_enforced and not has_advance_override:
+        return (
+            "FLIGHT_ADVANCE_BOOKING_OVERRIDE",
+            f"Minimum {min_days}-day advance booking window for flights is enforced.",
         )
-        if min_advance_enforced and not has_advance_override:
-            return (
-                "FLIGHT_ADVANCE_BOOKING_OVERRIDE",
-                "Minimum 7-day advance booking window for flights is enforced.",
-            )
 
     if impact_level in LEVELS_REQUIRING_AIR_UNLOCK:
-        has_unlock = await _has_completed_exception_chain(user_id, "AIR_TRAVEL_UNLOCK", db)
-        if not has_unlock:
-            return (
-                "AIR_TRAVEL_UNLOCK",
-                "Air travel is locked for your level until Reporting Manager + Group Head HR + CEO "
-                "exception approval is recorded.",
-            )
+        # Scoped to this specific request, not a standing unlock for the employee: a prior
+        # AIR_TRAVEL_UNLOCK approval covered only the trip it was raised for, so every new
+        # flight booking needs its own fresh exception approval.
+        return (
+            "AIR_TRAVEL_UNLOCK",
+            "Air travel is locked for your level until Reporting Manager + Group Head HR + CEO "
+            "exception approval is recorded for this request.",
+        )
 
     return None
 
@@ -214,8 +229,9 @@ async def create_travel_request(
                     detail=f"Preferred class {preferred_class} is not allowed for your impact level ({impact_level}).",
                 )
         elif mode_val == "TRAIN":
-            allowed = TRAIN_ALLOWED_CLASSES.get(impact_level)
-            if allowed and preferred_class.upper() not in allowed:
+            configured = await _get_configured_train_classes(user_id, db)
+            allowed = configured if configured is not None else TRAIN_ALLOWED_CLASSES.get(impact_level)
+            if allowed and _canonical_train_class(preferred_class) not in allowed:
                 raise HTTPException(
                     status_code=422,
                     detail=f"Preferred class {preferred_class} is not allowed for your impact level ({impact_level}).",
@@ -314,7 +330,7 @@ async def _insert_travel_request_row(
 
 
 async def _reload_travel_request_with_legs(request_id: int, db: AsyncSession) -> TravelRequest:
-    stmt = select(TravelRequest).options(selectinload(TravelRequest.legs)).where(TravelRequest.id == request_id)
+    stmt = select(TravelRequest).options(selectinload(TravelRequest.legs), selectinload(TravelRequest.tickets)).where(TravelRequest.id == request_id)
     return (await db.execute(stmt)).scalar_one()
 
 
@@ -389,31 +405,80 @@ async def create_travel_request_with_exception(
     return await _reload_travel_request_with_legs(row.id, db)
 
 
-async def _latest_ticket_for_request(request_id: int, db: AsyncSession) -> TravelRequestTicket | None:
-    res = (
-        await db.execute(
-            select(TravelRequestTicket)
-            .where(TravelRequestTicket.travel_request_id == request_id)
-            .order_by(TravelRequestTicket.uploaded_at.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    return res
+_TICKETED_STATUSES = (TravelRequestStatus.BOOKED.value, TravelRequestStatus.PARTIALLY_BOOKED.value)
+
+
+def _latest_ticket(req: TravelRequest) -> TravelRequestTicket | None:
+    """Most recently uploaded ticket, if this request has any (kept for callers that only
+    want a single preview ticket — `build_segments_out` is the source of truth for per-leg
+    ticket status)."""
+    if req.status not in _TICKETED_STATUSES:
+        return None
+    tickets = req.tickets or []
+    return max(tickets, key=lambda t: t.uploaded_at) if tickets else None
 
 
 async def list_travel_requests_for_employee(user_id: int, db: AsyncSession) -> list[tuple[TravelRequest, TravelRequestTicket | None]]:
     reqs = (
         await db.execute(
             select(TravelRequest)
-            .options(selectinload(TravelRequest.legs))
+            .options(selectinload(TravelRequest.legs), selectinload(TravelRequest.tickets))
             .where(TravelRequest.employee_user_id == user_id)
             .order_by(TravelRequest.requested_at.desc())
         )
     ).scalars().all()
-    out: list[tuple[TravelRequest, TravelRequestTicket | None]] = []
-    for r in reqs:
-        tix = await _latest_ticket_for_request(r.id, db) if r.status == TravelRequestStatus.BOOKED.value else None
-        out.append((r, tix))
+    return [(r, _latest_ticket(r)) for r in reqs]
+
+
+async def get_latest_exceptions_for_requests(request_ids: Sequence[int], db: AsyncSession) -> dict[int, dict]:
+    """Latest exception chain (if any) per travel_request_id, keyed for TravelExceptionSummaryOut."""
+    if not request_ids:
+        return {}
+
+    from app.models.claim_workflow import ExceptionApproval, ExceptionRequest
+
+    exc_rows = (
+        await db.execute(
+            select(ExceptionRequest)
+            .where(ExceptionRequest.travel_request_id.in_(list(request_ids)))
+            .order_by(ExceptionRequest.created_at.desc())
+        )
+    ).scalars().all()
+    latest_by_request: dict[int, ExceptionRequest] = {}
+    for exc in exc_rows:
+        latest_by_request.setdefault(exc.travel_request_id, exc)
+    if not latest_by_request:
+        return {}
+
+    exc_ids = [exc.id for exc in latest_by_request.values()]
+    approvals = (
+        await db.execute(
+            select(ExceptionApproval)
+            .where(ExceptionApproval.exception_request_id.in_(exc_ids))
+            .order_by(ExceptionApproval.id.asc())
+        )
+    ).scalars().all()
+    approvals_by_exc: dict[int, list[ExceptionApproval]] = {}
+    for a in approvals:
+        approvals_by_exc.setdefault(a.exception_request_id, []).append(a)
+
+    out: dict[int, dict] = {}
+    for req_id, exc in latest_by_request.items():
+        out[req_id] = {
+            "id": exc.id,
+            "exception_type": exc.exception_type,
+            "status": exc.status,
+            "decision_comment": exc.decision_comment,
+            "approvals": [
+                {
+                    "required_role": a.required_role,
+                    "status": a.status,
+                    "acted_at": a.acted_at,
+                    "comment": a.comment,
+                }
+                for a in approvals_by_exc.get(exc.id, [])
+            ],
+        }
     return out
 
 
@@ -472,7 +537,7 @@ async def viewer_can_download_ticket(
     db: AsyncSession,
 ) -> bool:
     """Owner, HRBP, reporting manager, or finance/payroll viewer of a linked claim."""
-    req = (await db.execute(select(TravelRequest).options(selectinload(TravelRequest.legs)).where(TravelRequest.id == ticket.travel_request_id))).scalar_one_or_none()
+    req = (await db.execute(select(TravelRequest).options(selectinload(TravelRequest.legs), selectinload(TravelRequest.tickets)).where(TravelRequest.id == ticket.travel_request_id))).scalar_one_or_none()
     if req is None:
         return False
     if req.employee_user_id == viewer_user_id or viewer_role == Role.HRBP_HR:
@@ -489,14 +554,34 @@ async def viewer_can_download_ticket(
 
 
 
+async def count_pending_travel_requests_for_desk(db: AsyncSession) -> int:
+    """Cheap count (no employee/impact-level enrichment) for the Travel Desk nav badge."""
+    result = await db.execute(
+        select(func.count(TravelRequest.id)).where(
+            TravelRequest.status.in_(
+                [TravelRequestStatus.APPROVED.value, TravelRequestStatus.PARTIALLY_BOOKED.value]
+            )
+        )
+    )
+    return int(result.scalar_one())
+
+
 async def list_pending_travel_requests_for_desk(db: AsyncSession) -> list[dict]:
-    """Queue: APPROVED only. Manager approval happens before Travel Desk ever sees the request."""
+    """Queue: APPROVED or PARTIALLY_BOOKED (some but not all legs ticketed) — stays actionable
+    until every segment has a ticket. Manager approval happens before Travel Desk ever sees it.
+
+    Default order surfaces PARTIALLY_BOOKED requests first (they're mid-booking and easiest to
+    finish), then APPROVED ones — each group oldest-first."""
+    status_priority = case(
+        (TravelRequest.status == TravelRequestStatus.PARTIALLY_BOOKED.value, 0),
+        else_=1,
+    )
     rows = (
         await db.execute(
             select(TravelRequest)
-            .options(selectinload(TravelRequest.legs))
-            .where(TravelRequest.status == TravelRequestStatus.APPROVED.value)
-            .order_by(TravelRequest.requested_at.asc())
+            .options(selectinload(TravelRequest.legs), selectinload(TravelRequest.tickets))
+            .where(TravelRequest.status.in_([TravelRequestStatus.APPROVED.value, TravelRequestStatus.PARTIALLY_BOOKED.value]))
+            .order_by(status_priority, TravelRequest.requested_at.asc())
         )
     ).scalars().all()
 
@@ -557,7 +642,7 @@ async def list_pending_travel_requests_for_manager(manager_user_id: int, db: Asy
         return []
     stmt = (
         select(TravelRequest)
-        .options(selectinload(TravelRequest.legs))
+        .options(selectinload(TravelRequest.legs), selectinload(TravelRequest.tickets))
         .where(
             and_(
                 TravelRequest.employee_user_id.in_(sub_user_ids),
@@ -595,63 +680,157 @@ async def list_pending_travel_requests_for_manager(manager_user_id: int, db: Asy
     return enriched
 
 
+def _primary_travel_date(req: TravelRequest) -> date | None:
+    if req.trip_type == "MULTI_CITY" and req.legs:
+        leg_dates = [leg.travel_date for leg in req.legs if leg.travel_date]
+        return min(leg_dates) if leg_dates else None
+    return req.travel_date
+
+
+def _segments_for_request(req: TravelRequest) -> list[dict]:
+    """Independently-ticketable legs of a request: 1 for ONE_WAY, 2 for ROUND_TRIP (onward +
+    return — there are no persisted leg rows for round trips, so these are derived from the
+    request's own from/to/travel_date/return_date), or one per TravelRequestLeg for MULTI_CITY."""
+    if req.trip_type == TripType.MULTI_CITY.value and req.legs:
+        return [
+            {
+                "seq": leg.leg_sequence,
+                "label": f"Leg {leg.leg_sequence}: {leg.from_city} → {leg.to_city}",
+                "mode": leg.travel_mode or req.travel_mode,
+                "from_city": leg.from_city,
+                "to_city": leg.to_city,
+                "travel_date": leg.travel_date,
+            }
+            for leg in req.legs
+        ]
+    if req.trip_type == TripType.ROUND_TRIP.value and req.return_date:
+        return [
+            {
+                "seq": 1,
+                "label": f"Onward: {req.from_city} → {req.to_city}",
+                "mode": req.travel_mode,
+                "from_city": req.from_city,
+                "to_city": req.to_city,
+                "travel_date": req.travel_date,
+            },
+            {
+                "seq": 2,
+                "label": f"Return: {req.to_city} → {req.from_city}",
+                "mode": req.travel_mode,
+                "from_city": req.to_city,
+                "to_city": req.from_city,
+                "travel_date": req.return_date,
+            },
+        ]
+    return [
+        {
+            "seq": 1,
+            "label": f"{req.from_city} → {req.to_city}" if req.from_city else "Ticket",
+            "mode": req.travel_mode,
+            "from_city": req.from_city,
+            "to_city": req.to_city,
+            "travel_date": req.travel_date,
+        }
+    ]
+
+
+def build_segments_out(req: TravelRequest) -> list[dict]:
+    """Segment descriptors merged with whichever ticket (if any) covers each one.
+
+    Returns plain dicts (each with a raw `TravelRequestTicket | None` under "ticket") so the
+    service layer stays schema-agnostic; callers convert to `TravelRequestSegmentOut` /
+    `TravelRequestTicketAttachmentOut` themselves.
+    """
+    tickets_by_seq: dict[int, TravelRequestTicket] = {}
+    for t in req.tickets or []:
+        tickets_by_seq[t.leg_sequence] = t
+    return [{**seg, "ticket": tickets_by_seq.get(seg["seq"])} for seg in _segments_for_request(req)]
+
+
 async def list_all_travel_requests_for_desk(
     *,
     db: AsyncSession,
     status_filter: str | None = None,
     q: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    impact_level: str | None = None,
     limit: int = 500,
-) -> list[TravelRequest]:
-    stmt = select(TravelRequest).options(selectinload(TravelRequest.legs))
+) -> list[dict]:
+    stmt = select(TravelRequest).options(selectinload(TravelRequest.legs), selectinload(TravelRequest.tickets))
     if status_filter:
         stmt = stmt.where(TravelRequest.status == status_filter)
     stmt = stmt.order_by(TravelRequest.requested_at.desc()).limit(limit)
     reqs = list((await db.execute(stmt)).scalars().all())
-    if not q or not q.strip():
-        return reqs
-    needle = q.strip().lower()
+
     user_ids = {r.employee_user_id for r in reqs}
-    users_map = {
-        u.id: u
-        for u in (await db.execute(select(User).where(User.id.in_(user_ids)))).scalars().all()
-    }
-    emp_ids = [users_map[i].employee_id for i in user_ids if users_map.get(i) and users_map[i].employee_id]
+    users_map: dict[int, User] = {}
+    if user_ids:
+        users_map = {
+            u.id: u
+            for u in (await db.execute(select(User).where(User.id.in_(user_ids)))).scalars().all()
+        }
+    emp_ids = [u.employee_id for u in users_map.values() if u.employee_id]
     bundles = await _employee_impact_bundle([e for e in emp_ids if e], db)
 
-    def match(req: TravelRequest) -> bool:
+    needle = q.strip().lower() if q and q.strip() else None
+    wanted_level = impact_level.strip().upper() if impact_level and impact_level.strip() else None
+
+    def matches_text(req: TravelRequest, u: User | None, employee_name: str) -> bool:
+        if not needle:
+            return True
         if needle in req.from_city.lower() or needle in req.to_city.lower():
             return True
-        u = users_map.get(req.employee_user_id)
-        if u:
-            if u.full_name and needle in (u.full_name or "").lower():
-                return True
-            if u.email and needle in u.email.lower():
-                return True
-            if u.employee_id and u.employee_id in bundles:
-                if needle in bundles[u.employee_id][0].lower():
-                    return True
+        if employee_name and needle in employee_name.lower():
+            return True
+        if u and u.email and needle in u.email.lower():
+            return True
         return False
 
-    return [r for r in reqs if match(r)]
+    out: list[dict] = []
+    for req in reqs:
+        u = users_map.get(req.employee_user_id)
+        nm, impact = "", None
+        if u and u.employee_id and u.employee_id in bundles:
+            nm, impact = bundles[u.employee_id]
+        display_name = nm or (u.full_name if u else "") or ""
+        lvl_code = _normalize_level(impact.level_code) if impact else "L5A"
+
+        if not matches_text(req, u, display_name):
+            continue
+        if wanted_level and lvl_code != wanted_level:
+            continue
+
+        travel_date = _primary_travel_date(req)
+        if date_from and (travel_date is None or travel_date < date_from):
+            continue
+        if date_to and (travel_date is None or travel_date > date_to):
+            continue
+
+        out.append(
+            {
+                "request": req,
+                "employee_display_name": display_name,
+                "impact_level_code": lvl_code,
+            }
+        )
+    return out
 
 
 async def get_travel_request_for_viewer(
     request_id: int, viewer_user_id: int, viewer_role: Role, db: AsyncSession
 ) -> tuple[TravelRequest, TravelRequestTicket | None]:
-    req = (await db.execute(select(TravelRequest).options(selectinload(TravelRequest.legs)).where(TravelRequest.id == request_id))).scalar_one_or_none()
+    req = (await db.execute(select(TravelRequest).options(selectinload(TravelRequest.legs), selectinload(TravelRequest.tickets)).where(TravelRequest.id == request_id))).scalar_one_or_none()
     if req is None:
         raise HTTPException(status_code=404, detail="Travel request not found")
     if req.employee_user_id == viewer_user_id:
-        tix = await _latest_ticket_for_request(request_id, db) if req.status == TravelRequestStatus.BOOKED.value else None
-        return req, tix
+        return req, _latest_ticket(req)
     if viewer_role == Role.HRBP_HR:
-        tix = await _latest_ticket_for_request(request_id, db) if req.status == TravelRequestStatus.BOOKED.value else None
-        return req, tix
+        return req, _latest_ticket(req)
     if viewer_role == Role.REPORTING_MANAGER and await _actor_is_reporting_manager_for(
         manager_user_id=viewer_user_id, subordinate_user_id=req.employee_user_id, db=db
     ):
-        tix = await _latest_ticket_for_request(request_id, db) if req.status == TravelRequestStatus.BOOKED.value else None
-        return req, tix
+        return req, _latest_ticket(req)
     raise HTTPException(status_code=403, detail="Not allowed to view this travel request")
 
 
@@ -695,7 +874,7 @@ async def assert_can_approve_or_reject(actor_user_id: int, request: TravelReques
 
 
 async def approve_travel_request(request_id: int, actor_user_id: int, role: Role, db: AsyncSession) -> TravelRequest:
-    stmt = select(TravelRequest).options(selectinload(TravelRequest.legs)).where(TravelRequest.id == request_id)
+    stmt = select(TravelRequest).options(selectinload(TravelRequest.legs), selectinload(TravelRequest.tickets)).where(TravelRequest.id == request_id)
     req = (await db.execute(stmt)).scalar_one_or_none()
     if req is None:
         raise HTTPException(status_code=404, detail="Travel request not found")
@@ -739,7 +918,7 @@ async def approve_travel_request(request_id: int, actor_user_id: int, role: Role
 async def reject_travel_request(
     request_id: int, actor_user_id: int, role: Role, reason: str, db: AsyncSession
 ) -> TravelRequest:
-    stmt = select(TravelRequest).options(selectinload(TravelRequest.legs)).where(TravelRequest.id == request_id)
+    stmt = select(TravelRequest).options(selectinload(TravelRequest.legs), selectinload(TravelRequest.tickets)).where(TravelRequest.id == request_id)
     req = (await db.execute(stmt)).scalar_one_or_none()
     if req is None:
         raise HTTPException(status_code=404, detail="Travel request not found")
@@ -769,7 +948,11 @@ async def reject_travel_request(
 
 
 async def cancel_travel_request(request_id: int, owner_user_id: int, db: AsyncSession) -> TravelRequest:
-    req = await db.get(TravelRequest, request_id)
+    req = (
+        await db.execute(
+            select(TravelRequest).options(selectinload(TravelRequest.legs), selectinload(TravelRequest.tickets)).where(TravelRequest.id == request_id)
+        )
+    ).scalar_one_or_none()
     if req is None:
         raise HTTPException(status_code=404, detail="Travel request not found")
     if req.employee_user_id != owner_user_id:
@@ -812,14 +995,26 @@ async def upload_ticket_for_request(
     uploader_user_id: int,
     file: UploadFile,
     payload: dict,
+    leg_sequence: int = 1,
     db: AsyncSession,
 ) -> tuple[TravelRequest, TravelRequestTicket, TravelTrip]:
-    """HRBP uploads ticket PDF/image; creates TravelTrip + BOOKED request."""
-    req = await db.get(TravelRequest, request_id)
+    """HRBP uploads a ticket PDF/image for one segment of the request (the whole trip for
+    ONE_WAY, or one of the onward/return/multi-city legs). The request becomes PARTIALLY_BOOKED
+    once at least one segment is ticketed, and BOOKED once every segment has one."""
+    req = (
+        await db.execute(
+            select(TravelRequest).options(selectinload(TravelRequest.legs), selectinload(TravelRequest.tickets)).where(TravelRequest.id == request_id)
+        )
+    ).scalar_one_or_none()
     if req is None:
         raise HTTPException(status_code=404, detail="Travel request not found")
-    if req.status != TravelRequestStatus.APPROVED.value:
+    if req.status not in (TravelRequestStatus.APPROVED.value, TravelRequestStatus.PARTIALLY_BOOKED.value):
         raise HTTPException(status_code=409, detail="Travel request must be APPROVED before ticket upload")
+
+    segments = _segments_for_request(req)
+    segment = next((s for s in segments if s["seq"] == leg_sequence), None)
+    if segment is None:
+        raise HTTPException(status_code=422, detail=f"leg_sequence {leg_sequence} is not a valid segment for this request")
 
     owner = await db.get(User, req.employee_user_id)
     if owner is None or not owner.employee_id:
@@ -846,18 +1041,18 @@ async def upload_ticket_for_request(
         except Exception as exc:
             raise HTTPException(status_code=422, detail="ticket_amount invalid") from exc
 
-    mode_str = req.travel_mode
+    mode_str = segment["mode"] or req.travel_mode
     try:
         mode_enum = TravelMode[mode_str]
     except KeyError as exc:
         raise HTTPException(status_code=500, detail="Invalid travel_mode on request") from exc
 
-    reference_id = payload.get("reference_id") or f"DESK-{request_id}-{uuid4().hex[:8].upper()}"
+    reference_id = payload.get("reference_id") or f"DESK-{request_id}-{leg_sequence}-{uuid4().hex[:8].upper()}"
     provider = str(payload.get("provider") or "Travel Desk")
 
     amt_final = amt if amt is not None else Decimal("0.00")
 
-    meta = {"travel_request_id": request_id, "source": "travel_desk_upload", "parsed": payload}
+    meta = {"travel_request_id": request_id, "leg_sequence": leg_sequence, "source": "travel_desk_upload", "parsed": payload}
 
     boarding = str(path).replace("\\", "/") if mode_enum == TravelMode.FLIGHT else None
 
@@ -867,9 +1062,9 @@ async def upload_ticket_for_request(
         booked_by_travel_desk=True,
         assigned_to_employee_id=owner.employee_id,
         mode=mode_enum,
-        from_city=req.from_city,
-        to_city=req.to_city,
-        travel_date=req.travel_date,
+        from_city=segment["from_city"],
+        to_city=segment["to_city"],
+        travel_date=segment["travel_date"],
         provider=provider[:64],
         reference_id=str(reference_id)[:64],
         travel_class=tclass,
@@ -885,6 +1080,7 @@ async def upload_ticket_for_request(
     ticket_row = TravelRequestTicket(
         travel_request_id=request_id,
         travel_trip_id=trip.id,
+        leg_sequence=leg_sequence,
         uploaded_by_user_id=uploader_user_id,
         file_sha256=digest,
         original_filename=(file.filename or "ticket.bin")[:255],
@@ -899,15 +1095,25 @@ async def upload_ticket_for_request(
     )
     db.add(ticket_row)
 
-    req.status = TravelRequestStatus.BOOKED.value
-    
+    ticketed_seqs = {t.leg_sequence for t in (req.tickets or [])} | {leg_sequence}
+    all_ticketed = ticketed_seqs.issuperset({s["seq"] for s in segments})
+    req.status = TravelRequestStatus.BOOKED.value if all_ticketed else TravelRequestStatus.PARTIALLY_BOOKED.value
+
     # Create notification for employee
     try:
         from app.services.notification_service import create_notification
+        if all_ticketed:
+            body = (
+                f"Your ticket for {req.from_city} -> {req.to_city} has been booked and uploaded by the Travel Desk."
+                if len(segments) == 1
+                else "All legs of your trip have been ticketed and uploaded by the Travel Desk."
+            )
+        else:
+            body = f"{segment['label']} has been ticketed. {len(segments) - len(ticketed_seqs)} leg(s) still pending."
         await create_notification(
             user_id=req.employee_user_id,
-            title="Travel Booked",
-            body=f"Your ticket for {req.from_city} -> {req.to_city} has been booked and uploaded by the Travel Desk.",
+            title="Travel Booked" if all_ticketed else "Travel Partially Booked",
+            body=body,
             link="/travel-requests",
             category="CLAIM_UPDATE",
             db=db
@@ -975,21 +1181,23 @@ async def desk_ticket_ids_for_trips(rows: Sequence[TravelTrip], db: AsyncSession
             )
         )
     ).scalars().all()
+    # A request can now have several trips (one per ticketed leg — round trip onward/return,
+    # or multiple multi-city legs), each with its own ticket, so match by travel_trip_id first.
+    # Only fall back to "latest ticket for the request" when a trip has no direct ticket link
+    # (legacy rows from before per-trip linkage, or trips booked outside the desk-upload flow).
+    by_trip_id: dict[int, TravelRequestTicket] = {}
     by_rid: dict[int, TravelRequestTicket] = {}
     for tr in tic_rows:
+        if tr.travel_trip_id is not None:
+            by_trip_id[tr.travel_trip_id] = tr
         prev = by_rid.get(tr.travel_request_id)
         if prev is None or tr.uploaded_at > prev.uploaded_at:
             by_rid[tr.travel_request_id] = tr
 
     for t in rows:
-        cand = None
-        if t.travel_request_id and t.travel_request_id in by_rid:
+        cand = by_trip_id.get(t.id)
+        if cand is None and t.travel_request_id and t.travel_request_id in by_rid:
             cand = by_rid[t.travel_request_id]
-        elif t.id:
-            for tr in tic_rows:
-                if tr.travel_trip_id == t.id:
-                    cand = tr
-                    break
         out_map[t.id] = cand.id if cand else None
     return out_map
 

@@ -199,3 +199,13 @@ async def enforce_immutability(version_id: int, db: AsyncSession) -> None:
             status_code=status.HTTP_409_CONFLICT,
             detail="Policy versions are immutable once their effective_from date is reached",
         )
+
+
+def enforce_city_group_immutability(city_group: CityGroup) -> None:
+    """City groups have no policy_version_id of their own; a row becomes immutable
+    once its own effective_from date is reached, mirroring PolicyVersion's rule."""
+    if city_group.effective_from <= date.today():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="City group classifications are immutable once their effective_from date is reached",
+        )

@@ -18,21 +18,6 @@ function slaClass(bucket) {
   return 'sla-ok';
 }
 
-const MOCK_TEAM_SPEND = [
-  { month: 'Jan', budget: 50000, spend: 32000 },
-  { month: 'Feb', budget: 50000, spend: 41000 },
-  { month: 'Mar', budget: 50000, spend: 48000 },
-  { month: 'Apr', budget: 50000, spend: 29000 },
-  { month: 'May', budget: 50000, spend: 18000 },
-  { month: 'Jun', budget: 50000, spend: 22000 },
-];
-
-const MOCK_SPEND_CATEGORY = [
-  { name: 'Flight', value: 45000 },
-  { name: 'Hotel', value: 30000 },
-  { name: 'Food', value: 12000 },
-  { name: 'Transport', value: 8000 },
-];
 const COLORS = ['#10b981', '#f59e0b', '#3b82f6', '#8b5cf6'];
 
 export default function ManagerDashboard() {
@@ -46,7 +31,9 @@ export default function ManagerDashboard() {
   // Analytics state
   const [teamSpendData, setTeamSpendData] = useState([]);
   const [spendCategoryData, setSpendCategoryData] = useState([]);
-  
+  const [budgetsEnabled, setBudgetsEnabled] = useState(false);
+  const [teamMonthlyBudget, setTeamMonthlyBudget] = useState(null);
+
   const [loading, setLoading] = useState(true);
   const { showToast } = useToast();
 
@@ -70,6 +57,8 @@ export default function ManagerDashboard() {
       if (analyticsRes.data) {
         setTeamSpendData(analyticsRes.data.spend_by_month || []);
         setSpendCategoryData(analyticsRes.data.spend_by_category || []);
+        setBudgetsEnabled(Boolean(analyticsRes.data.budgets_enabled));
+        setTeamMonthlyBudget(analyticsRes.data.team_monthly_budget ?? null);
       }
     } catch {
       // Ignore errors
@@ -135,46 +124,74 @@ export default function ManagerDashboard() {
       </div>
 
       {/* Interactive Analytics */}
-      <section className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="panel overflow-hidden p-5 flex flex-col h-80">
-          <h3 className="text-[15px] font-bold text-ink mb-4">Team Spend vs. Budget</h3>
-          <div className="flex-1 min-h-0">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={teamSpendData.length ? teamSpendData : MOCK_TEAM_SPEND} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} dy={10} />
-                <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} tickFormatter={(val) => `₹${val / 1000}k`} />
-                <Tooltip cursor={{ fill: '#f8fafc' }} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
-                <Legend iconType="circle" wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }} />
-                <Bar dataKey="budget" name="Budget" fill="#cbd5e1" radius={[4, 4, 0, 0]} animationDuration={1000} />
-                <Bar dataKey="spend" name="Spend" fill="#10b981" radius={[4, 4, 0, 0]} animationDuration={1000} />
-              </BarChart>
-            </ResponsiveContainer>
+      <section className={`grid grid-cols-1 gap-6 ${budgetsEnabled ? 'md:grid-cols-2' : ''}`}>
+        {budgetsEnabled ? (
+          <div className="panel overflow-hidden p-5 flex flex-col h-80">
+            <h3 className="text-[15px] font-bold text-ink mb-4">Team Spend vs. Budget</h3>
+            {teamMonthlyBudget == null ? (
+              <p className="mb-2 text-xs text-amber-600">No monthly budget configured for your team yet — contact HR/Finance.</p>
+            ) : null}
+            {(() => {
+              const current = teamSpendData[teamSpendData.length - 1];
+              if (!current || current.budget == null || current.spend <= current.budget) return null;
+              return (
+                <p className="mb-2 text-xs font-semibold text-red-600">
+                  Your team is over budget this month — no approvals are blocked, this is for your visibility.
+                </p>
+              );
+            })()}
+            <div className="flex-1 min-h-0">
+              {teamSpendData.length ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={teamSpendData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                    <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} dy={10} />
+                    <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} tickFormatter={(val) => `₹${val / 1000}k`} />
+                    <Tooltip cursor={{ fill: '#f8fafc' }} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
+                    <Legend iconType="circle" wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }} />
+                    {teamMonthlyBudget != null ? (
+                      <Bar dataKey="budget" name="Budget" fill="#cbd5e1" radius={[4, 4, 0, 0]} animationDuration={1000} />
+                    ) : null}
+                    <Bar dataKey="spend" name="Spend" fill="#10b981" radius={[4, 4, 0, 0]} animationDuration={1000}>
+                      {teamSpendData.map((row) => (
+                        <Cell key={row.month} fill={row.budget != null && row.spend > row.budget ? '#ef4444' : '#10b981'} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="flex h-full items-center justify-center text-sm text-slate-400">No team spend data yet.</div>
+              )}
+            </div>
           </div>
-        </div>
+        ) : null}
         <div className="panel overflow-hidden p-5 flex flex-col h-80">
           <h3 className="text-[15px] font-bold text-ink mb-4">Spend by Category (YTD)</h3>
           <div className="flex-1 min-h-0">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={spendCategoryData.length ? spendCategoryData : MOCK_SPEND_CATEGORY}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={60}
-                  outerRadius={80}
-                  paddingAngle={5}
-                  dataKey="value"
-                  animationDuration={1000}
-                >
-                  {(spendCategoryData.length ? spendCategoryData : MOCK_SPEND_CATEGORY).map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip formatter={(value) => `₹${value.toLocaleString()}`} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
-                <Legend iconType="circle" layout="vertical" verticalAlign="middle" align="right" wrapperStyle={{ fontSize: '12px' }} />
-              </PieChart>
-            </ResponsiveContainer>
+            {spendCategoryData.length ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={spendCategoryData}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={60}
+                    outerRadius={80}
+                    paddingAngle={5}
+                    dataKey="value"
+                    animationDuration={1000}
+                  >
+                    {spendCategoryData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip formatter={(value) => `₹${value.toLocaleString()}`} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
+                  <Legend iconType="circle" layout="vertical" verticalAlign="middle" align="right" wrapperStyle={{ fontSize: '12px' }} />
+                </PieChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex h-full items-center justify-center text-sm text-slate-400">No category spend data yet.</div>
+            )}
           </div>
         </div>
       </section>

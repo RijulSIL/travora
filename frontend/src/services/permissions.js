@@ -5,7 +5,6 @@ export const PERMISSION_MATRIX = {
     'view_self',
     'approve_stage_1',
     'view_admin_readonly',
-    'view_workflow_config',
     'approve_exception',
   ],
   HRBP_HR: [
@@ -16,16 +15,18 @@ export const PERMISSION_MATRIX = {
     'view_reports',
     'approve_stage_2',
     'view_sensitive_admin',
-    'edit_workflow_config',
   ],
   PAYROLL: [
+    'submit_claim',
+    'view_self',
     'view_reports',
     'process_payments',
     'approve_stage_3',
     'view_admin_readonly',
-    'view_workflow_config',
   ],
   FINANCE: [
+    'submit_claim',
+    'view_self',
     'configure_policy',
     'approve_policy',
     'view_reports',
@@ -35,11 +36,14 @@ export const PERMISSION_MATRIX = {
     'view_sensitive_admin',
   ],
   IT_ADMIN: [
+    'submit_claim',
+    'view_self',
     'manage_users',
     'configure_policy',
     'view_reports',
     'export_audit',
     'view_sensitive_admin',
+    'view_workflow_config',
     'edit_workflow_config',
   ],
   CEO: [
@@ -50,6 +54,7 @@ export const PERMISSION_MATRIX = {
     'approve_stage_4',
   ],
   GROUP_HEAD_HR: [
+    'submit_claim',
     'view_self',
     'view_reports',
     'approve_exception',

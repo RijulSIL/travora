@@ -14,6 +14,7 @@ class TravelRequestTicketAttachmentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    leg_sequence: int = 1
     original_filename: str
     content_type: str
     file_size_bytes: int
@@ -22,6 +23,19 @@ class TravelRequestTicketAttachmentOut(BaseModel):
     ticket_travel_class: str | None = None
     external_booking_source: str | None = None
     notes_for_employee: str | None = None
+
+
+class TravelRequestSegmentOut(BaseModel):
+    """One independently-ticketable leg of a request: the whole trip for ONE_WAY, onward/return
+    for ROUND_TRIP, or one row per TravelRequestLeg for MULTI_CITY."""
+
+    seq: int
+    label: str
+    mode: str
+    from_city: str | None = None
+    to_city: str | None = None
+    travel_date: date | None = None
+    ticket: TravelRequestTicketAttachmentOut | None = None
 
 
 class TravelRequestLegIn(BaseModel):
@@ -58,6 +72,21 @@ class TravelRequestExceptionCreate(TravelRequestCreate):
     justification: str = Field(..., min_length=1, max_length=2000)
 
 
+class TravelExceptionApprovalOut(BaseModel):
+    required_role: str
+    status: str
+    acted_at: datetime | None = None
+    comment: str | None = None
+
+
+class TravelExceptionSummaryOut(BaseModel):
+    id: int
+    exception_type: str
+    status: str
+    decision_comment: str | None = None
+    approvals: list[TravelExceptionApprovalOut] = Field(default_factory=list)
+
+
 class TravelRequestOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -77,6 +106,8 @@ class TravelRequestOut(BaseModel):
     requested_at: datetime
     updated_at: datetime | None = None
     legs: list[TravelRequestLegOut] | None = None
+    exception: TravelExceptionSummaryOut | None = None
+    segments: list[TravelRequestSegmentOut] = Field(default_factory=list)
 
 
 class TravelRequestListItemOut(BaseModel):
@@ -102,6 +133,7 @@ class EntitlementNoteOut(BaseModel):
 class TicketUploadForm(BaseModel):
     """JSON optional fields for desk upload (also accepted as Form fields)."""
 
+    leg_sequence: int = 1
     pnr_or_booking_ref: str | None = None
     ticket_amount: Decimal | None = None
     ticket_travel_class: str | None = None

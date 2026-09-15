@@ -35,8 +35,10 @@ from app.models.reimbursement import (
 from app.models.travel_booking import TravelMode, TravelTrip
 from app.schemas.reimbursement import ClaimDraftIn, InvoiceFieldsUpdateRequest
 from app.services.advance_service import get_outstanding_advance
+from app.services.budget_alert_service import check_and_notify_budget_threshold
 from app.services.claim_submission_rules import validate_claim_submission
 from app.services.exception_service import trigger_exceptions_if_needed
+from app.services.expense_category_service import check_blacklist
 from app.services.invoice_gemini_extraction import extract_invoice_with_gemini_sync
 from app.services.policy_engine import (
     check_cap,
@@ -354,6 +356,14 @@ def _parsed_money(s: Any) -> Decimal:
         return Decimal("0.00")
 
 
+async def _get_impact_level_id_for_user(user_id: int, db: AsyncSession) -> int | None:
+    user = await db.get(User, user_id)
+    if not user or not user.employee_id:
+        return None
+    employee = await db.get(Employee, user.employee_id)
+    return employee.impact_level_id if employee else None
+
+
 async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSession) -> None:
     raw_fields = parsed.get("fields") or {}
     keys = [
@@ -446,7 +456,13 @@ async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSe
         if total_amt <= 0 and taxable > 0:
             total_amt = (taxable + cgst + sgst + igst).quantize(Decimal("0.01"))
         bl_text = f"{description} {vendor_lower} {filename_lower}"
-        is_blacklisted = any(t in bl_text for t in ("alcohol", "tobacco"))
+        impact_level_id = await _get_impact_level_id_for_user(invoice.uploader_user_id, db)
+        configured_hit = False
+        if category:
+            configured_hit, _matched = await check_blacklist(
+                bl_text, [category.id], db, impact_level_id=impact_level_id
+            )
+        is_blacklisted = configured_hit or any(t in bl_text for t in ("alcohol", "tobacco"))
         db.add(
             InvoiceLineItem(
                 invoice_id=invoice.id,
@@ -555,7 +571,13 @@ async def run_mock_extraction(invoice: Invoice, db: AsyncSession) -> None:
         )
 
     description = category_name
-    is_blacklisted = any(token in invoice.original_filename.lower() for token in ("alcohol", "tobacco"))
+    impact_level_id = await _get_impact_level_id_for_user(invoice.uploader_user_id, db)
+    configured_hit = False
+    if category:
+        configured_hit, _matched = await check_blacklist(
+            f"{description} {invoice.original_filename.lower()}", [category.id], db, impact_level_id=impact_level_id
+        )
+    is_blacklisted = configured_hit or any(token in invoice.original_filename.lower() for token in ("alcohol", "tobacco"))
     db.add(
         InvoiceLineItem(
             invoice_id=invoice.id,
@@ -733,13 +755,9 @@ async def _is_twin_sharing_active(claim: ClaimDraft, db: AsyncSession) -> bool:
     if not employee or not employee.impact_level_id:
         return False
     impact = await db.get(ImpactLevel, employee.impact_level_id)
-    if not impact:
+    if not impact or not impact.twin_sharing_mandatory:
         return False
-        
-    level_code = impact.level_code.strip().upper()
-    if level_code not in {"L5B", "L5C", "L6A", "L6B", "L6C", "L6D"}:
-        return False
-        
+
     query = select(ClaimDraft).where(
         and_(
             ClaimDraft.id != claim.id,
@@ -761,8 +779,7 @@ async def _is_twin_sharing_active(claim: ClaimDraft, db: AsyncSession) -> bool:
         cand_impact = await db.get(ImpactLevel, cand_emp.impact_level_id)
         if not cand_impact:
             continue
-        cand_level = cand_impact.level_code.strip().upper()
-        if cand_level in {"L5B", "L5C", "L6A", "L6B", "L6C", "L6D"}:
+        if cand_impact.twin_sharing_mandatory:
             return True
             
     return False
@@ -1116,4 +1133,10 @@ async def submit_claim(claim_id: int, user_id: int, db: AsyncSession) -> ClaimDr
     await init_claim_approval_chain(claim, db)
     await db.commit()
     await db.refresh(claim)
+
+    try:
+        await check_and_notify_budget_threshold(claim.employee_user_id, db)
+    except Exception:
+        logger.exception("Budget threshold check failed for claim %s", claim.id)
+
     return claim
