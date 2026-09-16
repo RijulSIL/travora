@@ -147,10 +147,14 @@ async def _validate_common_travel_request_fields(
     return user, mode_val
 
 
-async def _determine_blocking_exception(
+async def _determine_blocking_exceptions(
     *, user_id: int, mode_val: str, impact_level: str, travel_date: date | None, legs: list | None, db: AsyncSession
-) -> tuple[str, str] | None:
-    """Returns (exception_type, message) if this request needs a policy exception to proceed, else None.
+) -> list[tuple[str, str]]:
+    """Returns every (exception_type, message) this request needs a policy exception for.
+
+    A single request can trip more than one check at once (e.g. a short-notice flight for
+    someone whose level also has air travel locked) — all of them are collected and later
+    rolled into one combined ExceptionRequest, not just the first match.
 
     Checks the primary trip fields plus every MULTI_CITY leg individually — a flight buried in leg 2
     or 3 of a mixed-mode trip must trigger the same checks as a single-leg flight request.
@@ -164,7 +168,9 @@ async def _determine_blocking_exception(
             flight_dates.append(leg.travel_date)
 
     if not flight_dates:
-        return None
+        return []
+
+    blocking: list[tuple[str, str]] = []
 
     earliest_flight_date = min(flight_dates)
     min_days = settings.flight_advance_booking_min_days
@@ -174,22 +180,22 @@ async def _determine_blocking_exception(
         user_id, "FLIGHT_ADVANCE_BOOKING_OVERRIDE", db
     )
     if min_advance_enforced and not has_advance_override:
-        return (
+        blocking.append((
             "FLIGHT_ADVANCE_BOOKING_OVERRIDE",
             f"Minimum {min_days}-day advance booking window for flights is enforced.",
-        )
+        ))
 
     if impact_level in LEVELS_REQUIRING_AIR_UNLOCK:
         # Scoped to this specific request, not a standing unlock for the employee: a prior
         # AIR_TRAVEL_UNLOCK approval covered only the trip it was raised for, so every new
         # flight booking needs its own fresh exception approval.
-        return (
+        blocking.append((
             "AIR_TRAVEL_UNLOCK",
             "Air travel is locked for your level until Reporting Manager + Group Head HR + CEO "
             "exception approval is recorded for this request.",
-        )
+        ))
 
-    return None
+    return blocking
 
 
 async def create_travel_request(
@@ -212,13 +218,17 @@ async def create_travel_request(
     )
 
     impact_level = await _get_user_impact_level_code(user_id, db)
-    blocking = await _determine_blocking_exception(
+    blocking = await _determine_blocking_exceptions(
         user_id=user_id, mode_val=mode_val, impact_level=impact_level, travel_date=travel_date, legs=legs, db=db
     )
     if blocking:
-        _exception_type, message = blocking
-        status_code = status.HTTP_403_FORBIDDEN if _exception_type == "AIR_TRAVEL_UNLOCK" else 422
-        raise HTTPException(status_code=status_code, detail=message)
+        combined_message = " ".join(message for _, message in blocking)
+        status_code = (
+            status.HTTP_403_FORBIDDEN
+            if any(exc_type == "AIR_TRAVEL_UNLOCK" for exc_type, _ in blocking)
+            else 422
+        )
+        raise HTTPException(status_code=status_code, detail=combined_message)
 
     if preferred_class:
         if mode_val == "FLIGHT":
@@ -359,11 +369,11 @@ async def create_travel_request_with_exception(
     mode_val = travel_mode.value if isinstance(travel_mode, TravelRequestMode) else str(travel_mode).upper()
 
     impact_level = await _get_user_impact_level_code(user_id, db)
-    blocking = await _determine_blocking_exception(
+    blocking = await _determine_blocking_exceptions(
         user_id=user_id, mode_val=mode_val, impact_level=impact_level, travel_date=travel_date, legs=legs, db=db
     )
 
-    if blocking is None:
+    if not blocking:
         # Nothing actually blocks this — no exception needed, submit normally.
         return await create_travel_request(
             user_id=user_id,
@@ -380,7 +390,7 @@ async def create_travel_request_with_exception(
             db=db,
         )
 
-    exception_type, _message = blocking
+    exception_types = [exc_type for exc_type, _ in blocking]
 
     row = await _insert_travel_request_row(
         user_id=user_id,
@@ -400,7 +410,9 @@ async def create_travel_request_with_exception(
 
     from app.services.workflow_service import create_travel_exception_request
 
-    await create_travel_exception_request(row.id, user_id, exception_type, justification, db)
+    # One combined ExceptionRequest for every type this submission tripped, not one per type —
+    # its approval chain is the union of each type's required-approver roles.
+    await create_travel_exception_request(row.id, user_id, exception_types, justification, db)
 
     return await _reload_travel_request_with_legs(row.id, db)
 
@@ -467,6 +479,7 @@ async def get_latest_exceptions_for_requests(request_ids: Sequence[int], db: Asy
         out[req_id] = {
             "id": exc.id,
             "exception_type": exc.exception_type,
+            "exception_types": exc.exception_types or [exc.exception_type],
             "status": exc.status,
             "decision_comment": exc.decision_comment,
             "approvals": [

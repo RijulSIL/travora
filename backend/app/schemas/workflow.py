@@ -40,6 +40,7 @@ class ExceptionRequestOut(BaseModel):
     travel_request_id: int | None = None
     requested_by_user_id: int
     exception_type: str
+    exception_types: list[str] = Field(default_factory=list)
     description: str | None
     status: str
     decided_at: datetime | None = None

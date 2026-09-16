@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Check, Clock, Calendar, Plane, FileText, ArrowRight } from 'lucide-react';
+import { Check, Clock, Calendar, Plane, FileText, ArrowRight, Eye, X } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend
 } from 'recharts';
 
+import ClaimReviewModal from '../../components/claims/ClaimReviewModal';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
 import { reimbursementApi } from '../../services/reimbursementApi';
 import { useAuthStore } from '../../store/authStore';
 import useToast from '../../hooks/useToast';
+import { normalizeApiError } from '../../utils/apiErrors';
 
 function slaClass(bucket) {
   if (bucket === 'breached') return 'sla-breached';
@@ -33,6 +35,7 @@ export default function ManagerDashboard() {
   const [spendCategoryData, setSpendCategoryData] = useState([]);
   const [budgetsEnabled, setBudgetsEnabled] = useState(false);
   const [teamMonthlyBudget, setTeamMonthlyBudget] = useState(null);
+  const [reviewClaimId, setReviewClaimId] = useState(null);
 
   const [loading, setLoading] = useState(true);
   const { showToast } = useToast();
@@ -81,6 +84,25 @@ export default function ManagerDashboard() {
     await reimbursementApi.travelApprove(requestId);
     showToast('Travel request approved.', 'success');
     await load();
+  });
+
+  const { run: rejectTravel, loading: rejectingTravel } = useAsyncAction(async (requestId) => {
+    const reason = window.prompt('Enter reason for rejection:');
+    if (reason === null) return;
+    if (!reason.trim()) {
+      showToast('A rejection reason is required', 'error');
+      return;
+    }
+    try {
+      await reimbursementApi.travelReject(requestId, { reason: reason.trim() });
+      showToast('Travel request rejected.', 'success');
+      await load();
+    } catch (e) {
+      showToast(normalizeApiError(e).message, 'error');
+      if (e.response?.status === 409) {
+        await load();
+      }
+    }
   });
 
   const topFive = rows.slice(0, 5);
@@ -236,15 +258,25 @@ export default function ManagerDashboard() {
                     </div>
                   </td>
                   <td className="px-5 py-3.5 text-right">
-                    <button
-                      type="button"
-                      disabled={acting}
-                      className={`inline-flex items-center gap-1 rounded-lg bg-brand/10 border border-brand/20 px-3 py-1.5 text-xs font-bold text-brand hover:bg-brand/15 active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-sm ${acting ? 'animate-morph' : ''}`}
-                      onClick={() => approve(row.claim_id)}
-                    >
-                      <Check size={13} />
-                      <span>Approve</span>
-                    </button>
+                    <div className="inline-flex items-center gap-2">
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-all shadow-sm"
+                        onClick={() => setReviewClaimId(row.claim_id)}
+                      >
+                        <Eye size={13} />
+                        <span>Review</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={acting}
+                        className={`inline-flex items-center gap-1 rounded-lg bg-brand/10 border border-brand/20 px-3 py-1.5 text-xs font-bold text-brand hover:bg-brand/15 active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-sm ${acting ? 'animate-morph' : ''}`}
+                        onClick={() => approve(row.claim_id)}
+                      >
+                        <Check size={13} />
+                        <span>Approve</span>
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -310,15 +342,26 @@ export default function ManagerDashboard() {
                   </td>
                   <td className="px-5 py-3.5 text-slate-500">{item.request.travel_mode}</td>
                   <td className="px-5 py-3.5 text-right">
-                    <button
-                      type="button"
-                      disabled={actingTravel}
-                      className={`inline-flex items-center gap-1 rounded-lg bg-brand/10 border border-brand/20 px-3 py-1.5 text-xs font-bold text-brand hover:bg-brand/15 active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-sm ${actingTravel ? 'animate-morph' : ''}`}
-                      onClick={() => approveTravel(item.request.id)}
-                    >
-                      <Check size={13} />
-                      <span>Approve</span>
-                    </button>
+                    <div className="inline-flex items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={actingTravel || rejectingTravel}
+                        className={`inline-flex items-center gap-1 rounded-lg bg-brand/10 border border-brand/20 px-3 py-1.5 text-xs font-bold text-brand hover:bg-brand/15 active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-sm ${actingTravel ? 'animate-morph' : ''}`}
+                        onClick={() => approveTravel(item.request.id)}
+                      >
+                        <Check size={13} />
+                        <span>Approve</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={actingTravel || rejectingTravel}
+                        className="inline-flex items-center gap-1 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-bold text-red-700 hover:bg-red-100 active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
+                        onClick={() => rejectTravel(item.request.id)}
+                      >
+                        <X size={13} />
+                        <span>Reject</span>
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -373,6 +416,16 @@ export default function ManagerDashboard() {
           </table>
         </div>
       </section>
+
+      {reviewClaimId ? (
+        <ClaimReviewModal
+          claimId={reviewClaimId}
+          onClose={() => {
+            setReviewClaimId(null);
+            load();
+          }}
+        />
+      ) : null}
     </div>
   );
 }

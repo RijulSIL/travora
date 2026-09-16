@@ -6,7 +6,7 @@ import { useSetPageTitle } from '../../context/PageTitleContext';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
 import { reimbursementApi } from '../../services/reimbursementApi';
 import { selectResolvedRole, useAuthStore } from '../../store/authStore';
-import { EXCEPTION_TYPE_LABELS, formatExceptionType, formatRole } from '../../utils/formatters';
+import { EXCEPTION_TYPE_LABELS, formatExceptionTypes, formatRole } from '../../utils/formatters';
 
 export default function ExceptionRequestsPage() {
   useSetPageTitle('Exception Requests');
@@ -183,9 +183,9 @@ export default function ExceptionRequestsPage() {
                     <td className="px-4 py-3">
                       <span
                         className="text-xs font-semibold bg-slate-100 px-2 py-1 rounded text-slate-700"
-                        title={row.exception_type}
+                        title={(row.exception_types?.length ? row.exception_types : [row.exception_type]).join(', ')}
                       >
-                        {formatExceptionType(row.exception_type)}
+                        {formatExceptionTypes(row.exception_types, row.exception_type)}
                       </span>
                     </td>
                     <td className="px-4 py-3">

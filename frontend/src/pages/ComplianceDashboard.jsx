@@ -6,7 +6,7 @@ import PageHeader from '../components/ui/PageHeader';
 import useBodyScrollLock from '../hooks/useBodyScrollLock';
 import { useSetPageTitle } from '../context/PageTitleContext';
 import { reimbursementApi } from '../services/reimbursementApi';
-import { formatExceptionType, formatRole } from '../utils/formatters';
+import { formatExceptionTypes, formatRole } from '../utils/formatters';
 
 const DECISION_STATUS_STYLES = {
   APPROVED: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20',
@@ -170,7 +170,7 @@ export default function ComplianceDashboard() {
                     </td>
                     <td className="px-3 py-2">{row.claim_ref || '—'}</td>
                     <td className="px-3 py-2">{row.employee || '-'}</td>
-                    <td className="px-3 py-2">{formatExceptionType(row.exception_type)}</td>
+                    <td className="px-3 py-2">{formatExceptionTypes(row.exception_types, row.exception_type)}</td>
                     <td className="px-3 py-2">{row.status}</td>
                     <td className="px-3 py-2">{new Date(row.requested_on).toLocaleDateString()}</td>
                     <td className="px-3 py-2">{row.decided_by || '-'}</td>

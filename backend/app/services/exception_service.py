@@ -97,6 +97,7 @@ async def trigger_exceptions_if_needed(claim: ClaimDraft, expenses: list[ClaimEx
             claim_id=claim.id,
             requested_by_user_id=claim.employee_user_id,
             exception_type=edef["type"],
+            exception_types=[edef["type"]],
             description=edef["description"],
             status=ExceptionRequestStatus.PENDING.value
         )

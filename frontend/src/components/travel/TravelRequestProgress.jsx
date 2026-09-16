@@ -132,7 +132,11 @@ export default function TravelRequestProgress({ request }) {
     <div className="flex flex-col gap-3 px-2 py-1">
       {request.exception ? (
         <div className="text-[10px] font-bold uppercase tracking-wider text-orange-600">
-          Policy exception: {humanize(request.exception.exception_type)}
+          {request.exception.exception_types?.length > 1 ? 'Policy exceptions: ' : 'Policy exception: '}
+          {(request.exception.exception_types?.length
+            ? request.exception.exception_types
+            : [request.exception.exception_type]
+          ).map(humanize).join(', ')}
         </div>
       ) : null}
       {steps.map((step, idx) => {

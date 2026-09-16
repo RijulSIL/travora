@@ -58,6 +58,39 @@ def _humanize_token(value: str) -> str:
     return value.replace("_", " ").replace("/", " / ").title()
 
 
+def _exception_label(row: ExceptionRequest) -> str:
+    """Human-readable label for an exception request, covering every type it was raised for."""
+    types = row.exception_types or [row.exception_type]
+    return " + ".join(_humanize_token(t) for t in types)
+
+
+# Roles ever seen in an exception_chains entry, in organizational hierarchy order. When one
+# ExceptionRequest is raised for several exception types at once, its approval chain is the
+# union of each type's required roles — merged into this canonical order so every distinct
+# role is asked exactly once, in the right sequence, rather than concatenating chains and
+# risking duplicates or an out-of-hierarchy ordering.
+_CANONICAL_EXCEPTION_ROLE_ORDER = [
+    "REPORTING_MANAGER",
+    "FUNCTION_HEAD",
+    "HRBP_HR",
+    "PAYROLL",
+    "FINANCE",
+    "GROUP_HEAD_HR",
+    "IT_ADMIN",
+    "CEO",
+]
+
+
+def _merge_exception_chains(exception_types: list[str], chains_cfg: dict) -> list[str]:
+    roles: set[str] = set()
+    for exc_type in exception_types:
+        roles.update(chains_cfg.get(exc_type, ["HRBP_HR"]))
+    ordered = [r for r in _CANONICAL_EXCEPTION_ROLE_ORDER if r in roles]
+    # Any role outside the known hierarchy (custom admin-configured chain) goes last.
+    ordered += [r for r in roles if r not in _CANONICAL_EXCEPTION_ROLE_ORDER]
+    return ordered
+
+
 async def _reporting_manager_user_for_claim(claim: ClaimDraft, db: AsyncSession) -> User | None:
     """The specific User row for the claim owner's reporting manager, if any."""
     owner_stmt = (
@@ -1392,7 +1425,7 @@ async def _notify_travel_exception_approver(travel_request, req: ExceptionReques
         await create_notification(
             user_id=user_id,
             title=f"Exception Approval Required: TR-{travel_request.id:04d}",
-            body=f"Exception '{_humanize_token(req.exception_type)}' requires your review.",
+            body=f"Exception '{_exception_label(req)}' requires your review.",
             link="/hr/exceptions",
             category=NotificationCategory.EXCEPTION.value,
             db=db,
@@ -1425,8 +1458,12 @@ async def _notify_travel_manager_of_pending_request(travel_request, db: AsyncSes
 
 
 async def create_travel_exception_request(
-    travel_request_id: int, user_id: int, exception_type: str, description: str | None, db: AsyncSession
+    travel_request_id: int, user_id: int, exception_types: list[str], description: str | None, db: AsyncSession
 ) -> ExceptionRequest:
+    """Raises exactly one ExceptionRequest covering every type in `exception_types` — its
+    approval chain is the union of each type's required-approver roles (see
+    _merge_exception_chains), so a request blocked for several reasons at once still only
+    needs one combined approval flow, not one per reason."""
     from app.models.travel_request import TravelRequest
 
     travel_request = await db.get(TravelRequest, travel_request_id)
@@ -1437,7 +1474,8 @@ async def create_travel_exception_request(
         claim_id=None,
         travel_request_id=travel_request_id,
         requested_by_user_id=user_id,
-        exception_type=exception_type,
+        exception_type=exception_types[0],
+        exception_types=list(exception_types),
         description=description,
         status=ExceptionRequestStatus.PENDING.value,
     )
@@ -1445,7 +1483,8 @@ async def create_travel_exception_request(
     await db.flush()
 
     cfg = await get_workflow_config(db)
-    required_roles = cfg.get("exception_chains", EXCEPTION_APPROVAL_CHAINS).get(exception_type, ["HRBP_HR"])
+    chains_cfg = cfg.get("exception_chains", EXCEPTION_APPROVAL_CHAINS)
+    required_roles = _merge_exception_chains(exception_types, chains_cfg)
     for i, role in enumerate(required_roles):
         status_val = ExceptionRequestStatus.PENDING.value if i == 0 else "AWAITING"
         db.add(
@@ -1458,6 +1497,7 @@ async def create_travel_exception_request(
     await db.commit()
     await db.refresh(row)
 
+    exception_label = _exception_label(row)
     if required_roles:
         first_role = required_roles[0]
         target_uids = await _user_ids_for_exception_role_for_travel(travel_request, first_role, db)
@@ -1465,7 +1505,7 @@ async def create_travel_exception_request(
             await create_notification(
                 user_id=target_uid,
                 title=f"Exception Approval Required: TR-{travel_request.id:04d}",
-                body=f"Exception Type: {_humanize_token(exception_type)}. Justification: {description}",
+                body=f"Exception Type: {exception_label}. Justification: {description}",
                 link="/hr/exceptions",
                 category=NotificationCategory.EXCEPTION.value,
                 db=db,
@@ -1474,7 +1514,7 @@ async def create_travel_exception_request(
     await create_notification(
         user_id=user_id,
         title=f"Exception Request Submitted: TR-{travel_request.id:04d}",
-        body=f"Your {_humanize_token(exception_type)} exception request has been sent for approval.",
+        body=f"Your {exception_label} exception request has been sent for approval.",
         link="/travel-requests",
         category=NotificationCategory.EXCEPTION.value,
         db=db,
@@ -1497,12 +1537,13 @@ async def create_exception_request(
         claim_id=claim_id,
         requested_by_user_id=user_id,
         exception_type=exception_type,
+        exception_types=[exception_type],
         description=description,
         status=ExceptionRequestStatus.PENDING.value,
     )
     db.add(row)
     await db.flush()
-    
+
     # Map exception type to expense category name keyword and update corresponding ClaimExpense
     category_keyword = None
     if exception_type == "ROOM_RENT_DEVIATION":
@@ -1670,7 +1711,7 @@ async def decide_exception_request(
             from app.models.travel_request import TravelRequestStatus
 
             travel_request.status = TravelRequestStatus.REJECTED.value
-            travel_request.rejection_reason = comment or f"Exception '{row.exception_type}' was rejected."
+            travel_request.rejection_reason = comment or f"Exception '{_exception_label(row)}' was rejected."
     else:
         # Check if there is a next stage in "AWAITING" state
         next_stage = None
@@ -1731,7 +1772,7 @@ async def decide_exception_request(
     # is sent with send_email=False, so approvers earlier in the chain don't each trigger
     # a separate email to the employee.
     send_email = True
-    exception_label = _humanize_token(row.exception_type)
+    exception_label = _exception_label(row)
     if row.status == ExceptionRequestStatus.REJECTED.value:
         title = f"Exception Request Rejected: {claim_ref}"
         body = f"Your exception request for {exception_label} was rejected by {_humanize_token(approver.role.value)}."

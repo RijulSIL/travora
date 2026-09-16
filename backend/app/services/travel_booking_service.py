@@ -4,7 +4,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import HTTPException, UploadFile, status
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -110,10 +110,12 @@ async def _get_configured_train_classes(user_id: int, db: AsyncSession) -> set[s
 
 
 async def _has_completed_exception_chain(user_id: int, exception_type: str, db: AsyncSession) -> bool:
+    import json
+
     q = select(ExceptionRequest).where(
         and_(
             ExceptionRequest.requested_by_user_id == user_id,
-            ExceptionRequest.exception_type == exception_type,
+            func.json_contains(ExceptionRequest.exception_types, json.dumps(exception_type)) == 1,
             ExceptionRequest.status == ExceptionRequestStatus.APPROVED.value,
         )
     )

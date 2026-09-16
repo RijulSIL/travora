@@ -93,7 +93,14 @@ class ExceptionRequest(Base):
     claim_id: Mapped[int | None] = mapped_column(ForeignKey("claim_drafts.id"), nullable=True, index=True)
     travel_request_id: Mapped[int | None] = mapped_column(ForeignKey("travel_requests.id"), nullable=True, index=True)
     requested_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    # Primary/first type — kept for backward-compat filtering and display where a single
+    # label is enough. `exception_types` is the source of truth for what this request covers.
     exception_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    # A travel request that trips multiple distinct policy checks at once (e.g. both
+    # short-notice flight booking AND air-travel-locked-for-level) still gets exactly one
+    # ExceptionRequest — this holds every type it covers, and the approval chain built for
+    # it is the union of each type's required-approver roles (see _merge_exception_chains).
+    exception_types: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     description: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default=ExceptionRequestStatus.PENDING.value)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime)

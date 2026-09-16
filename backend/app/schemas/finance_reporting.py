@@ -140,6 +140,7 @@ class ExceptionRequestLogOut(BaseModel):
     employee: str | None = None
     employee_id: str | None = None
     exception_type: str
+    exception_types: list[str] = Field(default_factory=list)
     status: str
     requested_on: datetime
     decided_by: str | None = None

@@ -58,6 +58,12 @@ export const formatExceptionType = (type) =>
     .toLowerCase()
     .replace(/\b\w/g, (c) => c.toUpperCase());
 
+/** One ExceptionRequest can cover several exception types at once — render all of them. */
+export const formatExceptionTypes = (types, fallbackType) =>
+  Array.isArray(types) && types.length
+    ? types.map(formatExceptionType).join(' + ')
+    : formatExceptionType(fallbackType);
+
 export const formatRelative = (dateString) => {
   const diff = Date.now() - new Date(dateString).getTime();
   const sec = Math.floor(diff / 1000);

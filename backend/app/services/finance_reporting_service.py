@@ -579,6 +579,7 @@ async def list_exception_requests_log(
                 "employee": full_name or email,
                 "employee_id": employee_id,
                 "exception_type": exc.exception_type,
+                "exception_types": exc.exception_types or [exc.exception_type],
                 "status": exc.status,
                 "requested_on": exc.created_at,
                 "decided_by": decided_users.get(exc.decided_by_user_id) if exc.decided_by_user_id else None,
