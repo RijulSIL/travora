@@ -1,9 +1,9 @@
 export default function NotificationPanel({ items, onMarkAllRead, onSelect }) {
   return (
-    <div className="absolute right-0 top-11 z-50 w-80 rounded-lg border border-line bg-white shadow-lg">
+    <div className="absolute right-0 top-11 z-50 w-80 rounded-xl border border-slate-200/70 bg-white shadow-lg">
       <div className="flex items-center justify-between border-b border-line px-3 py-2">
         <div className="text-sm font-semibold text-ink">Notifications</div>
-        <button className="text-xs font-semibold text-blue-700" onClick={onMarkAllRead}>
+        <button className="text-xs font-semibold text-brand hover:underline" onClick={onMarkAllRead}>
           Mark all read
         </button>
       </div>
@@ -25,7 +25,7 @@ export default function NotificationPanel({ items, onMarkAllRead, onSelect }) {
         )}
       </div>
       <div className="px-3 py-2 text-right text-sm">
-        <a className="font-semibold text-blue-700" href="/notifications">
+        <a className="font-semibold text-brand hover:underline" href="/notifications">
           View all →
         </a>
       </div>

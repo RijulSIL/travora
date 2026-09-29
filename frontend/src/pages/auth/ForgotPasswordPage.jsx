@@ -105,7 +105,7 @@ export default function ForgotPasswordPage() {
           {step === 'email' ? (
             <>
               <div className="mb-10 text-left">
-                <img src="/companylogo.png" alt="Company Logo" className="h-10 w-auto object-contain mb-8" />
+                <img src="/assets/travoralogo.png" alt="Travora" className="h-11 w-auto object-contain mb-8" />
                 <h1 className="text-3xl font-extrabold tracking-tight text-slate-900">Reset Password</h1>
                 <p className="mt-2 text-sm text-slate-500 font-medium">Enter your email and we'll send you a one-time code to reset your password.</p>
               </div>
@@ -154,7 +154,7 @@ export default function ForgotPasswordPage() {
               </div>
 
               {error && (
-                <div className="mb-6 rounded-lg border border-rose-200 bg-rose-50 p-3.5 flex items-start gap-2 text-rose-700 text-sm font-medium shadow-sm">
+                <div className="mb-6 rounded-lg border border-red-200 bg-red-50 p-3.5 flex items-start gap-2 text-red-700 text-sm font-medium shadow-sm">
                   <AlertCircle size={16} className="shrink-0 mt-0.5" />
                   <span>{error}</span>
                 </div>
@@ -230,24 +230,24 @@ export default function ForgotPasswordPage() {
                 <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-4 text-[11px] font-medium text-slate-500 space-y-2.5 shadow-sm">
                   <p className="font-bold text-slate-800 text-xs mb-1">Password Requirements:</p>
                   <div className="space-y-1.5">
-                    <div className={`flex items-center gap-2 transition-colors ${password.length >= 8 ? 'text-emerald-600' : 'text-rose-500'}`}>
-                      {password.length >= 8 ? <Check size={14} strokeWidth={3} className="shrink-0" /> : <div className="h-1.5 w-1.5 rounded-full bg-rose-400 ml-1 mr-0.5 shrink-0" />}
+                    <div className={`flex items-center gap-2 transition-colors ${password.length >= 8 ? 'text-emerald-600' : 'text-red-500'}`}>
+                      {password.length >= 8 ? <Check size={14} strokeWidth={3} className="shrink-0" /> : <div className="h-1.5 w-1.5 rounded-full bg-red-400 ml-1 mr-0.5 shrink-0" />}
                       <span>At least 8 characters</span>
                     </div>
-                    <div className={`flex items-center gap-2 transition-colors ${/[A-Z]/.test(password) ? 'text-emerald-600' : 'text-rose-500'}`}>
-                      {/[A-Z]/.test(password) ? <Check size={14} strokeWidth={3} className="shrink-0" /> : <div className="h-1.5 w-1.5 rounded-full bg-rose-400 ml-1 mr-0.5 shrink-0" />}
+                    <div className={`flex items-center gap-2 transition-colors ${/[A-Z]/.test(password) ? 'text-emerald-600' : 'text-red-500'}`}>
+                      {/[A-Z]/.test(password) ? <Check size={14} strokeWidth={3} className="shrink-0" /> : <div className="h-1.5 w-1.5 rounded-full bg-red-400 ml-1 mr-0.5 shrink-0" />}
                       <span>At least 1 uppercase letter</span>
                     </div>
-                    <div className={`flex items-center gap-2 transition-colors ${/[a-z]/.test(password) ? 'text-emerald-600' : 'text-rose-500'}`}>
-                      {/[a-z]/.test(password) ? <Check size={14} strokeWidth={3} className="shrink-0" /> : <div className="h-1.5 w-1.5 rounded-full bg-rose-400 ml-1 mr-0.5 shrink-0" />}
+                    <div className={`flex items-center gap-2 transition-colors ${/[a-z]/.test(password) ? 'text-emerald-600' : 'text-red-500'}`}>
+                      {/[a-z]/.test(password) ? <Check size={14} strokeWidth={3} className="shrink-0" /> : <div className="h-1.5 w-1.5 rounded-full bg-red-400 ml-1 mr-0.5 shrink-0" />}
                       <span>At least 1 lowercase letter</span>
                     </div>
-                    <div className={`flex items-center gap-2 transition-colors ${/[0-9]/.test(password) ? 'text-emerald-600' : 'text-rose-500'}`}>
-                      {/[0-9]/.test(password) ? <Check size={14} strokeWidth={3} className="shrink-0" /> : <div className="h-1.5 w-1.5 rounded-full bg-rose-400 ml-1 mr-0.5 shrink-0" />}
+                    <div className={`flex items-center gap-2 transition-colors ${/[0-9]/.test(password) ? 'text-emerald-600' : 'text-red-500'}`}>
+                      {/[0-9]/.test(password) ? <Check size={14} strokeWidth={3} className="shrink-0" /> : <div className="h-1.5 w-1.5 rounded-full bg-red-400 ml-1 mr-0.5 shrink-0" />}
                       <span>At least 1 number</span>
                     </div>
-                    <div className={`flex items-center gap-2 transition-colors ${/[!@#$%^&*()_+={}[\]|\\:;"'<>,.?/~`-]/.test(password) ? 'text-emerald-600' : 'text-rose-500'}`}>
-                      {/[!@#$%^&*()_+={}[\]|\\:;"'<>,.?/~`-]/.test(password) ? <Check size={14} strokeWidth={3} className="shrink-0" /> : <div className="h-1.5 w-1.5 rounded-full bg-rose-400 ml-1 mr-0.5 shrink-0" />}
+                    <div className={`flex items-center gap-2 transition-colors ${/[!@#$%^&*()_+={}[\]|\\:;"'<>,.?/~`-]/.test(password) ? 'text-emerald-600' : 'text-red-500'}`}>
+                      {/[!@#$%^&*()_+={}[\]|\\:;"'<>,.?/~`-]/.test(password) ? <Check size={14} strokeWidth={3} className="shrink-0" /> : <div className="h-1.5 w-1.5 rounded-full bg-red-400 ml-1 mr-0.5 shrink-0" />}
                       <span>At least 1 special character</span>
                     </div>
                   </div>

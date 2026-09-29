@@ -1,12 +1,21 @@
+import { CheckCircle2, Info, Search } from 'lucide-react';
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import PageHeader from '../../components/ui/PageHeader';
+import Pagination from '../../components/ui/Pagination';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
+import { usePagination } from '../../hooks/usePagination';
 import { reimbursementApi } from '../../services/reimbursementApi';
 import { selectResolvedRole, useAuthStore } from '../../store/authStore';
-import { EXCEPTION_TYPE_LABELS, formatExceptionTypes, formatRole } from '../../utils/formatters';
+import {
+  describeExceptionType,
+  EXCEPTION_TYPE_LABELS,
+  formatExceptionType,
+  formatExceptionTypes,
+  formatRole,
+} from '../../utils/formatters';
 
 export default function ExceptionRequestsPage() {
   useSetPageTitle('Exception Requests');
@@ -51,6 +60,8 @@ export default function ExceptionRequestsPage() {
     await load();
   });
 
+  const { page, setPage, totalPages, pageItems, startIndex, pageSize, total } = usePagination(rows);
+
   return (
     <>
       <PageHeader title="" />
@@ -58,7 +69,7 @@ export default function ExceptionRequestsPage() {
       {/* Sleek Modern Filter Panel */}
       <section className="panel rounded-lg p-5 border border-line/60 shadow-sm bg-white mb-6">
         <h2 className="text-sm font-semibold text-slate-800 mb-4 flex items-center gap-2">
-          <span>🔍</span> Filter Exception Requests
+          <Search size={16} className="text-slate-500" /> Filter Exception Requests
         </h2>
         <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-5">
           <div className="space-y-1">
@@ -126,17 +137,18 @@ export default function ExceptionRequestsPage() {
           <table className="min-w-full text-sm">
             <thead className="bg-slate-50 border-b border-line">
               <tr>
-                <th className="px-4 py-3 text-left font-semibold text-slate-600 text-xs uppercase tracking-wider">Exception ID</th>
-                <th className="px-4 py-3 text-left font-semibold text-slate-600 text-xs uppercase tracking-wider">Claim Ref</th>
-                <th className="px-4 py-3 text-left font-semibold text-slate-600 text-xs uppercase tracking-wider">Employee</th>
-                <th className="px-4 py-3 text-left font-semibold text-slate-600 text-xs uppercase tracking-wider">Type</th>
-                <th className="px-4 py-3 text-left font-semibold text-slate-600 text-xs uppercase tracking-wider">Status</th>
-                <th className="px-4 py-3 text-left font-semibold text-slate-600 text-xs uppercase tracking-wider">Requested On</th>
-                <th className="px-4 py-3 text-left font-semibold text-slate-600 text-xs uppercase tracking-wider">Decided By</th>
+                <th className="px-4 py-3 text-center font-semibold text-slate-600 text-xs uppercase tracking-wider whitespace-nowrap">S. No</th>
+                <th className="px-4 py-3 text-center font-semibold text-slate-600 text-xs uppercase tracking-wider">Exception ID</th>
+                <th className="px-4 py-3 text-center font-semibold text-slate-600 text-xs uppercase tracking-wider">Claim Ref</th>
+                <th className="px-4 py-3 text-center font-semibold text-slate-600 text-xs uppercase tracking-wider">Employee</th>
+                <th className="px-4 py-3 text-center font-semibold text-slate-600 text-xs uppercase tracking-wider">Type</th>
+                <th className="px-4 py-3 text-center font-semibold text-slate-600 text-xs uppercase tracking-wider">Status</th>
+                <th className="px-4 py-3 text-center font-semibold text-slate-600 text-xs uppercase tracking-wider">Requested On</th>
+                <th className="px-4 py-3 text-center font-semibold text-slate-600 text-xs uppercase tracking-wider">Decided By</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-line/60 bg-white">
-              {rows.map((row) => {
+              {pageItems.map((row, index) => {
                 const activeDecision = (row.decisions || []).find(
                   (d) => d.status === 'PENDING' || d.status === 'AWAITING'
                 );
@@ -164,14 +176,15 @@ export default function ExceptionRequestsPage() {
                         setExpandedId(expandedId === row.exception_id ? null : row.exception_id)
                       }
                     >
-                    <td className="px-4 py-3 font-semibold text-slate-800">
+                    <td className="px-4 py-3 text-center text-slate-500">{startIndex + index + 1}</td>
+                    <td className="px-4 py-3 text-center font-semibold text-slate-800">
                       {row.exception_ref || `EXC-${String(row.exception_id).padStart(4, '0')}`}
                     </td>
-                    <td className="px-4 py-3 font-medium text-slate-600" onClick={(e) => e.stopPropagation()}>
+                    <td className="px-4 py-3 text-center font-medium text-slate-600" onClick={(e) => e.stopPropagation()}>
                       {row.claim_id ? (
                         <Link
                           to={`/claims/${row.claim_id}`}
-                          className="text-brand hover:underline font-semibold flex items-center gap-1"
+                          className="text-brand hover:underline font-semibold inline-flex items-center gap-1"
                         >
                           {row.claim_ref} ↗
                         </Link>
@@ -179,30 +192,44 @@ export default function ExceptionRequestsPage() {
                         row.claim_ref || '—'
                       )}
                     </td>
-                    <td className="px-4 py-3 text-slate-700">{row.employee || '—'}</td>
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-3 text-center text-slate-700">{row.employee || '—'}</td>
+                    <td className="px-4 py-3 text-center">
                       <span
                         className="text-xs font-semibold bg-slate-100 px-2 py-1 rounded text-slate-700"
-                        title={(row.exception_types?.length ? row.exception_types : [row.exception_type]).join(', ')}
+                        title={(row.exception_types?.length ? row.exception_types : [row.exception_type])
+                          .map(formatExceptionType)
+                          .join(', ')}
                       >
                         {formatExceptionTypes(row.exception_types, row.exception_type)}
                       </span>
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-3 text-center">
                       {row.status === 'PENDING' && <span className="badge badge-in-approval">PENDING</span>}
                       {row.status === 'APPROVED' && <span className="badge badge-paid">APPROVED</span>}
                       {row.status === 'REJECTED' && <span className="badge badge-rejected">REJECTED</span>}
                     </td>
-                    <td className="px-4 py-3 text-slate-500">{new Date(row.requested_on).toLocaleDateString()}</td>
-                    <td className="px-4 py-3 text-slate-700">{row.decided_by || '—'}</td>
+                    <td className="px-4 py-3 text-center text-slate-500">{new Date(row.requested_on).toLocaleDateString()}</td>
+                    <td className="px-4 py-3 text-center text-slate-700">{row.decided_by || '—'}</td>
                   </tr>
                   {expandedId === row.exception_id ? (
                     <tr className="bg-slate-50/50">
-                      <td colSpan={7} className="px-6 py-5">
+                      <td colSpan={8} className="px-6 py-5">
                         <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
                           Exception Request Details
                         </div>
                         
+                        <div className="mb-4 p-4 bg-amber-50/60 rounded-lg border border-amber-200/80">
+                          <span className="font-semibold text-amber-900 text-xs block mb-2">What This Means</span>
+                          <div className="space-y-2">
+                            {(row.exception_types?.length ? row.exception_types : [row.exception_type]).map((type) => (
+                              <div key={type} className="text-sm">
+                                <span className="font-semibold text-slate-800">{formatExceptionType(type)}:</span>{' '}
+                                <span className="text-slate-600">{describeExceptionType(type)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
                         <div className="grid gap-5 md:grid-cols-2 p-4 bg-white rounded-lg border border-slate-200/80 shadow-sm">
                           <div className="space-y-3">
                             <div>
@@ -293,12 +320,12 @@ export default function ExceptionRequestsPage() {
                           <div className="mt-4 border-t border-slate-200 pt-4 max-w-xl">
                             {hasUserAlreadyActed ? (
                               <div className="rounded-xl border border-emerald-100 bg-emerald-50/40 p-4 flex items-center gap-2.5 text-xs text-emerald-800 font-bold">
-                                <span className="text-sm">✓</span>
+                                <CheckCircle2 size={16} className="shrink-0" />
                                 You have already approved this exception stage. It is now awaiting subsequent approval steps.
                               </div>
                             ) : (
                               <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-4 flex items-center gap-2.5 text-xs text-slate-600 font-semibold">
-                                <span className="text-sm">ℹ</span>
+                                <Info size={16} className="shrink-0" />
                                 This exception request is pending approval from: {activeDecision ? formatRole(activeDecision.required_role) : 'next stage'}.
                               </div>
                             )}
@@ -312,7 +339,7 @@ export default function ExceptionRequestsPage() {
             })}
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-slate-500 italic bg-slate-50/30">
+                  <td colSpan={8} className="px-4 py-8 text-center text-slate-500 italic bg-slate-50/30">
                     No exception requests found matching the current filters.
                   </td>
                 </tr>
@@ -320,6 +347,7 @@ export default function ExceptionRequestsPage() {
             </tbody>
           </table>
         </div>
+        <Pagination page={page} totalPages={totalPages} onPageChange={setPage} total={total} pageSize={pageSize} startIndex={startIndex} />
       </section>
     </>
   );

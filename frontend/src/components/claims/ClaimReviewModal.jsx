@@ -1,7 +1,24 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, CreditCard, FileText, History as HistoryIcon, Plane, Receipt, Undo2, X } from 'lucide-react';
+import {
+  AlertTriangle,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  ClipboardCheck,
+  CreditCard,
+  FileText,
+  History as HistoryIcon,
+  Plane,
+  ReceiptIndianRupee,
+  ShieldCheck,
+  Undo2,
+  Wallet,
+  X,
+} from 'lucide-react';
 
+import ClaimStatusBadge from '../ui/ClaimStatusBadge';
+import ReimbursementCategoryBadge from '../ui/ReimbursementCategoryBadge';
 import ClaimTimeline from './ClaimTimeline';
 import ConfirmDialog from '../ui/ConfirmDialog';
 import InvoicePreviewDrawer from '../ui/InvoicePreviewDrawer';
@@ -11,33 +28,10 @@ import useBodyScrollLock from '../../hooks/useBodyScrollLock';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
 import useToast from '../../hooks/useToast';
 import { normalizeApiError } from '../../utils/apiErrors';
+import { formatDate } from '../../utils/formatters';
 import { hasAnyPermission } from '../../services/permissions';
 import { reimbursementApi } from '../../services/reimbursementApi';
 import { selectResolvedRole, useAuthStore } from '../../store/authStore';
-
-const STATUS_LABELS = {
-  DRAFT: 'Draft',
-  SUBMITTED: 'Submitted',
-  IN_APPROVAL: 'In Approval',
-  PENDING_EXCEPTION: 'Pending Exception',
-  SENT_BACK: 'Sent Back',
-  READY_FOR_PAYMENT: 'Ready for Payment',
-  PAID: 'Paid',
-  REJECTED: 'Rejected',
-  ON_HOLD: 'On Hold',
-};
-
-const STATUS_STYLES = {
-  DRAFT: 'bg-slate-100 text-slate-600 ring-slate-500/20',
-  SUBMITTED: 'bg-sky-50 text-sky-700 ring-sky-600/20',
-  IN_APPROVAL: 'bg-sky-50 text-sky-700 ring-sky-600/20',
-  PENDING_EXCEPTION: 'bg-amber-50 text-amber-700 ring-amber-600/20',
-  SENT_BACK: 'bg-amber-50 text-amber-700 ring-amber-600/20',
-  READY_FOR_PAYMENT: 'bg-violet-50 text-violet-700 ring-violet-600/20',
-  PAID: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20',
-  REJECTED: 'bg-red-50 text-red-700 ring-red-600/20',
-  ON_HOLD: 'bg-slate-100 text-slate-600 ring-slate-500/20',
-};
 
 const POLICY_STYLES = {
   OK: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20',
@@ -45,21 +39,15 @@ const POLICY_STYLES = {
   HARD_BLOCK: 'bg-red-50 text-red-700 ring-red-600/20',
 };
 
+const money = (v) =>
+  Number(v || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
 const TABS = [
   { key: 'summary', label: 'Summary', icon: FileText },
-  { key: 'invoices', label: 'Invoices', icon: Receipt },
+  { key: 'invoices', label: 'Invoices', icon: ReceiptIndianRupee },
   { key: 'trips', label: 'Trips', icon: Plane },
   { key: 'history', label: 'History', icon: HistoryIcon },
 ];
-
-function StatusPill({ status }) {
-  const style = STATUS_STYLES[status] || 'bg-slate-100 text-slate-600 ring-slate-500/20';
-  return (
-    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-bold ring-1 ring-inset ${style}`}>
-      {STATUS_LABELS[status] || status}
-    </span>
-  );
-}
 
 function PolicyPill({ status }) {
   const style = POLICY_STYLES[status] || POLICY_STYLES.OK;
@@ -78,8 +66,9 @@ function PolicyPill({ status }) {
  */
 export default function ClaimReviewModal({ claimId, onClose }) {
   const role = useAuthStore(selectResolvedRole);
+  const delegatedRoles = useAuthStore((s) => s.profile?.delegated_roles);
   const approverPerms = ['approve_stage_1', 'approve_stage_2', 'approve_stage_3', 'process_payments'];
-  const isApprover = hasAnyPermission(role, approverPerms);
+  const isApprover = hasAnyPermission(role, approverPerms, delegatedRoles);
   const { showToast } = useToast();
   useBodyScrollLock(true);
 
@@ -87,7 +76,7 @@ export default function ClaimReviewModal({ claimId, onClose }) {
   const [comment, setComment] = useState('');
   const [rejectReason, setRejectReason] = useState('');
   const [utr, setUtr] = useState('');
-  const [payAmount, setPayAmount] = useState('');
+  const [tdsDeduction, setTdsDeduction] = useState('0.00');
   const [payableAmount, setPayableAmount] = useState('');
   const [timeline, setTimeline] = useState([]);
   const [activeTab, setActiveTab] = useState('summary');
@@ -114,10 +103,9 @@ export default function ClaimReviewModal({ claimId, onClose }) {
           c.data?.approved_amount ??
           c.data?.compliance_report?.net_payable;
         if (authoritative != null) {
-          const normalized = String(authoritative);
-          setPayableAmount(normalized);
-          setPayAmount(normalized);
+          setPayableAmount(String(authoritative));
         }
+        setTdsDeduction('0.00');
       } catch (error) {
         if (!cancelled) {
           setClaim(false);
@@ -151,38 +139,58 @@ export default function ClaimReviewModal({ claimId, onClose }) {
     onClose();
   });
 
+  const readyForPayment = claim?.status === 'READY_FOR_PAYMENT';
+  const payMax = Number(payableAmount || 0);
+  const deductionAmount = Number(tdsDeduction || 0);
+  const totalDue = payMax - deductionAmount;
+  const deductionInvalid = deductionAmount < 0 || deductionAmount > payMax;
+
   const { run: pay, loading: paying } = useAsyncAction(async () => {
     await reimbursementApi.recordClaimPayment(claimId, {
       utr_reference: utr,
-      amount: payAmount,
+      amount: totalDue,
+      tds_deduction: deductionAmount,
     });
     showToast('Payment recorded', 'success');
     onClose();
   });
 
-  const readyForPayment = claim?.status === 'READY_FOR_PAYMENT';
-  const payMax = Number(payableAmount || 0);
   const linkedInvoices = claim?.linked_invoices ?? [];
   const linkedTrips = claim?.linked_trips ?? [];
+  const hasTripDetails = Boolean(
+    claim?.from_city || claim?.destination_city || claim?.departure_date || claim?.trip_purpose,
+  );
+  // General Reimbursements and Reallocation claims are never trip-linked, so the Trips tab
+  // has nothing to show for either (see GeneralReimbursementWizard.jsx, which both share).
+  const visibleTabs =
+    claim?.reimbursement_category === 'GENERAL' || claim?.reimbursement_category === 'REALLOCATION'
+      ? TABS.filter((tab) => tab.key !== 'trips')
+      : TABS;
 
   return createPortal(
     <div className="fixed inset-0 z-[95] grid place-items-center bg-slate-900/55 p-4 backdrop-blur-[1px]" onClick={onClose}>
       <div
-        className="flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+        className="flex h-[calc(80vh-20px)] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-line px-6 py-4">
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-line bg-gradient-to-r from-brand/[0.06] via-white to-white px-6 py-4">
           {claim ? (
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3.5">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-brand/10 text-brand">
+                <Wallet size={20} />
+              </div>
               <div>
-                <h2 className="text-lg font-bold text-ink">{claim.claim_reference || `Claim #${claim.id}`}</h2>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-lg font-bold text-ink">{claim.claim_reference || `Claim #${claim.id}`}</h2>
+                  <ReimbursementCategoryBadge category={claim.reimbursement_category} />
+                  <ClaimStatusBadge status={claim.status} />
+                </div>
                 <p className="text-sm text-slate-500">{claim.employee_id ? `Employee #${claim.employee_id}` : 'Employee'}</p>
               </div>
-              <StatusPill status={claim.status} />
             </div>
           ) : (
-            <div className="h-9 w-40 animate-pulse rounded bg-slate-100" />
+            <div className="h-9 w-40 animate-pulse rounded-lg bg-slate-100" />
           )}
           <button
             type="button"
@@ -201,10 +209,10 @@ export default function ClaimReviewModal({ claimId, onClose }) {
             <Skeleton variant="card" height={220} />
           </div>
         ) : (
-          <div className="grid flex-1 gap-6 overflow-y-auto p-6 lg:grid-cols-[1.7fr_1fr]">
+          <div className="grid flex-1 items-start gap-6 overflow-y-auto p-6 lg:grid-cols-[1.7fr_1fr]">
             <section className="space-y-4">
               <div className="flex gap-1.5 rounded-xl bg-slate-100 p-1">
-                {TABS.map(({ key, label, icon: Icon }) => (
+                {visibleTabs.map(({ key, label, icon: Icon }) => (
                   <button
                     key={key}
                     type="button"
@@ -213,84 +221,231 @@ export default function ClaimReviewModal({ claimId, onClose }) {
                     }`}
                     onClick={() => setActiveTab(key)}
                   >
-                    <Icon size={14} />
+                    <Icon size={14} className={activeTab === key ? 'text-brand' : ''} />
                     {label}
                   </button>
                 ))}
               </div>
 
               {activeTab === 'summary' ? (
-                <div className="space-y-2.5">
-                  {(claim.expenses || []).map((expense) => (
-                    <div key={expense.id} className="flex items-center justify-between rounded-lg border border-line bg-white px-3.5 py-2.5">
-                      <span className="text-sm font-medium text-slate-700">{expense.category_name}</span>
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-sm text-ink">₹{Number(expense.amount || 0).toLocaleString('en-IN')}</span>
-                        <PolicyPill status={expense.policy_status} />
-                      </div>
+                <div className="space-y-4">
+                  {(() => {
+                    const gst = claim.compliance_report?.gst_summary || {};
+                    const baseAmount = Number(gst.taxable_value ?? gst.total_taxable_value ?? 0);
+                    const totalTax = Number(gst.cgst || 0) + Number(gst.sgst || 0) + Number(gst.igst || 0);
+                    const totalPayable = baseAmount + totalTax;
+                    return (
+                      <>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <div className="flex items-start justify-between rounded-xl border border-line bg-slate-50/60 p-3.5">
+                            <div>
+                              <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Total Base Amount</p>
+                              <p className="mt-1 font-mono text-lg font-bold text-ink">
+                                ₹{baseAmount.toLocaleString('en-IN')}
+                              </p>
+                            </div>
+                            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-200/70 text-slate-500">
+                              <ReceiptIndianRupee size={15} />
+                            </div>
+                          </div>
+                          <div className="flex items-start justify-between rounded-xl border border-line bg-slate-50/60 p-3.5">
+                            <div>
+                              <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Total Tax</p>
+                              <p className="mt-1 font-mono text-lg font-bold text-ink">
+                                ₹{totalTax.toLocaleString('en-IN')}
+                              </p>
+                            </div>
+                            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-200/70 text-slate-500">
+                              <ReceiptIndianRupee size={15} />
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-start justify-between rounded-xl border border-brand/20 bg-brand/5 p-3.5">
+                          <div>
+                            <p className="text-[11px] font-bold uppercase tracking-wide text-brand/70">Total Payable</p>
+                            <p className="mt-1 font-mono text-lg font-bold text-brand">
+                              ₹{totalPayable.toLocaleString('en-IN')}
+                            </p>
+                          </div>
+                          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 text-brand">
+                            <Wallet size={15} />
+                          </div>
+                        </div>
+                      </>
+                    );
+                  })()}
+
+                  <div className="overflow-hidden rounded-xl border border-line">
+                    <div className="border-b border-line bg-slate-50/60 px-3.5 py-2.5">
+                      <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">Expense Breakdown</h3>
                     </div>
-                  ))}
-                  {!(claim.expenses || []).length ? <p className="text-sm text-slate-500">No expense lines on this claim.</p> : null}
-                  <div className="rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-xs font-semibold text-slate-600">
-                    Policy exceptions on this claim:{' '}
-                    <span className="text-ink">{(claim.compliance_report?.exceptions || []).length}</span>
+                    <div className="divide-y divide-line bg-white">
+                      {(claim.expenses || []).map((expense) => (
+                        <div key={expense.id} className="flex items-center justify-between px-3.5 py-2.5">
+                          <span className="text-sm font-medium text-slate-700">{expense.category_name}</span>
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-sm text-ink">₹{Number(expense.amount || 0).toLocaleString('en-IN')}</span>
+                            <PolicyPill status={expense.policy_status} />
+                          </div>
+                        </div>
+                      ))}
+                      {!(claim.expenses || []).length ? (
+                        <p className="px-3.5 py-3 text-sm text-slate-500">No expense lines on this claim.</p>
+                      ) : null}
+                    </div>
                   </div>
+
+                  {(() => {
+                    const exceptionCount = (claim.compliance_report?.exceptions || []).length;
+                    return (
+                      <div
+                        className={`flex items-center gap-2 rounded-lg border px-3.5 py-2.5 text-xs font-semibold ${
+                          exceptionCount
+                            ? 'border-amber-200 bg-amber-50 text-amber-800'
+                            : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                        }`}
+                      >
+                        {exceptionCount ? <AlertTriangle size={14} className="shrink-0" /> : <ShieldCheck size={14} className="shrink-0" />}
+                        <span>
+                          Policy exceptions on this claim: <span className="font-bold">{exceptionCount}</span>
+                        </span>
+                      </div>
+                    );
+                  })()}
                 </div>
               ) : null}
 
               {activeTab === 'invoices' ? (
-                <div className="space-y-2">
-                  {linkedInvoices.map((invoice) => (
-                    <div key={invoice.id} className="rounded-lg border border-line p-3 text-sm">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="truncate font-medium text-slate-700">{invoice.original_filename}</span>
-                        <div className="flex shrink-0 gap-3">
-                          <button
-                            type="button"
-                            className="text-xs font-bold text-brand hover:underline"
-                            onClick={async () => {
-                              if (!invoiceExtractions[invoice.id]) {
-                                const res = await reimbursementApi.invoiceExtraction(invoice.id);
-                                setInvoiceExtractions((prev) => ({ ...prev, [invoice.id]: res.data }));
-                              }
-                              setExpandedInvoiceId(expandedInvoiceId === invoice.id ? null : invoice.id);
-                            }}
-                          >
-                            {expandedInvoiceId === invoice.id ? 'Collapse' : 'Expand'}
-                          </button>
-                          <button type="button" className="text-xs font-bold text-brand hover:underline" onClick={() => setInvoicePreview(invoice)}>
-                            Preview
-                          </button>
-                        </div>
-                      </div>
-                      {expandedInvoiceId === invoice.id && invoiceExtractions[invoice.id] ? (
-                        <div className="mt-2 overflow-hidden rounded-lg border border-line text-xs">
-                          <table className="w-full">
-                            <thead>
-                              <tr className="bg-slate-50 text-left text-xs font-semibold uppercase text-slate-600">
-                                <th className="px-3 py-1.5">Field</th>
-                                <th className="px-3 py-1.5">Value</th>
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y divide-line bg-white">
-                              {(invoiceExtractions[invoice.id].fields || []).map((field) => (
-                                <tr key={field.id} className="hover:bg-slate-50/50">
-                                  <td className="px-3 py-1.5 font-medium text-slate-700">{field.field_key.replace(/_/g, ' ')}</td>
-                                  <td className="px-3 py-1.5 text-ink">{field.final_value || field.original_value || '—'}</td>
+                <div className="space-y-2.5">
+                  {linkedInvoices.map((invoice) => {
+                    const isExpanded = expandedInvoiceId === invoice.id;
+                    const toggleExpand = async () => {
+                      if (!invoiceExtractions[invoice.id]) {
+                        const res = await reimbursementApi.invoiceExtraction(invoice.id);
+                        setInvoiceExtractions((prev) => ({ ...prev, [invoice.id]: res.data }));
+                      }
+                      setExpandedInvoiceId(isExpanded ? null : invoice.id);
+                    };
+                    return (
+                      <div key={invoice.id} className="overflow-hidden rounded-xl border border-line">
+                        <button
+                          type="button"
+                          onClick={toggleExpand}
+                          className={`flex w-full items-center justify-between gap-2 px-3.5 py-3 text-left text-sm transition-colors ${
+                            isExpanded ? 'bg-brand/5' : 'bg-white hover:bg-slate-50'
+                          }`}
+                        >
+                          <div className="flex min-w-0 items-center gap-2.5">
+                            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500">
+                              <ReceiptIndianRupee size={15} />
+                            </div>
+                            <span className="truncate font-medium text-slate-700">{invoice.original_filename}</span>
+                            {invoice.payment_proof_original_filename ? (
+                              <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
+                                <CheckCircle2 size={11} />
+                                Payment proof
+                              </span>
+                            ) : (
+                              <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-bold text-rose-700">
+                                <AlertTriangle size={11} />
+                                No payment proof
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex shrink-0 items-center gap-3">
+                            <span
+                              role="button"
+                              tabIndex={0}
+                              className="text-xs font-bold text-brand hover:underline"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setInvoicePreview(invoice);
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.stopPropagation();
+                                  setInvoicePreview(invoice);
+                                }
+                              }}
+                            >
+                              Preview
+                            </span>
+                            <ChevronDown
+                              size={16}
+                              className={`text-slate-400 transition-transform duration-200 ${isExpanded ? 'rotate-180 text-brand' : ''}`}
+                            />
+                          </div>
+                        </button>
+                        {isExpanded && invoiceExtractions[invoice.id] ? (
+                          <div className="border-t border-line text-xs">
+                            <table className="w-full">
+                              <thead>
+                                <tr className="bg-slate-50 text-center text-[11px] font-bold uppercase tracking-wide text-slate-400">
+                                  <th className="px-3.5 py-2">Field</th>
+                                  <th className="px-3.5 py-2">Value</th>
                                 </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      ) : null}
-                    </div>
-                  ))}
+                              </thead>
+                              <tbody className="divide-y divide-line/70 bg-white">
+                                {(invoiceExtractions[invoice.id].fields || []).map((field) => (
+                                  <tr key={field.id} className="hover:bg-slate-50/60">
+                                    <td className="px-3.5 py-2 text-center font-medium capitalize text-slate-600">
+                                      {field.field_key.replace(/_/g, ' ')}
+                                    </td>
+                                    <td className="px-3.5 py-2 text-center font-semibold text-ink">
+                                      {field.final_value || field.original_value || '—'}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
                   {!linkedInvoices.length ? <p className="text-sm text-slate-500">No invoices linked.</p> : null}
                 </div>
               ) : null}
 
               {activeTab === 'trips' ? (
-                <div className="space-y-2">
+                <div className="space-y-4">
+                  {hasTripDetails ? (
+                    <div className="rounded-xl border border-line bg-slate-50/60 p-3.5">
+                      <p className="mb-2.5 text-[11px] font-bold uppercase tracking-wide text-slate-400">Trip Details</p>
+                      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+                        <div className="rounded-lg border border-line/60 bg-white px-3 py-2.5">
+                          <p className="text-[11px] text-slate-400">Route</p>
+                          <p className="mt-1 text-sm font-semibold text-slate-800">
+                            {claim.from_city || '—'} → {claim.destination_city || '—'}
+                          </p>
+                        </div>
+                        <div className="rounded-lg border border-line/60 bg-white px-3 py-2.5">
+                          <p className="text-[11px] text-slate-400">Travel Dates</p>
+                          <div className="mt-1 space-y-1">
+                            <p className="text-sm font-semibold text-slate-800">
+                              {claim.departure_date ? formatDate(claim.departure_date) : '—'}
+                            </p>
+                            {claim.return_date ? (
+                              <>
+                                <div className="flex items-center gap-1.5 pl-0.5">
+                                  <span className="h-2.5 w-px bg-slate-300" />
+                                  <span className="text-[10px] uppercase tracking-wide text-slate-400">to</span>
+                                </div>
+                                <p className="text-sm font-semibold text-slate-800">{formatDate(claim.return_date)}</p>
+                              </>
+                            ) : null}
+                          </div>
+                        </div>
+                        <div className="rounded-lg border border-line/60 bg-white px-3 py-2.5">
+                          <p className="text-[11px] text-slate-400">Purpose</p>
+                          <p className="mt-1 text-sm font-semibold text-slate-800">{claim.trip_purpose || '—'}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                  {linkedTrips.length ? (
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Linked Tickets</p>
+                  ) : null}
                   {linkedTrips.map((trip) => (
                     <div key={trip.id} className="flex items-center justify-between rounded-lg border border-line p-3 text-sm">
                       <span className="font-medium text-slate-700">
@@ -316,7 +471,11 @@ export default function ClaimReviewModal({ claimId, onClose }) {
                       ) : null}
                     </div>
                   ))}
-                  {!linkedTrips.length ? <p className="text-sm text-slate-500">No linked trips.</p> : null}
+                  {!linkedTrips.length ? (
+                    <p className="text-sm text-slate-500">
+                      {hasTripDetails ? 'No pre-booked ticket linked to this claim.' : 'No trip information available for this claim.'}
+                    </p>
+                  ) : null}
                 </div>
               ) : null}
 
@@ -325,88 +484,117 @@ export default function ClaimReviewModal({ claimId, onClose }) {
 
             <aside className="space-y-4">
               {isApprover ? (
-                <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/60 p-4">
-                  <label className="block text-sm">
-                    <span className="font-semibold text-slate-700">Comment</span>
-                    <textarea
-                      className="field mt-1.5 w-full bg-white"
-                      rows={2}
-                      value={comment}
-                      onChange={(e) => setComment(e.target.value)}
-                      placeholder="Optional note for the audit trail"
-                    />
-                  </label>
-
+                <>
                   {!readyForPayment ? (
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        disabled={approving}
-                        className="btn-primary inline-flex items-center gap-1.5"
-                        onClick={() => approve().catch(onActionError)}
-                      >
-                        <Check size={15} />
-                        {approving ? 'Approving…' : 'Approve'}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={sending || !comment.trim()}
-                        title={!comment.trim() ? 'Add a comment explaining what needs to change' : ''}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-amber-100 px-3.5 py-2 text-sm font-bold text-amber-900 transition-colors hover:bg-amber-200 disabled:cursor-not-allowed disabled:opacity-50"
-                        onClick={() => sendBack().catch(onActionError)}
-                      >
-                        <Undo2 size={15} />
-                        {sending ? 'Sending…' : 'Send Back'}
-                      </button>
+                    <div className="space-y-3 rounded-xl border border-line bg-white p-4 shadow-sm">
+                      <h3 className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">
+                        <ClipboardCheck size={14} className="text-brand" />
+                        Decision
+                      </h3>
+                      <label className="block text-sm">
+                        <span className="font-medium text-slate-600">Comment (optional)</span>
+                        <textarea
+                          className="field !h-auto min-h-[4.5rem] mt-1.5 w-full py-2"
+                          rows={2}
+                          value={comment}
+                          onChange={(e) => setComment(e.target.value)}
+                          placeholder="Note for the audit trail"
+                        />
+                      </label>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          disabled={approving}
+                          className="btn-primary inline-flex items-center gap-1.5"
+                          onClick={() => approve().catch(onActionError)}
+                        >
+                          <Check size={15} />
+                          {approving ? 'Approving…' : 'Approve'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={sending || !comment.trim()}
+                          title={!comment.trim() ? 'Add a comment explaining what needs to change' : ''}
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-amber-50 px-3.5 py-2 text-sm font-bold text-amber-800 ring-1 ring-inset ring-amber-200 transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+                          onClick={() => sendBack().catch(onActionError)}
+                        >
+                          <Undo2 size={15} />
+                          {sending ? 'Sending…' : 'Send Back'}
+                        </button>
+                      </div>
                     </div>
                   ) : null}
 
-                  <div className="border-t border-slate-200 pt-4">
-                    <label className="block text-sm">
-                      <span className="font-semibold text-slate-700">Reject reason</span>
-                      <textarea
-                        className="field mt-1.5 w-full bg-white"
-                        rows={2}
-                        value={rejectReason}
-                        onChange={(e) => setRejectReason(e.target.value)}
-                        placeholder="Required — explain why this claim is being rejected"
-                      />
-                    </label>
-                    <button
-                      type="button"
-                      disabled={rejecting || !rejectReason.trim()}
-                      className="mt-2.5 inline-flex items-center gap-1.5 rounded-lg bg-red-50 px-3.5 py-2 text-sm font-bold text-red-700 ring-1 ring-inset ring-red-200 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
-                      onClick={() => setConfirmReject(true)}
-                    >
-                      <X size={15} />
-                      Reject
-                    </button>
-                  </div>
-
-                  {readyForPayment ? (
-                    <div className="rounded-lg border border-violet-200 bg-violet-50/60 p-3.5">
-                      <p className="text-xs font-semibold text-violet-800">Authoritative payable: ₹{payableAmount || '0.00'}</p>
-                      <label className="mt-2.5 block text-sm">
-                        <span className="font-semibold text-slate-700">UTR Reference</span>
-                        <input className="field mt-1.5 w-full bg-white" value={utr} onChange={(e) => setUtr(e.target.value)} />
-                      </label>
-                      <label className="mt-2.5 block text-sm">
-                        <span className="font-semibold text-slate-700">Payment Amount</span>
-                        <input
-                          className="field mt-1.5 w-full bg-white"
-                          type="number"
-                          step="0.01"
-                          value={payAmount}
-                          onChange={(e) => {
-                            const next = Number(e.target.value || 0);
-                            if (Number.isNaN(next)) return;
-                            setPayAmount(String(Math.min(next, payMax)));
-                          }}
+                  {!readyForPayment ? (
+                    <details className="group rounded-xl border border-rose-200 bg-rose-50/40 p-4 open:pb-4">
+                      <summary className="flex cursor-pointer list-none items-center justify-between text-xs font-bold uppercase tracking-wide text-rose-700 [&::-webkit-details-marker]:hidden">
+                        <span>Reject Claim</span>
+                        <span className="text-rose-400 transition-transform group-open:rotate-180">⌄</span>
+                      </summary>
+                      <label className="mt-3 block text-sm">
+                        <span className="font-medium text-slate-600">Reason</span>
+                        <textarea
+                          className="field !h-auto min-h-[4.5rem] mt-1.5 w-full bg-white py-2"
+                          rows={2}
+                          value={rejectReason}
+                          onChange={(e) => setRejectReason(e.target.value)}
+                          placeholder="Required — explain why this claim is being rejected"
                         />
                       </label>
                       <button
                         type="button"
-                        disabled={paying || !utr.trim() || Number(payAmount || 0) !== payMax}
+                        disabled={rejecting || !rejectReason.trim()}
+                        className="mt-2.5 inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3.5 py-2 text-sm font-bold text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        onClick={() => setConfirmReject(true)}
+                      >
+                        <X size={15} />
+                        Reject
+                      </button>
+                    </details>
+                  ) : null}
+
+                  {readyForPayment ? (
+                    <div className="rounded-xl border border-line bg-white p-4 shadow-sm">
+                      <div className="space-y-1.5 text-sm">
+                        <div className="flex justify-between text-slate-600">
+                          <span>Total Claimed</span>
+                          <span>₹{money(claim.compliance_report?.total_claimed)}</span>
+                        </div>
+                        <div className="flex justify-between font-bold text-ink">
+                          <span>Approved Amount</span>
+                          <span>₹{money(payableAmount)}</span>
+                        </div>
+                      </div>
+                      <div className="my-3 h-px bg-slate-100" />
+                      <label className="block text-sm">
+                        <span className="font-semibold text-slate-700">UTR Reference</span>
+                        <input className="field mt-1.5 w-full" value={utr} onChange={(e) => setUtr(e.target.value)} />
+                      </label>
+                      <label className="mt-2.5 block text-sm">
+                        <span className="font-semibold text-slate-700">TDS &amp; Other Deductions</span>
+                        <input
+                          className="field mt-1.5 w-full"
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          max={payMax}
+                          value={tdsDeduction}
+                          onChange={(e) => setTdsDeduction(e.target.value)}
+                        />
+                      </label>
+                      <div className="mt-3 rounded-lg border border-brand/20 bg-brand/5 px-3.5 py-2.5">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-semibold text-brand/70">Total Due</span>
+                          <span className="font-mono text-base font-bold text-brand">₹{money(totalDue)}</span>
+                        </div>
+                        <p className="mt-0.5 text-[11px] text-slate-500">Approved amount minus TDS &amp; other deductions.</p>
+                      </div>
+                      {deductionInvalid ? (
+                        <p className="mt-2 text-xs text-amber-700">TDS &amp; other deductions must be between ₹0.00 and the approved amount.</p>
+                      ) : null}
+                      <button
+                        type="button"
+                        disabled={paying || !utr.trim() || deductionInvalid}
                         className="btn-primary mt-3 inline-flex w-full items-center justify-center gap-1.5"
                         onClick={() => pay().catch(onActionError)}
                       >
@@ -415,7 +603,7 @@ export default function ClaimReviewModal({ claimId, onClose }) {
                       </button>
                     </div>
                   ) : null}
-                </div>
+                </>
               ) : (
                 <p className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 text-sm text-slate-600">
                   Read-only view. Approvers manage this claim from queue actions.

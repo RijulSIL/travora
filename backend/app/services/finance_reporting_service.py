@@ -1,18 +1,21 @@
+import calendar
+import csv
 import io
-from datetime import date, datetime
+import logging
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
 
 import xlsxwriter
 from fastapi import HTTPException
 from fpdf import FPDF
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.auth import User
 from app.models.claim_workflow import ClaimApprovalStage, ExceptionApproval, ExceptionRequest
 from app.models.employee import AuditLog, Employee
-from app.models.finance import ERPLedgerEntry, ERPPostStatus, ScheduledReport
+from app.models.finance import ERPLedgerEntry, ERPPostStatus, ScheduledReport, ScheduleFrequency
 from app.models.policy import ImpactLevel
 from app.models.reimbursement import (
     ClaimDraft,
@@ -26,6 +29,9 @@ from app.models.travel_booking import TravelTrip
 from app.models.travel_request import TravelRequest
 from app.schemas.finance_reporting import FinanceFilterParams, ReportScheduleIn
 from app.services.audit_service import log_event
+from app.services.notification_service import send_email_async
+
+logger = logging.getLogger(__name__)
 
 
 def _date_bounds(from_date: date | None, to_date: date | None) -> tuple[datetime | None, datetime | None]:
@@ -109,6 +115,49 @@ async def get_gst_summary(filters: FinanceFilterParams, db: AsyncSession) -> dic
         "total_tax": cgst_d + sgst_d + igst_d,
         "itc_eligible_amount": Decimal(str(itc_eligible or 0)),
     }
+
+
+async def get_spend_by_category(filters: FinanceFilterParams, db: AsyncSession) -> list[dict]:
+    """What money is actually being spent on (Hotel, Software, Local Conveyance, ...) — driven
+    by InvoiceLineItem.category_name, which is now set from Gemini's content-based
+    expense_category classification when available (see reimbursement_service.
+    _persist_parsed_extraction), not just a filename guess. Same claim-status/date/department
+    filter convention as get_gst_summary, so the two stay consistent when sliced the same way."""
+    employee_level = await _resolve_employee_level(filters.employee_level or filters.impact_level, db)
+    start, end = _date_bounds(filters.from_date, filters.to_date)
+    conditions = [
+        ClaimDraft.status.in_([ClaimStatus.READY_FOR_PAYMENT.value, ClaimStatus.PAID.value])
+    ]
+    if start:
+        conditions.append(ClaimDraft.created_at >= start)
+    if end:
+        conditions.append(ClaimDraft.created_at <= end)
+    if filters.department:
+        conditions.append(Employee.department == filters.department)
+    if filters.office_location:
+        conditions.append(Employee.office_location == filters.office_location)
+    if employee_level:
+        conditions.append(ImpactLevel.level_code == employee_level)
+
+    query = (
+        select(
+            func.coalesce(InvoiceLineItem.category_name, "Uncategorised"),
+            func.coalesce(func.sum(InvoiceLineItem.total_amount), 0),
+        )
+        .select_from(ClaimDraft)
+        .outerjoin(Employee, Employee.employee_id == ClaimDraft.employee_id)
+        .outerjoin(ImpactLevel, ImpactLevel.id == Employee.impact_level_id)
+        .outerjoin(ClaimInvoice, ClaimInvoice.claim_id == ClaimDraft.id)
+        .outerjoin(Invoice, Invoice.id == ClaimInvoice.invoice_id)
+        .outerjoin(InvoiceLineItem, InvoiceLineItem.invoice_id == Invoice.id)
+        .where(InvoiceLineItem.id.is_not(None))
+        .group_by(func.coalesce(InvoiceLineItem.category_name, "Uncategorised"))
+        .order_by(func.sum(InvoiceLineItem.total_amount).desc())
+    )
+    if conditions:
+        query = query.where(and_(*conditions))
+    rows = (await db.execute(query)).all()
+    return [{"category": name, "amount": Decimal(str(amount or 0))} for name, amount in rows]
 
 
 async def post_ledger_entry_to_erp(
@@ -220,6 +269,9 @@ async def schedule_report(payload: ReportScheduleIn, user_id: int, db: AsyncSess
         recipients=payload.recipients,
         filters=payload.filters,
         created_by_user_id=user_id,
+        # Due immediately so the first run happens on the next scheduler tick (see
+        # run_scheduled_reports) rather than waiting a full cycle for the first email.
+        next_run_at=datetime.utcnow(),
     )
     db.add(row)
     await db.flush()
@@ -245,6 +297,72 @@ async def schedule_report(payload: ReportScheduleIn, user_id: int, db: AsyncSess
 async def list_scheduled_reports(db: AsyncSession) -> list[ScheduledReport]:
     result = await db.execute(select(ScheduledReport).order_by(ScheduledReport.created_at.desc()))
     return list(result.scalars().all())
+
+
+def _rows_to_csv_bytes(rows: list[dict]) -> bytes:
+    """Same shape as the CSV branch of the /reports/{type}/export endpoint, factored out so
+    the scheduler can build an identical attachment without going through the HTTP layer."""
+    output = io.StringIO()
+    if rows:
+        writer = csv.DictWriter(output, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+    return output.getvalue().encode("utf-8")
+
+
+def _advance_next_run(frequency: ScheduleFrequency, from_dt: datetime) -> datetime:
+    if frequency == ScheduleFrequency.DAILY:
+        return from_dt + timedelta(days=1)
+    if frequency == ScheduleFrequency.WEEKLY:
+        return from_dt + timedelta(days=7)
+    # MONTHLY: advance one calendar month, clamping the day to that month's length (e.g. Jan
+    # 31 -> Feb 28/29) rather than overflowing into the following month.
+    month = from_dt.month + 1
+    year = from_dt.year + (month - 1) // 12
+    month = ((month - 1) % 12) + 1
+    day = min(from_dt.day, calendar.monthrange(year, month)[1])
+    return from_dt.replace(year=year, month=month, day=day)
+
+
+async def run_scheduled_reports(db: AsyncSession) -> int:
+    """Finds every active schedule whose next_run_at is due, generates that report as CSV,
+    emails it to each recipient, and reschedules it for its next occurrence. Called
+    periodically by the background loop started in main.py's _run_monitors."""
+    now = datetime.utcnow()
+    due = (
+        await db.execute(
+            select(ScheduledReport).where(
+                ScheduledReport.is_active.is_(True),
+                or_(ScheduledReport.next_run_at.is_(None), ScheduledReport.next_run_at <= now),
+            )
+        )
+    ).scalars().all()
+    for schedule in due:
+        try:
+            # Filters are stored as raw JSON from the "Run Report" panel's state, which may
+            # include empty strings for unset date fields — FinanceFilterParams' date fields
+            # reject "" (only a real date or None), so strip blanks before validating.
+            clean_filters = {k: v for k, v in (schedule.filters or {}).items() if v not in (None, "")}
+            filters = FinanceFilterParams(**clean_filters)
+            report = await generate_report(schedule.report_type, filters, db)
+            csv_bytes = _rows_to_csv_bytes(report.get("rows") or [])
+            subject = f"Scheduled report: {schedule.report_type} ({schedule.frequency.value.title()})"
+            body = f"Attached is your {schedule.frequency.value.lower()} '{schedule.report_type}' report from Travora."
+            for recipient in schedule.recipients:
+                await send_email_async(
+                    recipient,
+                    subject,
+                    body,
+                    attachments=[{"filename": f"{schedule.report_type}.csv", "content": csv_bytes}],
+                )
+            schedule.last_run_at = now
+        except Exception:
+            logger.exception("Failed to run scheduled report %s", schedule.id)
+        finally:
+            # Reschedule even on failure so one bad run doesn't wedge the schedule forever.
+            schedule.next_run_at = _advance_next_run(schedule.frequency, now)
+    await db.commit()
+    return len(due)
 
 
 async def list_erp_ledger_entries(
@@ -284,6 +402,7 @@ async def generate_report(report_type: str, filters: FinanceFilterParams, db: As
             .select_from(ClaimDraft)
             .outerjoin(Employee, Employee.employee_id == ClaimDraft.employee_id)
             .outerjoin(ImpactLevel, ImpactLevel.id == Employee.impact_level_id)
+            .where(ClaimDraft.is_exception_shell.is_(False))
             .group_by(ClaimDraft.status)
         )
         if start:
@@ -309,6 +428,7 @@ async def generate_report(report_type: str, filters: FinanceFilterParams, db: As
         ).where(
             ClaimApprovalStage.decided_at.is_not(None),
             ClaimApprovalStage.sla_deadline_at.is_not(None),
+            ClaimDraft.is_exception_shell.is_(False),
         )
         if employee_level:
             q = q.where(ImpactLevel.level_code == employee_level)

@@ -11,7 +11,8 @@ from typing import Any
 
 import httpx
 from fastapi import HTTPException, status
-from sqlalchemy import and_, delete, func, select
+from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -31,6 +32,7 @@ from app.models.reimbursement import (
     InvoiceField,
     InvoiceLineItem,
     InvoiceStatus,
+    ReimbursementCategory,
 )
 from app.models.travel_booking import TravelMode, TravelTrip
 from app.schemas.reimbursement import ClaimDraftIn, InvoiceFieldsUpdateRequest
@@ -63,7 +65,43 @@ SUPPORTED_CONTENT_TYPES = {
     "image/heic",
     "application/pdf",
 }
+
+# Not every valid invoice carries a GSTIN (unregistered vendors, cash memos, foreign
+# expenses) — must match frontend's InvoiceReview.jsx OPTIONAL_FIELD_KEYS exactly, or
+# review can look complete in the UI while the backend still refuses to mark it REVIEWED.
+OPTIONAL_INVOICE_FIELD_KEYS = {"supplier_gstin", "company_gstin"}
 GSTIN_PATTERN = re.compile(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$")
+
+# A claim in any of these states retires its invoices from reuse (assert_invoices_eligible_
+# for_claim) and moves them to the Archived Invoices view (app/api/v1/invoices.py) — the
+# same set also blocks further edits to the invoice's extracted fields below, so a receipt
+# that's already been through approval/payment/rejection can't quietly change afterwards.
+INVOICE_LOCKING_CLAIM_STATUSES = {
+    ClaimStatus.IN_APPROVAL,
+    ClaimStatus.READY_FOR_PAYMENT,
+    ClaimStatus.PAID,
+    ClaimStatus.REJECTED,
+}
+
+
+async def get_invoice_claim_link(
+    invoice_id: int, db: AsyncSession
+) -> tuple[int | None, str | None, ClaimStatus | None]:
+    """The single most relevant claim link for an invoice: its current non-rejected
+    claim if one holds it, otherwise its most recent rejected one, otherwise none."""
+    rows = (
+        await db.execute(
+            select(ClaimInvoice.claim_id, ClaimDraft.claim_reference, ClaimDraft.status)
+            .join(ClaimDraft, ClaimDraft.id == ClaimInvoice.claim_id)
+            .where(ClaimInvoice.invoice_id == invoice_id)
+            .order_by(ClaimInvoice.id.desc())
+        )
+    ).all()
+    if not rows:
+        return None, None, None
+    non_rejected = next((row for row in rows if row[2] != ClaimStatus.REJECTED), None)
+    chosen = non_rejected or rows[0]
+    return chosen[0], chosen[1], chosen[2]
 
 
 def _now() -> datetime:
@@ -206,8 +244,40 @@ async def validate_gstin(gstin: str, db: AsyncSession) -> GstinValidationResult:
     return GstinValidationResult(cache=cached, source="pending_fallback", is_pending=True)
 
 
+async def _reclaim_existing_invoice_upload(
+    existing: Invoice, db: AsyncSession, *, reimbursement_category: ReimbursementCategory | None = None
+) -> Invoice:
+    """Hands back an invoice that's already been uploaded by this employee (same file
+    hash). A rejected claim retires its invoices from direct reuse (see
+    assert_invoices_eligible_for_claim) — re-uploading the exact same file is how an
+    employee reclaims one. If nothing but rejected claims still reference it, drop those
+    dead links so it goes back to being a fresh, pickable invoice; if an active
+    (non-rejected) claim holds it, leave it locked and just hand back the same row."""
+    still_locked = (
+        await db.execute(
+            select(ClaimInvoice.id)
+            .join(ClaimDraft, ClaimDraft.id == ClaimInvoice.claim_id)
+            .where(ClaimInvoice.invoice_id == existing.id, ClaimDraft.status != ClaimStatus.REJECTED)
+        )
+    ).first()
+    if still_locked is None:
+        await db.execute(delete(ClaimInvoice).where(ClaimInvoice.invoice_id == existing.id))
+        # A fresh re-upload is a new "current intent" — let it correct the category rather
+        # than being stuck with whatever was picked the first time this file was uploaded.
+        if reimbursement_category is not None:
+            existing.reimbursement_category = reimbursement_category
+        await db.commit()
+    return existing
+
+
 async def store_invoice_upload(
-    *, user_id: int, filename: str, content_type: str, content: bytes, db: AsyncSession
+    *,
+    user_id: int,
+    filename: str,
+    content_type: str,
+    content: bytes,
+    db: AsyncSession,
+    reimbursement_category: ReimbursementCategory = ReimbursementCategory.TRAVEL,
 ) -> Invoice:
     _validate_upload(filename, content_type, content)
     file_hash = hashlib.sha256(content).hexdigest()
@@ -220,7 +290,7 @@ async def store_invoice_upload(
         )
     ).scalar_one_or_none()
     if existing:
-        return existing
+        return await _reclaim_existing_invoice_upload(existing, db, reimbursement_category=reimbursement_category)
 
     storage_root = Path(settings.invoice_storage_dir) / str(user_id)
     storage_root.mkdir(parents=True, exist_ok=True)
@@ -275,9 +345,27 @@ async def store_invoice_upload(
         image_hash=im_hash_str,
         duplicate_invoice_id=duplicate_invoice_id,
         status=InvoiceStatus.PROCESSING,
+        reimbursement_category=reimbursement_category,
     )
     db.add(invoice)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        # Two near-simultaneous uploads of the same file (double-click, a dropped file
+        # processed twice, ...) can both pass the existence check above before either
+        # commits — the loser hits this unique constraint instead of crashing.
+        await db.rollback()
+        existing = (
+            await db.execute(
+                select(Invoice).where(
+                    Invoice.uploader_user_id == user_id,
+                    Invoice.file_sha256 == file_hash,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            raise
+        return await _reclaim_existing_invoice_upload(existing, db, reimbursement_category=reimbursement_category)
     await run_invoice_extraction(invoice, db)
     await db.commit()
     await db.refresh(invoice)
@@ -310,20 +398,61 @@ async def _find_category(
     return result.scalar_one_or_none()
 
 
+def _has_token(text: str, token: str) -> bool:
+    """Word-boundary match — plain substring containment let "bus" match inside
+    "Business", "air" match inside "affair"/"repair", "cab" inside "cabinet", etc.,
+    which was silently miscategorizing ordinary invoices (a "Google Workspace Business
+    Base" subscription was filed as Bus Travel purely because of this)."""
+    return re.search(rf"\b{re.escape(token)}\b", text) is not None
+
+
 def _infer_category(filename: str) -> tuple[str, str]:
-    normalized = filename.lower()
-    if any(token in normalized for token in ("hotel", "stay", "room")):
+    # Underscores/hyphens count as "word" characters to \b, so "air_india.pdf" wouldn't
+    # otherwise match \bair\b — treat them as separators like a space would be. Callers pass
+    # in more than just the filename here — Gemini's bill-level expense_category guess and
+    # per-line-item category_hint (see _persist_parsed_extraction) are prepended to the text
+    # this matches against, so a real content-based classification wins over the filename
+    # whenever Gemini provided one.
+    normalized = re.sub(r"[_-]+", " ", filename.lower())
+    if any(_has_token(normalized, token) for token in ("hotel", "accommodation", "stay", "room")):
         return ("Hotel/Accommodation", "hotel")
-    if any(token in normalized for token in ("meal", "food", "dinner", "lunch", "breakfast")):
+    if any(_has_token(normalized, token) for token in ("meal", "food", "dinner", "lunch", "breakfast")):
         return ("Food & Meals", "food")
-    if any(token in normalized for token in ("uber", "taxi", "cab", "auto")):
+    if any(_has_token(normalized, token) for token in ("uber", "taxi", "cab", "auto", "conveyance")):
         return ("Local Conveyance", "conveyance")
-    if any(token in normalized for token in ("train", "irctc", "railway", "rail")):
+    if any(_has_token(normalized, token) for token in ("train", "irctc", "railway", "rail")):
         return ("Train Travel", "train")
-    if any(token in normalized for token in ("flight", "air", "indigo", "vistara", "airindia", "spicejet", "airline", "aeroplane")):
+    if any(
+        _has_token(normalized, token)
+        for token in ("flight", "air", "indigo", "vistara", "airindia", "spicejet", "airline", "aeroplane")
+    ):
         return ("Air Travel", "air")
-    if any(token in normalized for token in ("bus", "redbus", "volvo", "coach")):
+    if any(_has_token(normalized, token) for token in ("bus", "redbus", "volvo", "coach")):
         return ("Bus Travel", "bus")
+    if any(_has_token(normalized, token) for token in ("fuel", "petrol", "diesel", "cng", "fillingstation")):
+        return ("Fuel", "fuel")
+    if any(
+        _has_token(normalized, token)
+        for token in ("software", "subscription", "saas", "license", "licence", "app", "cloud")
+    ):
+        return ("Software/Subscription", "software")
+    if any(
+        _has_token(normalized, token)
+        for token in ("stationery", "stationary", "supplies", "printer", "printing", "office")
+    ):
+        return ("Office Supplies", "supplies")
+    if any(
+        _has_token(normalized, token)
+        for token in ("telecom", "internet", "broadband", "mobile", "sim", "wifi", "airtel", "jio", "vodafone")
+    ):
+        return ("Telecom & Internet", "telecom")
+    if any(
+        _has_token(normalized, token)
+        for token in ("consulting", "consultant", "professional", "legal", "audit", "advisory", "freelance")
+    ):
+        return ("Professional Services", "professional")
+    if any(_has_token(normalized, token) for token in ("courier", "postage", "speedpost", "dtdc", "fedex", "bluedart")):
+        return ("Courier & Postage", "courier")
     return ("Incidentals", "incidental")
 
 
@@ -356,6 +485,36 @@ def _parsed_money(s: Any) -> Decimal:
         return Decimal("0.00")
 
 
+_INR_CURRENCY_TOKENS = {"INR", "RS", "RS.", "RUPEE", "RUPEES", "₹"}
+
+
+def _is_non_inr_currency(currency_value: str) -> bool:
+    """True only when extraction returned a currency we can positively identify as NOT
+    INR — an empty/unrecognized value is treated as INR (today's long-standing default)
+    rather than flagged, since Gemini doesn't always bother returning it for INR invoices."""
+    token = currency_value.strip().upper()
+    if not token:
+        return False
+    return token not in _INR_CURRENCY_TOKENS
+
+
+def _normalize_place_of_supply(raw_value: str, supplier_gstin: str) -> tuple[str, Decimal | None]:
+    """Gemini is asked to return a 2-digit GST state code, but receipts rarely print one
+    literally — it often returns a state name, an unpadded single digit, or nothing at
+    all. Recover a clean code where possible: (1) take the leading 1-2 digits of whatever
+    was returned, zero-padded; (2) if that yields nothing usable, fall back to the first
+    two digits of a valid supplier GSTIN, which *are* the state code by construction.
+    Returns (value, forced_confidence) — forced_confidence is None when no fallback was
+    needed (Gemini's own confidence stands), otherwise a capped value signalling the
+    reviewer should double check a derived-not-extracted number."""
+    digits = re.match(r"\s*(\d{1,2})", raw_value or "")
+    if digits:
+        return digits.group(1).zfill(2), None
+    if GSTIN_PATTERN.match((supplier_gstin or "").strip().upper()):
+        return supplier_gstin.strip().upper()[:2], Decimal("40.00")
+    return "", None
+
+
 async def _get_impact_level_id_for_user(user_id: int, db: AsyncSession) -> int | None:
     user = await db.get(User, user_id)
     if not user or not user.employee_id:
@@ -381,10 +540,60 @@ async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSe
         "sgst",
         "igst",
         "is_tatkal",
+        "expense_category",
     ]
     extracted: dict[str, tuple[str, Decimal]] = {
         key: _parsed_field(raw_fields.get(key)) for key in keys
     }
+    # Bill-level "what is this for" classification (see EXTRACTION_PROMPT) — used below as a
+    # content-based hint for both the synthetic single-line fallback and each real line item,
+    # taking precedence over the filename-only heuristic _infer_category otherwise falls back to.
+    top_category_hint = extracted["expense_category"][0]
+    pos_value, pos_forced_confidence = _normalize_place_of_supply(
+        extracted["place_of_supply"][0], extracted["supplier_gstin"][0]
+    )
+    extracted["place_of_supply"] = (
+        pos_value,
+        pos_forced_confidence if pos_forced_confidence is not None else extracted["place_of_supply"][1],
+    )
+    currency_value = extracted.get("currency", ("",))[0]
+    is_foreign_currency = _is_non_inr_currency(currency_value)
+    # "grand_total" stays the raw original-currency figure Gemini read off the document
+    # (kept for reference in the review UI) — converted_grand_total, computed below, is
+    # what actually feeds the taxable/tax/line-item math for a foreign invoice.
+    converted_grand_total = extracted.get("grand_total", ("0", Decimal(0)))
+    original_foreign_total = Decimal("0.00")
+    if is_foreign_currency:
+        original_foreign_total = _parsed_money(extracted["grand_total"][0])
+        # GST is an Indian tax — a foreign invoice legitimately has none, so the 18%
+        # fabrication below must not run for it (it would otherwise invent CGST/SGST that
+        # was never on the invoice). Flag it instead of silently treating the total as INR.
+        invoice.extraction_error = (
+            f"Non-INR currency detected ({currency_value} {original_foreign_total}) — Gemini's "
+            "INR conversion below is an estimate only and must be checked and confirmed before "
+            "this invoice can be used on a claim."
+        )
+        # Gemini's best-effort INR conversion (see the extraction prompt) — always forced to a
+        # low confidence regardless of what Gemini reports, so the existing "confidence < 90
+        # must be explicitly confirmed" rule in update_invoice_fields makes a human recheck
+        # this number before the invoice can be marked REVIEWED. Only ever added for a
+        # non-INR invoice, so it never affects the review gate for a normal INR invoice.
+        est_value, est_confidence = _parsed_field(raw_fields.get("grand_total_inr_estimate"))
+        forced_confidence = min(est_confidence, Decimal("40.00")) if est_value.strip() else Decimal("0.00")
+        db.add(
+            InvoiceField(
+                invoice_id=invoice.id,
+                field_key="grand_total_inr_estimate",
+                original_value=est_value or None,
+                final_value=None,
+                confidence=forced_confidence,
+            )
+        )
+        # Downstream math (line-item synthesis, claim totals, policy caps) needs an actual
+        # INR number to work with — use Gemini's estimate when it gave one, otherwise fall
+        # back to the raw foreign figure as a last resort (still flagged above for review).
+        converted_value = est_value if est_value.strip() else str(original_foreign_total)
+        converted_grand_total = (converted_value, forced_confidence)
 
     travel_date = date.today()
     idate = extracted.get("invoice_date", ("", Decimal(0)))[0]
@@ -395,19 +604,52 @@ async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSe
             travel_date = date.today()
 
     line_raw: list[dict] = list(parsed.get("line_items") or [])
+    if is_foreign_currency and line_raw and original_foreign_total > 0:
+        # Gemini gave real structured line items in the invoice's own currency — scale each
+        # one by the same total-conversion ratio rather than leaving them unconverted (the
+        # synthetic single-line fallback below already builds its numbers from the already-
+        # converted total, so this branch only ever applies to genuine itemized extractions).
+        scale = _parsed_money(converted_grand_total[0]) / original_foreign_total
+        money_keys = ("unit_price", "taxable_value", "cgst", "sgst", "igst", "total_amount")
+        line_raw = [
+            {
+                **raw,
+                **{key: str((_parsed_money(raw.get(key)) * scale).quantize(Decimal("0.01"))) for key in money_keys},
+            }
+            for raw in line_raw
+        ]
+        # The top-level total_taxable_value/cgst/sgst/igst fields (shown/edited in the review
+        # UI, separate from the per-line-item rows) must reflect the same converted INR
+        # figures too — sum the now-converted line items rather than leaving those fields at
+        # whatever Gemini originally read off the document in its original currency.
+        extracted["total_taxable_value"] = (
+            str(sum((_parsed_money(r.get("taxable_value")) for r in line_raw), Decimal("0.00"))),
+            converted_grand_total[1],
+        )
+        extracted["cgst"] = (
+            str(sum((_parsed_money(r.get("cgst")) for r in line_raw), Decimal("0.00"))), converted_grand_total[1]
+        )
+        extracted["sgst"] = (
+            str(sum((_parsed_money(r.get("sgst")) for r in line_raw), Decimal("0.00"))), converted_grand_total[1]
+        )
+        extracted["igst"] = (
+            str(sum((_parsed_money(r.get("igst")) for r in line_raw), Decimal("0.00"))), converted_grand_total[1]
+        )
     if not line_raw:
-        total = _parsed_money(extracted.get("grand_total", ("0",))[0])
+        total = _parsed_money(converted_grand_total[0])
         taxable = _parsed_money(extracted.get("total_taxable_value", ("0",))[0])
         if taxable <= 0 and total > 0:
-            taxable = (total / Decimal("1.18")).quantize(Decimal("0.01"))
+            # The 18% GST back-calculation only makes sense for an INR invoice — for a
+            # foreign one, treat the whole total as taxable with no fabricated tax split.
+            taxable = total if is_foreign_currency else (total / Decimal("1.18")).quantize(Decimal("0.01"))
         tax = (total - taxable).quantize(Decimal("0.01")) if total > 0 else Decimal("0.00")
         cgst = _parsed_money(extracted.get("cgst", ("0",))[0])
         sgst = _parsed_money(extracted.get("sgst", ("0",))[0])
         igst = _parsed_money(extracted.get("igst", ("0",))[0])
-        if cgst == 0 and sgst == 0 and igst == 0 and tax > 0:
+        if not is_foreign_currency and cgst == 0 and sgst == 0 and igst == 0 and tax > 0:
             cgst = (tax / 2).quantize(Decimal("0.01"))
             sgst = (tax - cgst).quantize(Decimal("0.01"))
-        cat_name, cat_frag = _infer_category(invoice.original_filename)
+        cat_name, cat_frag = _infer_category(f"{top_category_hint} {invoice.original_filename}")
         line_raw = [
             {
                 "description": cat_name,
@@ -415,7 +657,7 @@ async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSe
                 "unit": "EA",
                 "unit_price": str(taxable),
                 "taxable_value": str(taxable),
-                "tax_rate": "18.00" if total > 0 else "0.00",
+                "tax_rate": "18.00" if total > 0 and not is_foreign_currency else "0.00",
                 "cgst": str(cgst),
                 "sgst": str(sgst),
                 "igst": str(igst),
@@ -423,6 +665,16 @@ async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSe
                 "category_hint": cat_frag,
             }
         ]
+        if is_foreign_currency:
+            # Same reasoning as the scaled real-line-items branch above: the top-level
+            # fields shown in the review UI must match what the (synthetic) line item
+            # actually uses — all in converted INR, not whatever Gemini read in the
+            # original currency (which for total_taxable_value/cgst/sgst/igst is usually
+            # nothing at all, since a foreign receipt has no Indian GST breakdown).
+            extracted["total_taxable_value"] = (str(taxable), converted_grand_total[1])
+            extracted["cgst"] = (str(cgst), converted_grand_total[1])
+            extracted["sgst"] = (str(sgst), converted_grand_total[1])
+            extracted["igst"] = (str(igst), converted_grand_total[1])
 
     for _key, (value, confidence) in extracted.items():
         db.add(
@@ -451,9 +703,16 @@ async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSe
         igst = _parsed_money(raw.get("igst"))
         total_amt = _parsed_money(raw.get("total_amount"))
         hint = str(raw.get("category_hint") or "").lower()
-        cat_name, cat_frag = _infer_category(f"{hint} {description} {filename_lower}")
+        cat_name, cat_frag = _infer_category(f"{hint} {top_category_hint} {description} {filename_lower}")
         category = await _find_category(cat_frag, db, travel_date=travel_date)
-        if total_amt <= 0 and taxable > 0:
+        # total_amount must always equal taxable_value + tax by definition — Gemini
+        # sometimes reports a line item's own total_amount inconsistently with its own
+        # taxable/cgst/sgst/igst fields (observed: taxable=99, cgst=sgst=8.91 each, but
+        # total_amount also reported as 99 instead of 116.82 — silently undercounting the
+        # claim by the tax amount). Whenever a taxable value was extracted, the components-
+        # derived total is arithmetically guaranteed correct and takes precedence; the raw
+        # total_amount is only trusted as a last resort when no taxable value exists at all.
+        if taxable > 0:
             total_amt = (taxable + cgst + sgst + igst).quantize(Decimal("0.01"))
         bl_text = f"{description} {vendor_lower} {filename_lower}"
         impact_level_id = await _get_impact_level_id_for_user(invoice.uploader_user_id, db)
@@ -543,21 +802,33 @@ async def run_mock_extraction(invoice: Invoice, db: AsyncSession) -> None:
     gstin = "27AABCO1234F1Z5"
     invoice_number = f"INV-{invoice.file_sha256[:8].upper()}"
 
+    # Every value here is fabricated (hash-derived total, a vendor name guessed from the
+    # filename, hardcoded GSTINs, today's date, ...) — never actually read off the
+    # document. Confidence is kept low across the board so InvoiceReview.jsx treats every
+    # field as needing a real correction instead of silently auto-confirming made-up
+    # numbers as if Gemini had genuinely extracted them.
+    FABRICATED_CONFIDENCE = Decimal("20.00")
+    # is_tatkal is a checkbox — the "must differ from the guessed value" rule that low
+    # confidence otherwise forces doesn't fit a boolean (false is a legitimate, common
+    # answer), so it only needs an explicit confirm, not a forced flip.
+    BOOLEAN_FIELD_CONFIDENCE = Decimal("65.00")
+
     extracted_fields = {
-        "vendor_name": (stem or "Uploaded Vendor", Decimal("92.00")),
-        "supplier_gstin": (gstin, Decimal("78.00")),
-        "company_gstin": ("06AAACC4175D1Z0", Decimal("88.00")),
-        "invoice_number": (invoice_number, Decimal("64.00")),
-        "invoice_date": (today, Decimal("94.00")),
-        "place_of_supply": ("27", Decimal("83.00")),
-        "payment_mode": ("Card", Decimal("72.00")),
-        "currency": ("INR", Decimal("99.00")),
-        "grand_total": (str(total), Decimal("90.00")),
-        "total_taxable_value": (str(taxable), Decimal("86.00")),
-        "cgst": (str((tax / 2).quantize(Decimal("0.01"))), Decimal("86.00")),
-        "sgst": (str((tax / 2).quantize(Decimal("0.01"))), Decimal("86.00")),
-        "igst": ("0.00", Decimal("86.00")),
-        "is_tatkal": ("false", Decimal("90.00")),
+        "vendor_name": (stem or "Uploaded Vendor", FABRICATED_CONFIDENCE),
+        "supplier_gstin": (gstin, FABRICATED_CONFIDENCE),
+        "company_gstin": ("06AAACC4175D1Z0", FABRICATED_CONFIDENCE),
+        "invoice_number": (invoice_number, FABRICATED_CONFIDENCE),
+        "invoice_date": (today, FABRICATED_CONFIDENCE),
+        "place_of_supply": ("27", FABRICATED_CONFIDENCE),
+        "payment_mode": ("Card", FABRICATED_CONFIDENCE),
+        "currency": ("INR", FABRICATED_CONFIDENCE),
+        "grand_total": (str(total), FABRICATED_CONFIDENCE),
+        "total_taxable_value": (str(taxable), FABRICATED_CONFIDENCE),
+        "cgst": (str((tax / 2).quantize(Decimal("0.01"))), FABRICATED_CONFIDENCE),
+        "sgst": (str((tax / 2).quantize(Decimal("0.01"))), FABRICATED_CONFIDENCE),
+        "igst": ("0.00", FABRICATED_CONFIDENCE),
+        "is_tatkal": ("false", BOOLEAN_FIELD_CONFIDENCE),
+        "expense_category": (category_name, FABRICATED_CONFIDENCE),
     }
     for key, (value, confidence) in extracted_fields.items():
         db.add(
@@ -565,7 +836,7 @@ async def run_mock_extraction(invoice: Invoice, db: AsyncSession) -> None:
                 invoice_id=invoice.id,
                 field_key=key,
                 original_value=value,
-                final_value=value if confidence >= Decimal("90.00") else None,
+                final_value=None,
                 confidence=confidence,
             )
         )
@@ -637,10 +908,58 @@ async def get_invoice_for_view(invoice_id: int, user_id: int, db: AsyncSession) 
     raise HTTPException(status_code=403, detail="Not allowed to access this invoice")
 
 
+async def store_payment_proof(
+    invoice_id: int,
+    user_id: int,
+    filename: str,
+    content_type: str,
+    content: bytes,
+    db: AsyncSession,
+) -> Invoice:
+    """Proof (bank statement, UPI receipt, card transaction screenshot, ...) that the
+    employee actually paid for this invoice — a separate file from the invoice document
+    itself. update_invoice_fields refuses to mark the invoice REVIEWED without one."""
+    invoice = _ensure_invoice_owner(await db.get(Invoice, invoice_id), user_id)
+    _, claim_reference, claim_status = await get_invoice_claim_link(invoice_id, db)
+    if claim_status in INVOICE_LOCKING_CLAIM_STATUSES:
+        label = claim_reference or "its claim"
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"This invoice can no longer be edited — {label} is {claim_status.value.replace('_', ' ').title()}.",
+        )
+    _validate_upload(filename, content_type, content)
+
+    storage_root = Path(settings.invoice_storage_dir) / str(user_id) / "payment_proofs"
+    storage_root.mkdir(parents=True, exist_ok=True)
+    file_hash = hashlib.sha256(content).hexdigest()
+    suffix = Path(filename).suffix.lower()
+    storage_path = storage_root / f"{invoice_id}_{file_hash}{suffix}"
+    storage_path.write_bytes(content)
+
+    invoice.payment_proof_storage_path = str(storage_path)
+    invoice.payment_proof_original_filename = filename
+    invoice.payment_proof_content_type = content_type
+    invoice.payment_proof_file_size_bytes = len(content)
+    invoice.payment_proof_uploaded_at = _now()
+    await db.commit()
+    await db.refresh(invoice)
+    return invoice
+
+
 async def update_invoice_fields(
     invoice_id: int, payload: InvoiceFieldsUpdateRequest, user_id: int, db: AsyncSession
 ) -> Invoice:
     invoice = _ensure_invoice_owner(await db.get(Invoice, invoice_id), user_id)
+    _, claim_reference, claim_status = await get_invoice_claim_link(invoice_id, db)
+    if claim_status in INVOICE_LOCKING_CLAIM_STATUSES:
+        label = claim_reference or "its claim"
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"This invoice can no longer be edited — {label} is "
+                f"{claim_status.value.replace('_', ' ').title()}. Re-upload the file to review it as a new invoice."
+            ),
+        )
     fields = {
         field.field_key: field
         for field in (
@@ -676,11 +995,13 @@ async def update_invoice_fields(
 
     review_complete = True
     for field in field_by_key.values():
+        if field.field_key in OPTIONAL_INVOICE_FIELD_KEYS:
+            continue
         upd = payload_map.get(field.field_key)
         final_val = (upd.final_value if upd is not None else None)
         if final_val is None:
             final_val = field.final_value
-            
+
         # Red tone (confidence <= 0) strictly requires a non-empty value
         if field.confidence <= Decimal("0.00"):
             if not final_val or not str(final_val).strip():
@@ -699,10 +1020,59 @@ async def update_invoice_fields(
             detail="Duplicate invoice flag must be acknowledged before review can be completed",
         )
 
+    if review_complete and not invoice.payment_proof_storage_path:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Attach payment proof (bank statement, UPI receipt, etc.) before completing review",
+        )
+
     invoice.status = InvoiceStatus.REVIEWED if review_complete else InvoiceStatus.READY_FOR_REVIEW
     await db.commit()
     await db.refresh(invoice)
     return invoice
+
+
+async def delete_invoice(invoice_id: int, user_id: int, db: AsyncSession) -> None:
+    invoice = _ensure_invoice_owner(await db.get(Invoice, invoice_id), user_id)
+
+    # A rejected claim releases its invoices (same rule as assert_invoices_eligible_for_claim) —
+    # only a still-live or already-paid claim keeps this invoice locked down.
+    blocking_claim_id = (
+        await db.execute(
+            select(ClaimInvoice.claim_id)
+            .join(ClaimDraft, ClaimDraft.id == ClaimInvoice.claim_id)
+            .where(ClaimInvoice.invoice_id == invoice_id, ClaimDraft.status != ClaimStatus.REJECTED)
+        )
+    ).scalars().first()
+    if blocking_claim_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"This invoice is attached to claim #{blocking_claim_id}. Remove it from the claim before deleting.",
+        )
+
+    # Any remaining links are to rejected claims only — drop them so the FK to this
+    # invoice doesn't block the delete below; the claim record itself is untouched.
+    await db.execute(delete(ClaimInvoice).where(ClaimInvoice.invoice_id == invoice_id))
+
+    # Clear other invoices' duplicate flag pointing at this one before it disappears.
+    referring = (
+        await db.execute(select(Invoice).where(Invoice.duplicate_invoice_id == invoice_id))
+    ).scalars().all()
+    for other in referring:
+        other.duplicate_invoice_id = None
+
+    await db.execute(delete(InvoiceField).where(InvoiceField.invoice_id == invoice_id))
+    await db.execute(delete(InvoiceLineItem).where(InvoiceLineItem.invoice_id == invoice_id))
+
+    storage_path = Path(invoice.storage_path)
+    await db.delete(invoice)
+    await db.commit()
+
+    try:
+        if storage_path.is_file():
+            storage_path.unlink()
+    except OSError:
+        logger.warning("Could not remove invoice file %s from disk", storage_path)
 
 
 async def find_duplicate_invoice(invoice_id: int, db: AsyncSession) -> int | None:
@@ -876,6 +1246,13 @@ async def _build_claim_expenses(
             if field == "hotel":
                 exc_type = "ROOM_RENT_DEVIATION"
 
+        if exc_type is None and policy_status in ("HARD_BLOCK", "SOFT_FLAG"):
+            # Categories with no dedicated rule above (Incidental, Food & Meals, Day Visit, ...)
+            # still need a type to check against — must match ExceptionRequestModal.jsx's own
+            # fallback exactly, or a manually-requested exception here is never recognized as
+            # already covered and the expense reverts to "needs exception" on every redraft.
+            exc_type = f"{(category_name or 'GENERAL').upper()}_DEVIATION"
+
         exception_requested = False
         if exc_type and exc_type in existing_exception_types:
             exception_requested = True
@@ -915,23 +1292,73 @@ def _serialize_money_map(values: dict[str, Decimal]) -> dict[str, str]:
 
 
 async def assert_invoices_eligible_for_claim(
-    invoice_ids: list[int], user_id: int, db: AsyncSession
+    invoice_ids: list[int],
+    user_id: int,
+    db: AsyncSession,
+    *,
+    exclude_claim_id: int | None = None,
+    claim_category: ReimbursementCategory | None = None,
 ) -> None:
     for iid in invoice_ids:
         inv = await db.get(Invoice, iid)
         if inv is None:
             raise HTTPException(status_code=404, detail=f"Invoice {iid} not found")
+        inv_label = inv.original_filename or f"Invoice {iid}"
         if inv.uploader_user_id != user_id:
-            raise HTTPException(status_code=403, detail=f"Invoice {iid} cannot be linked to this claim")
+            raise HTTPException(status_code=403, detail=f"{inv_label} cannot be linked to this claim")
+        # Travel claims draw only from Travel-tagged invoices. General Reimbursement's wizard
+        # is also where Reallocation-tagged invoices are picked (they share one trip-less
+        # picker — see GeneralReimbursementWizard.jsx's visibleInvoices — since Reallocation
+        # isn't a distinct "New Claim" entry point), so a claim that started as GENERAL — or
+        # has already been promoted to REALLOCATION by _resolve_claim_reimbursement_category
+        # below — accepts either.
+        wants_general_pool = claim_category in (
+            ReimbursementCategory.GENERAL,
+            ReimbursementCategory.REALLOCATION,
+        )
+        is_general_pool_invoice = inv.reimbursement_category in (
+            ReimbursementCategory.GENERAL,
+            ReimbursementCategory.REALLOCATION,
+        )
+        if claim_category is not None and wants_general_pool != is_general_pool_invoice:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"{inv_label} is a {inv.reimbursement_category.value.title()} invoice and cannot be "
+                    f"added to a {claim_category.value.title()} claim"
+                ),
+            )
         if inv.status != InvoiceStatus.REVIEWED:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Invoice {iid} must complete review before it can be used on a claim",
+                detail=f"{inv_label} must complete review before it can be used on a claim",
             )
         if inv.duplicate_invoice_id and not inv.duplicate_acknowledged:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Invoice {iid} is flagged as a duplicate and must be acknowledged before claim use",
+                detail=f"{inv_label} is flagged as a duplicate and must be acknowledged before claim use",
+            )
+        # Once an invoice has been on any claim — approved, in progress, or rejected — it's
+        # retired from direct reuse. The only way to attach that same receipt to a new claim
+        # is to re-upload the file (see store_invoice_upload, which clears a purely-rejected
+        # history so the re-uploaded copy comes back available).
+        conflicting_claim_id = (
+            await db.execute(
+                select(ClaimInvoice.claim_id)
+                .join(ClaimDraft, ClaimDraft.id == ClaimInvoice.claim_id)
+                .where(
+                    ClaimInvoice.invoice_id == iid,
+                    ClaimDraft.id != (exclude_claim_id if exclude_claim_id is not None else -1),
+                )
+            )
+        ).scalars().first()
+        if conflicting_claim_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"{inv_label} is already attached to claim #{conflicting_claim_id}. "
+                    "Re-upload the file to use it on a new claim."
+                ),
             )
 
 
@@ -943,6 +1370,32 @@ async def create_or_update_claim_draft(
     except Exception as e:
         logger.exception("Error in create_or_update_claim_draft: %s", e)
         raise
+
+
+async def _resolve_claim_reimbursement_category(
+    claim: ClaimDraft, invoice_ids: list[int], db: AsyncSession
+) -> None:
+    """Reallocation is tagged per-invoice, not chosen at claim-creation time — it's picked
+    from the same trip-less General Reimbursement wizard/picker (see
+    GeneralReimbursementWizard.jsx's visibleInvoices), not a distinct "New Claim" entry point.
+    If any linked invoice is tagged REALLOCATION, that takes precedence over the GENERAL entry
+    point that created this claim, since it's the one that drives approval routing (see
+    workflow_service.get_workflow_config's category param). Travel claims never go through
+    this picker, so this only ever promotes GENERAL -> REALLOCATION, never touches a TRAVEL
+    claim (assert_invoices_eligible_for_claim already keeps Travel's invoice pool separate)."""
+    if not invoice_ids or claim.reimbursement_category == ReimbursementCategory.TRAVEL:
+        return
+    has_reallocation = (
+        await db.execute(
+            select(Invoice.id).where(
+                Invoice.id.in_(invoice_ids),
+                Invoice.reimbursement_category == ReimbursementCategory.REALLOCATION,
+            )
+        )
+    ).first()
+    if has_reallocation:
+        claim.reimbursement_category = ReimbursementCategory.REALLOCATION
+
 
 async def _create_or_update_claim_draft_impl(
     payload: ClaimDraftIn, user_id: int, db: AsyncSession
@@ -968,7 +1421,13 @@ async def _create_or_update_claim_draft_impl(
         claim.current_approval_stage = None
 
     if payload.invoice_ids:
-        await assert_invoices_eligible_for_claim(payload.invoice_ids, user_id, db)
+        await assert_invoices_eligible_for_claim(
+            payload.invoice_ids,
+            user_id,
+            db,
+            exclude_claim_id=claim.id,
+            claim_category=payload.reimbursement_category,
+        )
 
     # Set standard fields from payload
     exclude_keys = {"claim_id", "invoice_ids", "trip_ids"}
@@ -999,6 +1458,8 @@ async def _create_or_update_claim_draft_impl(
         if not user_may_attach_trip_to_claim(trip, user):
             raise HTTPException(status_code=403, detail=f"Trip {trip_id} cannot be linked to this claim")
         db.add(ClaimTrip(claim_id=claim.id, trip_id=trip_id))
+
+    await _resolve_claim_reimbursement_category(claim, payload.invoice_ids, db)
 
     expenses, gst_summary = await _build_claim_expenses(claim, payload.invoice_ids, db)
     exceptions = [
@@ -1051,7 +1512,10 @@ async def list_claims(
     limit: int = 200,
 ) -> list[ClaimDraft]:
     target_user_id = employee_user_id or user_id
-    query = select(ClaimDraft).where(ClaimDraft.employee_user_id == target_user_id)
+    query = select(ClaimDraft).where(
+        ClaimDraft.employee_user_id == target_user_id,
+        ClaimDraft.is_exception_shell.is_(False),
+    )
     if target_user_id != user_id:
         query = query.where(ClaimDraft.status != ClaimStatus.DRAFT.value)
     query = query.order_by(ClaimDraft.created_at.desc()).limit(limit)
@@ -1061,13 +1525,23 @@ async def list_claims(
 async def list_claims_all(
     db: AsyncSession,
     *,
+    viewer_user_id: int | None = None,
     limit: int = 500,
 ) -> list[ClaimDraft]:
-    query = (
-        select(ClaimDraft)
-        .order_by(ClaimDraft.created_at.desc())
-        .limit(limit)
-    )
+    # Drafts are private scratch data until the owner submits them — exclude everyone
+    # else's drafts from this org-wide listing, same rule list_claims already applies.
+    # Exception-request shell claims are plumbing, not real claims — never listed here.
+    query = select(ClaimDraft).where(ClaimDraft.is_exception_shell.is_(False))
+    if viewer_user_id is not None:
+        query = query.where(
+            or_(
+                ClaimDraft.status != ClaimStatus.DRAFT.value,
+                ClaimDraft.employee_user_id == viewer_user_id,
+            )
+        )
+    else:
+        query = query.where(ClaimDraft.status != ClaimStatus.DRAFT.value)
+    query = query.order_by(ClaimDraft.created_at.desc()).limit(limit)
     return (await db.execute(query)).scalars().all()
 
 
@@ -1079,7 +1553,13 @@ async def submit_claim(claim_id: int, user_id: int, db: AsyncSession) -> ClaimDr
     if claim.status not in (ClaimStatus.DRAFT, ClaimStatus.SENT_BACK):
         raise HTTPException(status_code=409, detail="Only draft or sent-back claims can be submitted")
     if invoice_ids:
-        await assert_invoices_eligible_for_claim(list(invoice_ids), user_id, db)
+        await assert_invoices_eligible_for_claim(
+            list(invoice_ids),
+            user_id,
+            db,
+            exclude_claim_id=claim.id,
+            claim_category=claim.reimbursement_category,
+        )
     if any(expense.policy_status == "HARD_BLOCK" for expense in expenses):
         # Relax block if it's a Room Rent deviation (which should go to exception instead)
         room_rent_only = all(
@@ -1089,8 +1569,22 @@ async def submit_claim(claim_id: int, user_id: int, db: AsyncSession) -> ClaimDr
         if not room_rent_only:
             raise HTTPException(status_code=409, detail="Hard-blocking policy exceptions must be resolved")
 
-    # Trigger exceptions
+    # Trigger exceptions — covers both freshly auto-detected ones (hotel/air/taxi/tatkal)
+    # and any the employee already manually requested mid-wizard (create_exception_request
+    # leaves the claim in DRAFT so the wizard stays usable; this is where that finally
+    # takes effect on the claim's actual status, exactly like the auto-detected path).
     has_exceptions = await trigger_exceptions_if_needed(claim, expenses, db)
+    if not has_exceptions:
+        from app.models.claim_workflow import ExceptionRequest, ExceptionRequestStatus
+        existing_pending = (
+            await db.execute(
+                select(ExceptionRequest.id).where(
+                    ExceptionRequest.claim_id == claim.id,
+                    ExceptionRequest.status == ExceptionRequestStatus.PENDING.value,
+                )
+            )
+        ).scalars().first()
+        has_exceptions = existing_pending is not None
     if has_exceptions:
         claim.status = ClaimStatus.PENDING_EXCEPTION
 

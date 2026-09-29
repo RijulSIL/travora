@@ -145,6 +145,10 @@ textarea {
   @apply inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-4 text-sm font-semibold text-ink transition-all duration-200 hover:bg-slate-50 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60;
 }
 
+.btn-danger {
+  @apply inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 text-sm font-semibold text-red-700 transition-all duration-200 hover:bg-red-100 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60;
+}
+
 .panel {
   @apply border border-slate-200/60 bg-white rounded-2xl shadow-sm;
 }
@@ -170,14 +174,10 @@ textarea {
 
 /* ── Top nav tabs ── */
 .nav-tab {
-  @apply relative flex items-center gap-2 px-3 py-2.5 text-[13px] font-medium text-slate-500 transition-colors duration-150 hover:text-ink whitespace-nowrap;
+  @apply relative flex items-center gap-2 rounded-lg px-3.5 py-2 text-[13px] font-medium text-slate-500 transition-all duration-150 hover:bg-slate-100/80 hover:text-ink whitespace-nowrap;
 }
 .nav-tab.active {
-  @apply text-brand font-semibold;
-}
-.nav-tab.active::after {
-  content: '';
-  @apply absolute bottom-0 left-2 right-2 h-[2px] rounded-full bg-brand;
+  @apply bg-brand/10 text-brand font-semibold hover:bg-brand/10;
 }
 
 /* ── Quick action cards ── */

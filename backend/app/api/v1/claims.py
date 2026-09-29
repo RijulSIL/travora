@@ -69,7 +69,7 @@ async def employee_claims(
         allowed = PERMISSION_MATRIX.get(role, set())
         if not (allowed & {"view_reports", "process_payments"}):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-        rows = await list_claims_all(db)
+        rows = await list_claims_all(db, viewer_user_id=current_user_id)
         response = []
         for claim in rows:
             expenses = (
@@ -191,7 +191,8 @@ async def team_claims(
     from app.models.reimbursement import ClaimStatus
     stmt = select(ClaimDraft).where(
         ClaimDraft.employee_user_id.in_(sub_user_ids),
-        ClaimDraft.status != ClaimStatus.DRAFT.value
+        ClaimDraft.status != ClaimStatus.DRAFT.value,
+        ClaimDraft.is_exception_shell.is_(False),
     )
     rows = (await db.execute(stmt)).scalars().all()
     

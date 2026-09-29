@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { DollarSign, Receipt, TrendingUp, ArrowRight, ShieldAlert } from 'lucide-react';
+import { IndianRupee, ReceiptIndianRupee, TrendingUp, ArrowRight, ShieldAlert } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 import { useSetPageTitle } from '../../context/PageTitleContext';
@@ -114,7 +114,7 @@ export default function FinanceDashboard() {
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="stat-card">
           <div className="stat-card-icon bg-brand">
-            <DollarSign className="h-5 w-5" />
+            <IndianRupee className="h-5 w-5" />
           </div>
           <div className="stat-card-label">Payment Queue</div>
           <div className="stat-card-value text-xl">
@@ -127,7 +127,7 @@ export default function FinanceDashboard() {
 
         <div className="stat-card">
           <div className="stat-card-icon bg-purple-500">
-            <Receipt className="h-5 w-5" />
+            <ReceiptIndianRupee className="h-5 w-5" />
           </div>
           <div className="stat-card-label">GST this month ({boundsThisMonth().from_date} → today)</div>
           {gstLoading ? (
@@ -166,32 +166,25 @@ export default function FinanceDashboard() {
             </div>
             <p className="text-xs text-slate-400 mt-0.5">Distribution of spend across travel modes (All time).</p>
           </div>
-          <div className="p-6">
+          <div className="p-6 min-h-[250px]">
             {spendLoading ? (
-              <div className="py-4 text-center text-sm text-slate-400">Loading spend data…</div>
+              <div className="py-8 text-center text-sm text-slate-400">Loading spend data…</div>
             ) : !spend.length ? (
-              <div className="py-4 text-center text-sm text-slate-400">No spend data found.</div>
+              <div className="py-8 text-center text-sm text-slate-400">No spend data found.</div>
             ) : (
-              <div className="space-y-4">
-                {spend.map((item) => {
-                  const max = Math.max(...spend.map(s => Number(s.spend)), 1);
-                  const percent = (Number(item.spend) / max) * 100;
-                  return (
-                    <div key={item.travel_mode}>
-                      <div className="flex justify-between text-xs font-medium text-slate-600">
-                        <span>{item.travel_mode}</span>
-                        <span className="font-bold text-ink">₹{fmtMoney(item.spend)}</span>
-                      </div>
-                      <div className="mt-1.5 h-2 w-full rounded-full bg-slate-100">
-                        <div 
-                          className="h-full rounded-full bg-brand transition-all duration-500" 
-                          style={{ width: `${percent}%` }}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+              <ResponsiveContainer width="100%" height={Math.max(180, spend.length * 56)}>
+                <BarChart data={spend} layout="vertical" margin={{ top: 0, right: 24, left: 20, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e2e8f0" />
+                  <XAxis type="number" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} />
+                  <YAxis type="category" dataKey="travel_mode" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} width={80} />
+                  <Tooltip
+                    cursor={{ fill: '#f8fafc' }}
+                    contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                    formatter={(value) => [`₹${fmtMoney(value)}`, 'Spend']}
+                  />
+                  <Bar dataKey="spend" name="Spend" fill="#116149" radius={[0, 4, 4, 0]} barSize={24} animationDuration={800} />
+                </BarChart>
+              </ResponsiveContainer>
             )}
           </div>
         </section>

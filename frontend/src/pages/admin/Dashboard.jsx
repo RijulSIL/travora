@@ -25,7 +25,7 @@ export default function Dashboard() {
 
   return (
     <>
-      {error ? <div className="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error.response?.data?.detail || error.message}</div> : null}
+      {error ? <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error.response?.data?.detail || error.message}</div> : null}
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         {Object.entries(statLabels).map(([key, label]) => (
           <section key={key} className="panel rounded p-4">

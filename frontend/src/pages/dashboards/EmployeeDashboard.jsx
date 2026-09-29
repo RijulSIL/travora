@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { FileText, PlusCircle, Receipt, Plane, Briefcase, Building2, ArrowRight } from 'lucide-react';
+import { FileText, PlusCircle, ReceiptIndianRupee, Plane, Briefcase, Building2, ArrowRight } from 'lucide-react';
 
 import ClaimApprovalStepper from '../../components/claims/ClaimApprovalStepper';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { hasPermission } from '../../services/permissions';
 import { reimbursementApi } from '../../services/reimbursementApi';
 import { selectResolvedRole, useAuthStore } from '../../store/authStore';
+import { claimEditPath, claimNewPath } from '../../utils/claimRoutes';
 
 function money(value) {
   return Number(value || 0).toLocaleString('en-IN', {
@@ -189,7 +190,7 @@ export default function EmployeeDashboard() {
               ) : (
                 <div className="mt-4 flex items-center justify-between">
                   <p className="text-xs text-slate-500">Draft — submit when ready.</p>
-                  <Link className="btn-primary text-xs" to={`/claims/new?edit=${latest.id}`}>
+                  <Link className="btn-primary text-xs" to={claimEditPath(latest)}>
                     Edit Draft
                   </Link>
                 </div>
@@ -202,7 +203,7 @@ export default function EmployeeDashboard() {
         {canSubmit && (
           <div className="space-y-3">
             <h3 className="text-[13px] font-bold uppercase tracking-wider text-slate-400 px-1">Quick Actions</h3>
-          <Link to="/claims/new" className="quick-action-primary">
+          <Link to={claimNewPath('TRAVEL')} className="quick-action-primary">
             <PlusCircle className="h-5 w-5 shrink-0" />
             <span className="flex-1">Submit New Claim</span>
             <ArrowRight className="h-4 w-4 opacity-70" />
@@ -213,7 +214,7 @@ export default function EmployeeDashboard() {
             <ArrowRight className="h-4 w-4 opacity-40" />
           </Link>
           <Link to="/invoices" className="quick-action">
-            <Receipt className="h-5 w-5 shrink-0 text-slate-400" />
+            <ReceiptIndianRupee className="h-5 w-5 shrink-0 text-slate-400" />
             <span className="flex-1">Upload Invoice</span>
             <ArrowRight className="h-4 w-4 opacity-40" />
           </Link>
@@ -237,7 +238,7 @@ export default function EmployeeDashboard() {
         <div className="overflow-x-auto">
           <table className="min-w-[720px] w-full border-collapse text-sm">
             <thead>
-              <tr className="border-b border-slate-100 bg-slate-50/60 text-left text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+              <tr className="border-b border-slate-100 bg-slate-50/60 text-center text-[11px] font-bold text-slate-400 uppercase tracking-wider">
                 <th className="px-5 py-3">Travel Date</th>
                 <th className="px-5 py-3">Route</th>
                 <th className="px-5 py-3">Mode</th>
@@ -253,14 +254,14 @@ export default function EmployeeDashboard() {
               ) : null}
               {travelRequests.slice(0, 3).map(({ request }) => (
                 <tr key={request.id} className="border-b border-slate-50 last:border-none hover:bg-slate-50/50 transition-colors">
-                  <td className="px-5 py-3.5 font-medium text-slate-700">
+                  <td className="px-5 py-3.5 text-center font-medium text-slate-700">
                     {request.trip_type === 'MULTI_CITY' && request.legs?.length > 0 ? request.legs[0].travel_date : request.travel_date}
                   </td>
-                  <td className="px-5 py-3.5 font-bold text-ink">
+                  <td className="px-5 py-3.5 text-center font-bold text-ink">
                     {request.trip_type === 'MULTI_CITY' && request.legs && request.legs.length > 0 ? (
-                      <div className="flex flex-col gap-1">
+                      <div className="flex flex-col items-center gap-1">
                         {request.legs.map((leg, i) => (
-                          <div key={i} className="flex items-center gap-1 text-[11px]">
+                          <div key={i} className="flex items-center justify-center gap-1 text-[11px]">
                             <span>{leg.from_city}</span>
                             <span className="text-slate-400 font-normal">→</span>
                             <span>{leg.to_city}</span>
@@ -269,7 +270,7 @@ export default function EmployeeDashboard() {
                         <div className="mt-0.5"><span className="inline-flex items-center rounded-sm bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600">Multi City</span></div>
                       </div>
                     ) : (
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center justify-center gap-1">
                         <span>{request.from_city}</span>
                         <span className="text-slate-400 font-normal">→</span>
                         <span>{request.to_city}</span>
@@ -279,8 +280,8 @@ export default function EmployeeDashboard() {
                       </div>
                     )}
                   </td>
-                  <td className="px-5 py-3.5 text-slate-500">{request.travel_mode}</td>
-                  <td className="px-5 py-3.5">
+                  <td className="px-5 py-3.5 text-center text-slate-500">{request.travel_mode}</td>
+                  <td className="px-5 py-3.5 text-center">
                     <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-600">
                       {request.status}
                     </span>

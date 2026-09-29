@@ -129,15 +129,15 @@ export default function HRBPDashboard() {
           ) : (
             <table className="w-full border-collapse text-[10px]">
               <thead>
-                <tr>
-                  <th className="p-2 text-left text-[11px] font-bold text-slate-400 uppercase tracking-wider">Dept \ Cat</th>
+                <tr className="text-center">
+                  <th className="p-2 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Dept \ Cat</th>
                   {heatmap.categories.map(c => <th key={c} className="p-2 font-medium uppercase tracking-tighter text-slate-400">{c}</th>)}
                 </tr>
               </thead>
               <tbody>
                 {heatmap.departments.map(dept => (
                   <tr key={dept} className="border-t border-slate-100">
-                    <td className="p-2 font-medium text-ink">{dept}</td>
+                    <td className="p-2 text-center font-medium text-ink">{dept}</td>
                     {heatmap.categories.map(cat => {
                       const count = heatmap.matrix[dept]?.[cat] || 0;
                       let bg = 'bg-slate-50';

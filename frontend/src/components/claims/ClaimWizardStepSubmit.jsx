@@ -6,6 +6,7 @@ function money(value) {
 
 export default function ClaimWizardStepSubmit({
   claim,
+  isGeneral,
   trips,
   invoices,
   selectedTripIds,
@@ -25,67 +26,71 @@ export default function ClaimWizardStepSubmit({
       {/* Step 4 Review & Submit Card */}
       <div className="panel rounded-xl p-5 shadow-sm border border-slate-200 bg-white">
         <h2 className="text-sm font-bold text-slate-800 border-b border-slate-100 pb-3 mb-4 flex items-center gap-2">
-          <span>Review Claim Summary</span>
+          <span>{isGeneral ? 'Review Reimbursement Summary' : 'Review Claim Summary'}</span>
           <span className="inline-flex items-center rounded bg-slate-100 px-2.5 py-0.5 text-[10px] font-bold text-slate-600 uppercase">
             Final Step
           </span>
         </h2>
-        
-        <div className="grid gap-4 sm:grid-cols-2">
-          <div className="flex items-center gap-3 rounded-lg bg-slate-50 border border-slate-100 p-3">
-            <div className="flex h-8 w-8 items-center justify-center rounded bg-brand/10 text-brand">
-              <MapPin size={16} />
-            </div>
-            <div>
-              <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">Office & Destination</div>
-              <div className="text-xs font-bold text-slate-800">
-                {claim?.office_location || '—'} → {claim?.destination_city || '—'}
-              </div>
-            </div>
-          </div>
 
-          <div className="flex items-center gap-3 rounded-lg bg-slate-50 border border-slate-100 p-3">
-            <div className="flex h-8 w-8 items-center justify-center rounded bg-brand/10 text-brand">
-              <Calendar size={16} />
+        {!isGeneral ? (
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="flex items-center gap-3 rounded-lg bg-slate-50 border border-slate-100 p-3">
+              <div className="flex h-8 w-8 items-center justify-center rounded bg-brand/10 text-brand">
+                <MapPin size={16} />
+              </div>
+              <div>
+                <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">Office & Destination</div>
+                <div className="text-xs font-bold text-slate-800">
+                  {claim?.office_location || '—'} → {claim?.destination_city || '—'}
+                </div>
+              </div>
             </div>
-            <div>
-              <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">Travel Timeline</div>
-              <div className="text-xs font-bold text-slate-800">
-                {claim?.departure_date || '—'} to {claim?.return_date || '—'}
+
+            <div className="flex items-center gap-3 rounded-lg bg-slate-50 border border-slate-100 p-3">
+              <div className="flex h-8 w-8 items-center justify-center rounded bg-brand/10 text-brand">
+                <Calendar size={16} />
+              </div>
+              <div>
+                <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">Travel Timeline</div>
+                <div className="text-xs font-bold text-slate-800">
+                  {claim?.departure_date || '—'} to {claim?.return_date || '—'}
+                </div>
               </div>
             </div>
           </div>
+        ) : null}
+      </div>
+
+      {/* Linked Travel Desk Bookings — General Reimbursements are never trip-linked */}
+      {!isGeneral ? (
+        <div className="panel rounded-xl p-5 shadow-sm border border-slate-200 bg-white">
+          <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">
+            Linked Bookings ({selectedTrips.length})
+          </h3>
+
+          {!selectedTrips.length ? (
+            <p className="text-xs font-medium text-slate-400 italic">No travel desk bookings linked.</p>
+          ) : (
+            <div className="divide-y divide-slate-100">
+              {selectedTrips.map((trip) => (
+                <div key={trip.id} className="flex items-center gap-3 py-2.5 first:pt-0 last:pb-0">
+                  <div className="flex h-7 w-7 items-center justify-center rounded bg-slate-100 text-slate-500 border border-slate-200">
+                    <Plane size={14} />
+                  </div>
+                  <div>
+                    <div className="text-xs font-bold text-slate-800">
+                      {trip.from_city} → {trip.to_city}
+                    </div>
+                    <div className="text-[10px] text-slate-500 font-medium">
+                      Date: {trip.travel_date} · Class: {trip.travel_class}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
-      </div>
-
-      {/* Linked Travel Desk Bookings */}
-      <div className="panel rounded-xl p-5 shadow-sm border border-slate-200 bg-white">
-        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">
-          Linked Bookings ({selectedTrips.length})
-        </h3>
-        
-        {!selectedTrips.length ? (
-          <p className="text-xs font-medium text-slate-400 italic">No travel desk bookings linked.</p>
-        ) : (
-          <div className="divide-y divide-slate-100">
-            {selectedTrips.map((trip) => (
-              <div key={trip.id} className="flex items-center gap-3 py-2.5 first:pt-0 last:pb-0">
-                <div className="flex h-7 w-7 items-center justify-center rounded bg-slate-100 text-slate-500 border border-slate-200">
-                  <Plane size={14} />
-                </div>
-                <div>
-                  <div className="text-xs font-bold text-slate-800">
-                    {trip.from_city} → {trip.to_city}
-                  </div>
-                  <div className="text-[10px] text-slate-500 font-medium">
-                    Date: {trip.travel_date} · Class: {trip.travel_class}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      ) : null}
 
       {/* Linked Expense Invoices */}
       <div className="panel rounded-xl p-5 shadow-sm border border-slate-200 bg-white">
@@ -108,7 +113,7 @@ export default function ClaimWizardStepSubmit({
                       {invoice.original_filename}
                     </div>
                     <div className="text-[10px] text-slate-500 font-medium">
-                      Status: {invoice.status}
+                      Status: {invoice.status.replaceAll('_', ' ')}
                     </div>
                   </div>
                 </div>

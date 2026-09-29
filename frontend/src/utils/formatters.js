@@ -64,6 +64,38 @@ export const formatExceptionTypes = (types, fallbackType) =>
     ? types.map(formatExceptionType).join(' + ')
     : formatExceptionType(fallbackType);
 
+export const EXCEPTION_TYPE_DESCRIPTIONS = {
+  AIR_TRAVEL_UNLOCK:
+    "This employee's level does not normally permit air travel. Approving this unlocks air travel for this request only.",
+  AIR_TRAVEL_L5_L6:
+    'Air travel for Level 5A–6D employees requires case-by-case approval before it can be booked.',
+  TRAIN_TATKAL:
+    'The train ticket is being booked via Tatkal (premium/emergency booking) instead of standard advance booking.',
+  FLIGHT_ADVANCE_BOOKING_OVERRIDE:
+    'The flight is being booked with fewer than the minimum required advance-notice days.',
+  FLIGHT_COST_DELTA:
+    'The selected flight fare exceeds the policy-permitted amount for this route/class.',
+  ROOM_RENT_DEVIATION:
+    "The hotel room rent exceeds the policy cap for this employee's level/city.",
+  'HOTEL/ACCOMMODATION_DEVIATION':
+    "The hotel/accommodation cost exceeds the policy cap for this employee's level/city.",
+  HOTEL_DEVIATION:
+    "The hotel cost exceeds the policy cap for this employee's level/city.",
+  ACCOMMODATION_DEVIATION:
+    "The accommodation cost exceeds the policy cap for this employee's level/city.",
+  HIRED_TAXI_UNAUTHORIZED:
+    'A hired taxi is being used without the prior authorization normally required for this mode of travel.',
+  MODE_DEVIATION:
+    'The mode of travel selected deviates from what policy permits for this employee/route.',
+  DAY_VISIT_EXTERNAL_MEETING:
+    'Expense is being claimed for a day visit / external meeting outside standard travel policy parameters.',
+  POLICY_EXCEPTION_GENERAL:
+    'A general policy exception not covered by a specific automated rule.',
+};
+
+export const describeExceptionType = (type) =>
+  EXCEPTION_TYPE_DESCRIPTIONS[type] || 'No further detail is available for this exception type.';
+
 export const formatRelative = (dateString) => {
   const diff = Date.now() - new Date(dateString).getTime();
   const sec = Math.floor(diff / 1000);

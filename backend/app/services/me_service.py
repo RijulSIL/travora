@@ -6,7 +6,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.auth import Delegation, Role, User
+from app.models.auth import Role, User
 from app.models.claim_workflow import ExceptionApproval, ExceptionRequest, ExceptionRequestStatus
 from app.models.employee import Employee
 from app.models.expense_category import CompanyProfile
@@ -62,21 +62,31 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
         if limit_row and limit_row.hotel_cap is not None:
             hotel_cap_group_a = _fmt_inr(limit_row.hotel_cap)
 
-    pending_rows = await list_pending_approvals(user_id, db)
-    pending_count = len(pending_rows)
+    from app.core.rbac import DELEGATABLE_PERMISSIONS, _active_delegator_roles
+    from app.services.delegation_service import is_delegation_enabled
 
-    if user.role == Role.REPORTING_MANAGER:
+    delegated_roles = await _active_delegator_roles(user_id, db)
+    delegation_feature_enabled = await is_delegation_enabled(db)
+    can_create_delegation = bool(DELEGATABLE_PERMISSIONS.get(user.role, set()))
+
+    pending_rows = await list_pending_approvals(user_id, db)
+    pending_claims_count = len(pending_rows)
+    pending_travel_requests_count = 0
+
+    if user.role == Role.REPORTING_MANAGER or Role.REPORTING_MANAGER in delegated_roles:
         from app.services.travel_request_service import list_pending_travel_requests_for_manager
         travel_reqs = await list_pending_travel_requests_for_manager(user_id, db)
-        pending_count += len(travel_reqs)
+        pending_travel_requests_count = len(travel_reqs)
+
+    pending_count = pending_claims_count + pending_travel_requests_count
 
     travel_desk_queue_count = 0
-    if user.role == Role.HRBP_HR:
+    if user.role == Role.HRBP_HR or Role.HRBP_HR in delegated_roles:
         from app.services.travel_request_service import count_pending_travel_requests_for_desk
         travel_desk_queue_count = await count_pending_travel_requests_for_desk(db)
 
     pq_total_str: str | None = None
-    if user.role == Role.FINANCE and pending_rows:
+    if (user.role == Role.FINANCE or Role.FINANCE in delegated_roles) and pending_rows:
         total = sum(Decimal(str(row.get("amount", "0") or "0")) for row in pending_rows)
         pq_total_str = _fmt_inr(total.quantize(Decimal("0.01")))
 
@@ -130,14 +140,7 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
         if user.auto_approve_threshold is not None:
             auto_approve_threshold_str = _fmt_inr(user.auto_approve_threshold)
 
-    now = datetime.utcnow()
-    delegation_q = select(Delegation.id).where(
-        Delegation.delegatee_id == user_id,
-        Delegation.is_active,
-        Delegation.start_date <= now,
-        Delegation.end_date >= now
-    )
-    is_acting_delegate = (await db.execute(delegation_q)).first() is not None
+    is_acting_delegate = bool(delegated_roles)
 
     return MeOut(
         user_id=user.id,
@@ -151,6 +154,8 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
         office_location=emp.office_location if emp else None,
         reporting_manager_id=emp.reporting_manager_id if emp else None,
         pending_approvals_count=pending_count,
+        pending_claims_count=pending_claims_count,
+        pending_travel_requests_count=pending_travel_requests_count,
         outstanding_advance_amount=_fmt_inr(adv_sum),
         outstanding_advance_days=advance_days,
         hotel_cap_group_a=hotel_cap_group_a,
@@ -162,6 +167,9 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
         workflow_submission_deadline_mode=deadline_mode,
         workflow_submission_max_working_days=max_days,
         is_acting_delegate=is_acting_delegate,
+        delegated_roles=[r.value for r in delegated_roles],
+        delegation_feature_enabled=delegation_feature_enabled,
+        can_create_delegation=can_create_delegation,
         auto_approve_threshold=auto_approve_threshold_str,
         org_auto_approve_ceiling=org_auto_approve_ceiling_str,
     )

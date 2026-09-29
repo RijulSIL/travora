@@ -630,15 +630,20 @@ async def list_pending_travel_requests_for_manager(manager_user_id: int, db: Asy
         return []
         
     from datetime import datetime
+
+    from app.services.delegation_service import is_delegation_enabled
+
     now = datetime.utcnow()
-    delegators_q = select(Delegation.delegator_id).where(
-        Delegation.delegatee_id == manager_user_id,
-        Delegation.is_active,
-        Delegation.start_date <= now,
-        Delegation.end_date >= now
-    )
-    delegator_user_ids = (await db.execute(delegators_q)).scalars().all()
-    
+    delegator_user_ids = []
+    if await is_delegation_enabled(db):
+        delegators_q = select(Delegation.delegator_id).where(
+            Delegation.delegatee_id == manager_user_id,
+            Delegation.is_active,
+            Delegation.start_date <= now,
+            Delegation.end_date >= now
+        )
+        delegator_user_ids = (await db.execute(delegators_q)).scalars().all()
+
     manager_emp_ids = [mgr.employee_id]
     if delegator_user_ids:
         delegator_emp_ids = (await db.execute(select(User.employee_id).where(User.id.in_(delegator_user_ids)))).scalars().all()
@@ -862,6 +867,12 @@ async def _actor_is_reporting_manager_for(
         return True
 
     from datetime import datetime
+
+    from app.services.delegation_service import is_delegation_enabled
+
+    if not await is_delegation_enabled(db):
+        return False
+
     now = datetime.utcnow()
     delegators_q = select(Delegation.delegator_id).where(
         Delegation.delegatee_id == manager_user_id,

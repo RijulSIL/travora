@@ -50,10 +50,10 @@ export default function CompanyProfile() {
           </button>
         }
       />
-      {error ? <div className="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error.response?.data?.detail || error.message}</div> : null}
+      {error ? <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error.response?.data?.detail || error.message}</div> : null}
       
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 w-full">
-        <section className="panel rounded-lg p-6">
+        <section className="panel p-6">
           <div className="mb-6 border-b border-line pb-4">
             <h2 className="text-lg font-bold text-slate-900">General Information</h2>
             <p className="text-sm text-slate-500 mt-1">Manage primary business details, tax identifiers, and official office locations.</p>
@@ -76,7 +76,7 @@ export default function CompanyProfile() {
           </div>
         </section>
 
-        <section className="panel rounded-lg p-6">
+        <section className="panel p-6">
           <div className="mb-6 border-b border-line pb-4">
             <h2 className="text-lg font-bold text-slate-900">Bank Details</h2>
             <p className="text-sm text-slate-500 mt-1">Primary banking information used for reimbursements and official transfers.</p>

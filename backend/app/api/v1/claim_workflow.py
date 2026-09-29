@@ -158,6 +158,8 @@ async def record_payment(
     claims: dict = Depends(require_permission("process_payments")),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    claim = await record_claim_payment(claim_id, int(claims["sub"]), payload.utr_reference, payload.amount, db)
+    claim = await record_claim_payment(
+        claim_id, int(claims["sub"]), payload.utr_reference, payload.amount, db, tds_deduction=payload.tds_deduction
+    )
     _claim, expenses, invoice_ids, trip_ids = await get_claim_bundle(claim.id, claim.employee_user_id, db)
     return claim_workflow_bundle_dict(_claim, expenses, invoice_ids, trip_ids)

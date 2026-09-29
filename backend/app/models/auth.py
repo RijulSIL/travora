@@ -73,3 +73,18 @@ class Delegation(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
+
+
+class DelegationConfig(Base):
+    """Single-row org-wide toggle for the delegation feature (same pattern as
+    BudgetConfig). While disabled, existing Delegation rows are left untouched but
+    every permission/role check treats them as inactive — see app.core.rbac."""
+
+    __tablename__ = "delegation_config"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+    updated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))

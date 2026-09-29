@@ -3,10 +3,12 @@ import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 
 import PageHeader from '../components/ui/PageHeader';
+import Pagination from '../components/ui/Pagination';
 import useBodyScrollLock from '../hooks/useBodyScrollLock';
+import { usePagination } from '../hooks/usePagination';
 import { useSetPageTitle } from '../context/PageTitleContext';
 import { reimbursementApi } from '../services/reimbursementApi';
-import { formatExceptionTypes, formatRole } from '../utils/formatters';
+import { describeExceptionType, formatExceptionType, formatExceptionTypes, formatRole } from '../utils/formatters';
 
 const DECISION_STATUS_STYLES = {
   APPROVED: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20',
@@ -87,10 +89,12 @@ export default function ComplianceDashboard() {
 
   useBodyScrollLock(Boolean(selectedCell));
 
+  const { page, setPage, totalPages, pageItems, startIndex, pageSize, total } = usePagination(exceptionRows);
+
   return (
     <>
       <PageHeader title="" />
-      <section className="panel rounded p-4">
+      <section className="panel p-4">
         <h2 className="mb-3 text-base font-semibold text-ink">Policy Violation Heatmap</h2>
         <div className="mb-3 grid gap-3 md:grid-cols-5">
           <input className="field" type="date" value={filters.from_date} onChange={(e) => setFilters({ ...filters, from_date: e.target.value })} />
@@ -133,7 +137,7 @@ export default function ComplianceDashboard() {
         </div>
       </section>
 
-      <section className="panel mt-4 rounded p-4">
+      <section className="panel mt-4 p-4">
         <h2 className="mb-3 text-base font-semibold text-ink">Exception Request Log</h2>
         <div className="mb-3 grid gap-3 md:grid-cols-5">
           <select className="field" value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
@@ -147,24 +151,26 @@ export default function ComplianceDashboard() {
         </div>
         <div className="overflow-auto">
           <table className="min-w-full text-sm">
-            <thead className="bg-slate-50">
+            <thead className="bg-slate-50 text-center">
               <tr>
-                <th className="px-3 py-2 text-left">Exception ID</th>
-                <th className="px-3 py-2 text-left">Claim Ref</th>
-                <th className="px-3 py-2 text-left">Employee</th>
-                <th className="px-3 py-2 text-left">Type</th>
-                <th className="px-3 py-2 text-left">Status</th>
-                <th className="px-3 py-2 text-left">Requested On</th>
-                <th className="px-3 py-2 text-left">Decided By</th>
+                <th className="px-3 py-2 whitespace-nowrap">S. No</th>
+                <th className="px-3 py-2">Exception ID</th>
+                <th className="px-3 py-2">Claim Ref</th>
+                <th className="px-3 py-2">Employee</th>
+                <th className="px-3 py-2">Type</th>
+                <th className="px-3 py-2">Status</th>
+                <th className="px-3 py-2">Requested On</th>
+                <th className="px-3 py-2">Decided By</th>
               </tr>
             </thead>
             <tbody>
-              {exceptionRows.map((row) => (
+              {pageItems.map((row, index) => (
                 <Fragment key={row.exception_id}>
                   <tr
-                    className="cursor-pointer border-t border-line hover:bg-slate-50"
+                    className="cursor-pointer border-t border-line hover:bg-slate-50 text-center"
                     onClick={() => setExpandedException(expandedException === row.exception_id ? null : row.exception_id)}
                   >
+                    <td className="px-3 py-2 text-slate-500">{startIndex + index + 1}</td>
                     <td className="px-3 py-2 font-medium text-slate-700">
                       {row.exception_ref || `EXC-${String(row.exception_id).padStart(4, '0')}`}
                     </td>
@@ -177,8 +183,20 @@ export default function ComplianceDashboard() {
                   </tr>
                   {expandedException === row.exception_id ? (
                     <tr className="border-t border-line bg-slate-50">
-                      <td colSpan={7} className="px-4 py-4">
+                      <td colSpan={8} className="px-4 py-4">
                         <div className="space-y-3 text-sm">
+                          <div>
+                            <span className="text-xs font-bold uppercase tracking-wide text-slate-500">What This Means</span>
+                            <div className="mt-1 space-y-1">
+                              {(row.exception_types?.length ? row.exception_types : [row.exception_type]).map((type) => (
+                                <p key={type} className="text-slate-700">
+                                  <span className="font-semibold">{formatExceptionType(type)}:</span>{' '}
+                                  {describeExceptionType(type)}
+                                </p>
+                              ))}
+                            </div>
+                          </div>
+
                           <div>
                             <span className="text-xs font-bold uppercase tracking-wide text-slate-500">Description</span>
                             <p className="mt-0.5 text-slate-700">{row.description || '—'}</p>
@@ -232,6 +250,7 @@ export default function ComplianceDashboard() {
             </tbody>
           </table>
         </div>
+        <Pagination page={page} totalPages={totalPages} onPageChange={setPage} total={total} pageSize={pageSize} startIndex={startIndex} />
       </section>
 
       {selectedCell

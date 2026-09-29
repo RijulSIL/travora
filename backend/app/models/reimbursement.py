@@ -47,6 +47,17 @@ class ClaimStatus(str, enum.Enum):
     PAID = "PAID"
 
 
+class ReimbursementCategory(str, enum.Enum):
+    """What an invoice/claim is for — drives which approval route applies (see
+    workflow_service.get_workflow_config's category param) and, for claims, which wizard
+    steps are shown. TRAVEL is the default for every pre-existing row so historical
+    invoices/claims keep their original meaning after this column was added."""
+
+    TRAVEL = "TRAVEL"
+    GENERAL = "GENERAL"
+    REALLOCATION = "REALLOCATION"
+
+
 class Invoice(Base):
     __tablename__ = "invoices"
     __table_args__ = (UniqueConstraint("uploader_user_id", "file_sha256", name="uq_invoices_uploader_file_sha"),)
@@ -69,6 +80,20 @@ class Invoice(Base):
         Enum(GstinValidationStatus)
     )
     gstin_validation_checked_at: Mapped[datetime | None] = mapped_column(DateTime)
+    reimbursement_category: Mapped[ReimbursementCategory] = mapped_column(
+        Enum(ReimbursementCategory, native_enum=False, length=32),
+        nullable=False,
+        default=ReimbursementCategory.TRAVEL,
+        index=True,
+    )
+    # Proof (bank statement / UPI receipt / card transaction screenshot) that the employee
+    # actually paid for this invoice — a separate file from the invoice document itself.
+    # update_invoice_fields refuses to mark the invoice REVIEWED while this is unset.
+    payment_proof_storage_path: Mapped[str | None] = mapped_column(String(512))
+    payment_proof_original_filename: Mapped[str | None] = mapped_column(String(255))
+    payment_proof_content_type: Mapped[str | None] = mapped_column(String(128))
+    payment_proof_file_size_bytes: Mapped[int | None] = mapped_column(Integer)
+    payment_proof_uploaded_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
@@ -131,13 +156,30 @@ class ClaimDraft(Base):
     from_city: Mapped[str | None] = mapped_column(String(128))
     destination_city: Mapped[str | None] = mapped_column(String(128), index=True)
     destination_city_group: Mapped[CityGroupType | None] = mapped_column(Enum(CityGroupType))
+    # General Reimbursement claims have no trip, so this drives which wizard steps show and
+    # which approval-matrix category applies — see workflow_service.get_workflow_config.
+    # Derived from linked invoices when any is tagged REALLOCATION (see reimbursement_service
+    # ._resolve_claim_reimbursement_category) — it isn't just whatever the wizard entry point set.
+    reimbursement_category: Mapped[ReimbursementCategory] = mapped_column(
+        Enum(ReimbursementCategory, native_enum=False, length=32),
+        nullable=False,
+        default=ReimbursementCategory.TRAVEL,
+        index=True,
+    )
     advance_received: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     status: Mapped[ClaimStatus] = mapped_column(Enum(ClaimStatus), nullable=False, default=ClaimStatus.DRAFT)
+    # True for the placeholder claim auto-created by POST /exceptions/request when a policy
+    # exception is raised with no real claim behind it yet. It carries no expenses and is
+    # never itself reviewed or paid — exclude it from every claim listing / approval queue.
+    is_exception_shell: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     claim_reference: Mapped[str | None] = mapped_column(String(32), index=True)
     current_approval_stage: Mapped[int | None] = mapped_column(Integer)
     approved_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     payment_utr: Mapped[str | None] = mapped_column(String(128))
     payment_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    # Withheld from the approved amount at payment time — payment_amount + tds_deduction ==
+    # the approved/net-payable total (see workflow_service._authoritative_payable_amount).
+    tds_deduction: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     payment_recorded_at: Mapped[datetime | None] = mapped_column(DateTime)
     payment_recorded_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     reject_reason: Mapped[str | None] = mapped_column(Text)

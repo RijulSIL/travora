@@ -20,6 +20,7 @@ from app.schemas.finance_reporting import (
     PolicyViolationsOut,
     ReportScheduleIn,
     ReportScheduleOut,
+    SpendByCategoryOut,
 )
 from app.services.finance_reporting_service import (
     generate_excel_report,
@@ -27,6 +28,7 @@ from app.services.finance_reporting_service import (
     generate_report,
     get_gst_summary,
     get_policy_violations,
+    get_spend_by_category,
     list_audit_logs,
     list_erp_ledger_entries,
     list_exception_requests_log,
@@ -69,6 +71,15 @@ async def gst_summary(
     _claims: dict = Depends(require_permission("view_reports")),
 ) -> dict:
     return await get_gst_summary(filters, db)
+
+
+@router.get("/finance/spend-by-category", response_model=list[SpendByCategoryOut])
+async def spend_by_category(
+    filters: FinanceFilterParams = Depends(_filters),
+    db: AsyncSession = Depends(get_db),
+    _claims: dict = Depends(require_permission("view_reports")),
+) -> list[dict]:
+    return await get_spend_by_category(filters, db)
 
 
 @router.get("/finance/gstr2b/export")

@@ -49,10 +49,11 @@ async def unhandled_exception_handler(_request: Request, exc: Exception) -> JSON
 
 async def _run_monitors():
     from app.core.database import AsyncSessionLocal
+    from app.services.finance_reporting_service import run_scheduled_reports
     from app.services.workflow_service import process_auto_approvals
     from app.workers.advance_monitor import monitor_advances
     from app.workers.sla_monitor import monitor_slas
-    
+
     async def run_hourly():
         while True:
             try:
@@ -62,7 +63,7 @@ async def _run_monitors():
             except Exception as e:
                 logger.error(f"Error in hourly background monitors: {e}")
             await asyncio.sleep(3600)  # Run every hour
-            
+
     async def run_frequent():
         while True:
             try:
@@ -71,9 +72,19 @@ async def _run_monitors():
             except Exception as e:
                 logger.error(f"Error in frequent background monitors: {e}")
             await asyncio.sleep(10)  # Run every 10 seconds
-            
+
+    async def run_scheduled_reports_loop():
+        while True:
+            try:
+                async with AsyncSessionLocal() as db:
+                    await run_scheduled_reports(db)
+            except Exception as e:
+                logger.error(f"Error in scheduled reports monitor: {e}")
+            await asyncio.sleep(60)  # Check for due schedules every minute
+
     asyncio.create_task(run_hourly())
     asyncio.create_task(run_frequent())
+    asyncio.create_task(run_scheduled_reports_loop())
 
 @app.on_event("startup")
 async def on_startup() -> None:

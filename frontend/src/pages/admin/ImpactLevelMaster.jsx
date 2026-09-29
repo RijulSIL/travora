@@ -146,8 +146,8 @@ export default function ImpactLevelMaster() {
           </>
         }
       />
-      {error ? <div className="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error.response?.data?.detail || error.message}</div> : null}
-      <section className="panel mb-4 rounded p-4">
+      {error ? <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error.response?.data?.detail || error.message}</div> : null}
+      <section className="panel mb-4 p-4">
         <div className="grid gap-3 md:grid-cols-3">
           <label className="text-sm text-slate-600">
             Policy Version
@@ -162,7 +162,7 @@ export default function ImpactLevelMaster() {
           </label>
         </div>
       </section>
-      <section className="panel rounded-lg shadow-sm border border-slate-100 p-6 mb-6">
+      <section className="panel p-6 mb-6">
         <div className="mb-5 border-b border-line pb-4 flex items-center justify-between">
           <div>
             <h2 className="text-lg font-bold text-slate-900">{editingId ? `Edit Impact Level: ${form.level_code}` : 'Add New Impact Level'}</h2>
@@ -263,36 +263,36 @@ export default function ImpactLevelMaster() {
           </div>
         </div>
       </section>
-      <section className="panel table-contain mt-6 overflow-x-auto rounded-lg shadow-sm border border-slate-100">
-        <table className="w-full text-left text-sm whitespace-nowrap">
-          <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-wider text-slate-500">
+      <section className="panel table-contain mt-6 overflow-x-auto">
+        <table className="w-full text-sm whitespace-nowrap">
+          <thead className="bg-slate-50 text-center text-[11px] font-bold uppercase tracking-wider text-slate-500">
             <tr>
               <th className="px-5 py-4">Code</th>
               <th className="px-5 py-4">Name</th>
               <th className="px-5 py-4">Air Rules</th>
               <th className="px-5 py-4">Ground / Conveyance</th>
-              <th className="px-5 py-4 text-center">Twin Sharing</th>
-              <th className="px-5 py-4 text-center">Rates per KM (4W / 2W)</th>
-              <th className="px-5 py-4 text-center">Status</th>
-              <th className="px-5 py-4 text-right">Actions</th>
+              <th className="px-5 py-4">Twin Sharing</th>
+              <th className="px-5 py-4">Rates per KM (4W / 2W)</th>
+              <th className="px-5 py-4">Status</th>
+              <th className="px-5 py-4">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {levels.map((level) => (
               <tr key={level.id} className="hover:bg-slate-50/50 transition-colors">
-                <td className="px-5 py-4 font-bold text-slate-900">{level.level_code}</td>
-                <td className="px-5 py-4 font-semibold text-slate-700">{level.level_name}</td>
-                <td className="px-5 py-4">
-                  <div className="flex flex-col">
+                <td className="px-5 py-4 text-center font-bold text-slate-900">{level.level_code}</td>
+                <td className="px-5 py-4 text-center font-semibold text-slate-700">{level.level_name}</td>
+                <td className="px-5 py-4 text-center">
+                  <div className="flex flex-col items-center">
                     <span className={`inline-flex w-fit items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${level.air_eligibility === 'YES' ? 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/20' : level.air_eligibility === 'NO' ? 'bg-red-50 text-red-700 ring-1 ring-inset ring-red-600/10' : 'bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-600/20'}`}>{level.air_eligibility}</span>
                     {level.air_class_allowed && <span className="mt-1 text-xs text-slate-500">{level.air_class_allowed.replace('_', ' ')}</span>}
                   </div>
                 </td>
-                <td className="px-5 py-4">
-                  <div className="max-w-[250px] truncate text-xs text-slate-600" title={(level.train_classes_allowed || []).join(', ')}>
+                <td className="px-5 py-4 text-center">
+                  <div className="max-w-[250px] truncate text-xs text-slate-600 mx-auto" title={(level.train_classes_allowed || []).join(', ')}>
                     <strong className="text-slate-800">Train:</strong> {(level.train_classes_allowed || []).join(', ') || '-'}
                   </div>
-                  <div className="max-w-[250px] truncate mt-1 text-xs text-slate-600" title={(level.local_conveyance_modes || []).join(', ')}>
+                  <div className="max-w-[250px] truncate mt-1 text-xs text-slate-600 mx-auto" title={(level.local_conveyance_modes || []).join(', ')}>
                     <strong className="text-slate-800">Local:</strong> {(level.local_conveyance_modes || []).join(', ') || '-'}
                   </div>
                 </td>
@@ -311,8 +311,8 @@ export default function ImpactLevelMaster() {
                     <span className="inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700 ring-1 ring-inset ring-emerald-600/20">Active</span>
                   )}
                 </td>
-                <td className="px-5 py-4 text-right">
-                  <div className="flex justify-end gap-2">
+                <td className="px-5 py-4 text-center">
+                  <div className="flex justify-center gap-2">
                     {!isViewOnly && (
                       <button className="btn-secondary h-8 px-3 text-xs font-medium text-slate-700" onClick={() => {
                         setForm({

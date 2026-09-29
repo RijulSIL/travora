@@ -38,7 +38,14 @@ export const reimbursementApi = {
     }),
   invoiceExtraction: (invoiceId) => api.get(`invoices/${invoiceId}/extraction`),
   invoiceFileBlob: (invoiceId) => api.get(`invoices/${invoiceId}/file`, { responseType: 'blob' }),
+  uploadPaymentProof: (invoiceId, formData) =>
+    api.post(`invoices/${invoiceId}/payment-proof`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }),
+  paymentProofFileBlob: (invoiceId) =>
+    api.get(`invoices/${invoiceId}/payment-proof-file`, { responseType: 'blob' }),
   updateInvoiceFields: (invoiceId, payload) => api.put(`invoices/${invoiceId}/fields`, payload),
+  deleteInvoice: (invoiceId) => api.delete(`invoices/${invoiceId}`),
   validateGstin: (gstin) => api.post('invoices/validate-gstin', { gstin }),
   saveClaimDraft: (payload) => api.post('claims/draft', payload),
   policyCheck: (claimId) => api.get(`claims/${claimId}/policy-check`),
@@ -58,6 +65,7 @@ export const reimbursementApi = {
   managerAnalytics: () => api.get('reports/manager/team-spend'),
 
   gstSummary: (params) => api.get('finance/gst-summary', { params }),
+  spendByCategory: (params) => api.get('finance/spend-by-category', { params }),
   policyViolations: (params) => api.get('reports/policy-violations', { params }),
   exportGstr2b: (params) =>
     api.get('finance/gstr2b/export', { params: { ...params, format: 'csv' }, responseType: 'blob' }),

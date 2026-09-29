@@ -1,5 +1,6 @@
 import asyncio
 import smtplib
+from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -12,7 +13,13 @@ from app.models.auth import User
 from app.models.claim_workflow import Notification
 
 
-def send_email_sync(to_email: str, subject: str, body_text: str, body_html: str | None = None) -> None:
+def send_email_sync(
+    to_email: str,
+    subject: str,
+    body_text: str,
+    body_html: str | None = None,
+    attachments: list[dict] | None = None,
+) -> None:
     """
     Synchronous SMTP dispatch block.
     If smtp_host is unset/empty or matches placeholder, functions in SIMULATOR mode.
@@ -24,21 +31,25 @@ def send_email_sync(to_email: str, subject: str, body_text: str, body_html: str 
         print(f"To:      {to_email}")
         print(f"Subject: {subject}")
         print(f"Body:\n{body_text}")
+        if attachments:
+            names = ", ".join(a["filename"] for a in attachments)
+            print(f"Attachments: {names}")
         print("==================================================\n")
         return
 
-    # Real SMTP send
-    msg = MIMEMultipart("alternative")
+    # Real SMTP send — "mixed" so attachments and the text/html alternative can coexist.
+    msg = MIMEMultipart("mixed")
     msg["Subject"] = subject
     msg["From"] = settings.smtp_from_email
     msg["To"] = to_email
 
+    alt = MIMEMultipart("alternative")
     # Plaintext fallback
-    msg.attach(MIMEText(body_text, "plain"))
-    
+    alt.attach(MIMEText(body_text, "plain"))
+
     # HTML body
     if body_html:
-        msg.attach(MIMEText(body_html, "html"))
+        alt.attach(MIMEText(body_html, "html"))
     else:
         # Default simple template if none provided
         simple_html = f"""
@@ -54,7 +65,13 @@ def send_email_sync(to_email: str, subject: str, body_text: str, body_html: str 
         </body>
         </html>
         """
-        msg.attach(MIMEText(simple_html, "html"))
+        alt.attach(MIMEText(simple_html, "html"))
+    msg.attach(alt)
+
+    for attachment in attachments or []:
+        part = MIMEApplication(attachment["content"], Name=attachment["filename"])
+        part["Content-Disposition"] = f'attachment; filename="{attachment["filename"]}"'
+        msg.attach(part)
 
     try:
         # Connect to SMTP
@@ -86,11 +103,17 @@ def send_email_sync(to_email: str, subject: str, body_text: str, body_html: str 
         print(f"[SMTP ERROR] Failed to send email to {to_email} via {host}:{port}: {e}")
 
 
-async def send_email_async(to_email: str, subject: str, body_text: str, body_html: str | None = None) -> None:
+async def send_email_async(
+    to_email: str,
+    subject: str,
+    body_text: str,
+    body_html: str | None = None,
+    attachments: list[dict] | None = None,
+) -> None:
     """
     Dispatches the email asynchronously via a separate thread worker.
     """
-    await asyncio.to_thread(send_email_sync, to_email, subject, body_text, body_html)
+    await asyncio.to_thread(send_email_sync, to_email, subject, body_text, body_html, attachments)
 
 
 async def create_notification(

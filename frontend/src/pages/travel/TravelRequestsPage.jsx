@@ -6,16 +6,19 @@ import {
   Clock, Info, ShieldAlert, ArrowUpRight,
   X, ChevronDown, ChevronUp, GitBranch
 } from 'lucide-react';
-import { useAuthStore, selectResolvedRole } from '../../store/authStore';
+import { useAuthStore } from '../../store/authStore';
 
 import TicketPreviewDrawer from '../../components/ui/TicketPreviewDrawer';
 import TravelRequestProgress from '../../components/travel/TravelRequestProgress';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
+import Pagination from '../../components/ui/Pagination';
 import SubmissionAnimation from '../../components/ui/SubmissionAnimation';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import useFormValidation from '../../hooks/useFormValidation';
+import { usePagination } from '../../hooks/usePagination';
 import useToast from '../../hooks/useToast';
 import { reimbursementApi } from '../../services/reimbursementApi';
+import { claimNewPath } from '../../utils/claimRoutes';
 import { required } from '../../utils/validators';
 import useBodyScrollLock from '../../hooks/useBodyScrollLock';
 
@@ -159,6 +162,8 @@ export default function TravelRequestsPage() {
   }, [profile, form]);
 
   const tripIdsCsv = useMemo(() => (trips || []).filter((x) => x?.id).map((t) => t.id).join(','), [trips]);
+  const requestsPagination = usePagination(rows);
+  const tripsPagination = usePagination(trips);
 
   const [policyError, setPolicyError] = useState(null);
   const [exceptionReason, setExceptionReason] = useState('');
@@ -339,7 +344,7 @@ export default function TravelRequestsPage() {
   }
 
   return (
-    <section className="mx-auto max-w-6xl space-y-6 px-4 py-4">
+    <section className="space-y-6">
       {/* Header Panel */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between border-b border-slate-200 pb-5 gap-4">
         <div>
@@ -381,7 +386,7 @@ export default function TravelRequestsPage() {
           {tab === 'trips' && tripIdsCsv ? (
             <Link
               className="inline-flex h-9 items-center justify-center gap-1 px-4 rounded-lg border border-slate-250 hover:bg-slate-50 text-xs font-bold text-slate-700 transition-all duration-200"
-              to={`/claims/draft?tripIds=${encodeURIComponent(tripIdsCsv)}`}
+              to={`${claimNewPath('TRAVEL')}?tripIds=${encodeURIComponent(tripIdsCsv)}`}
             >
               Link to Claim <ArrowUpRight size={13} />
             </Link>
@@ -408,24 +413,25 @@ export default function TravelRequestsPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs border-collapse min-w-[720px]">
               <thead>
-                <tr className="border-b border-slate-200 bg-slate-100/60 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                <tr className="border-b border-slate-200 bg-slate-100/60 text-center text-[10px] font-bold text-slate-500 uppercase tracking-wider">
                   <th className="w-8 px-2 py-3" />
+                  <th className="px-5 py-3 whitespace-nowrap">S. No</th>
                   <th className="px-5 py-3">Travel Date</th>
                   <th className="px-5 py-3">Route</th>
                   <th className="px-5 py-3">Mode</th>
                   <th className="px-5 py-3">Status</th>
-                  <th className="px-5 py-3 text-right">Actions</th>
+                  <th className="px-5 py-3">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-150 font-medium text-slate-700">
                 {(rows || []).length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-5 py-8 text-center text-slate-400 italic">
+                    <td colSpan={7} className="px-5 py-8 text-center text-slate-400 italic">
                       No travel requests created yet.
                     </td>
                   </tr>
                 ) : (
-                  rows.map(({ request }) => {
+                  requestsPagination.pageItems.map(({ request }, index) => {
                     const statusDetails = getStatusDetails(request.status);
                     const isExpanded = expandedIds.has(request.id);
 
@@ -435,7 +441,7 @@ export default function TravelRequestsPage() {
                           <td className="px-2 py-3">
                             <button
                               type="button"
-                              className="flex h-6 w-6 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors"
+                              className="flex h-6 w-6 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors"
                               onClick={() => toggleExpand(request.id)}
                               aria-label={isExpanded ? 'Hide approval progress' : 'Show approval progress'}
                               title={isExpanded ? 'Hide approval progress' : 'Show approval progress'}
@@ -443,12 +449,15 @@ export default function TravelRequestsPage() {
                               {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                             </button>
                           </td>
-                          <td className="whitespace-nowrap px-5 py-3">
+                          <td className="px-5 py-3 text-center text-slate-500">
+                            {requestsPagination.startIndex + index + 1}
+                          </td>
+                          <td className="whitespace-nowrap px-5 py-3 text-center">
                             {request.trip_type === 'MULTI_CITY' && request.legs?.length > 0 ? request.legs[0].travel_date : request.travel_date}
                           </td>
-                          <td className="px-5 py-3">
+                          <td className="px-5 py-3 text-center">
                             {request.trip_type === 'MULTI_CITY' && request.legs && request.legs.length > 0 ? (
-                              <div className="flex flex-col gap-1">
+                              <div className="flex flex-col items-center gap-1">
                                 {request.legs.map((leg, i) => (
                                   <div key={i} className="flex items-center gap-1 font-bold text-slate-800 text-[11px]">
                                     <ModeIcon mode={leg.travel_mode || request.travel_mode} className="text-slate-400" />
@@ -461,7 +470,7 @@ export default function TravelRequestsPage() {
                                 <div className="mt-0.5"><span className="inline-flex items-center rounded-sm bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600">Multi City</span></div>
                               </div>
                             ) : (
-                              <div className="flex items-center gap-1 font-bold text-slate-800">
+                              <div className="flex items-center justify-center gap-1 font-bold text-slate-800">
                                 <span>{request.from_city}</span>
                                 <ArrowRight size={10} className="text-slate-400" />
                                 <span>{request.to_city}</span>
@@ -471,9 +480,9 @@ export default function TravelRequestsPage() {
                               </div>
                             )}
                           </td>
-                          <td className="px-5 py-3">
+                          <td className="px-5 py-3 text-center">
                             {request.trip_type === 'MULTI_CITY' && request.legs?.length > 0 ? (
-                              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                              <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
                                 {[...new Set(request.legs.map((leg) => leg.travel_mode || request.travel_mode))].map((m) => (
                                   <span key={m} className="flex items-center gap-1">
                                     <ModeIcon mode={m} className="text-slate-400" />
@@ -482,15 +491,15 @@ export default function TravelRequestsPage() {
                                 ))}
                               </div>
                             ) : (
-                              <div className="flex items-center gap-1.5">
+                              <div className="flex items-center justify-center gap-1.5">
                                 <ModeIcon mode={request.travel_mode} className="text-slate-400" />
                                 <span>{request.travel_mode}</span>
                               </div>
                             )}
                           </td>
-                          <td className="px-5 py-3">
-                            <div className="flex items-center gap-1.5">
-                              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[9px] font-bold tracking-tight uppercase ${statusDetails.bg}`}>
+                          <td className="whitespace-nowrap px-5 py-3 text-center">
+                            <div className="flex items-center justify-center gap-1.5">
+                              <span className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-[9px] font-bold tracking-tight uppercase ${statusDetails.bg}`}>
                                 {statusDetails.label}
                               </span>
                               {request.exception ? (
@@ -498,13 +507,13 @@ export default function TravelRequestsPage() {
                               ) : null}
                             </div>
                           </td>
-                          <td className="whitespace-nowrap px-5 py-3 text-right">
-                            <div className="flex justify-end gap-2">
+                          <td className="whitespace-nowrap px-5 py-3 text-center">
+                            <div className="flex justify-center gap-2">
                               {(request.segments || []).filter((s) => s.ticket).map((seg) => (
                                 <button
                                   key={seg.seq}
                                   type="button"
-                                  className="inline-flex h-7 items-center justify-center rounded border border-slate-205 hover:bg-slate-50 text-[10px] font-bold text-slate-700 px-3 transition-all"
+                                  className="inline-flex h-7 items-center justify-center rounded-lg border border-slate-200 hover:bg-slate-50 text-[10px] font-bold text-slate-700 px-3 transition-all"
                                   onClick={() => viewTicket(seg.ticket, `Ticket · ${seg.label}`)}
                                 >
                                   {(request.segments || []).length > 1 ? `View Ticket (${seg.label})` : 'View Ticket'}
@@ -513,7 +522,7 @@ export default function TravelRequestsPage() {
                               {request.status === 'PENDING' || request.status === 'PENDING_EXCEPTION' ? (
                                 <button
                                   type="button"
-                                  className="inline-flex h-7 items-center justify-center rounded border border-rose-200 hover:bg-rose-50 text-[10px] font-bold text-rose-700 px-3 transition-all"
+                                  className="inline-flex h-7 items-center justify-center rounded-lg border border-rose-200 hover:bg-rose-50 text-[10px] font-bold text-rose-700 px-3 transition-all"
                                   onClick={() => setConfirmCancelId(request.id)}
                                 >
                                   Cancel Request
@@ -524,7 +533,7 @@ export default function TravelRequestsPage() {
                         </tr>
                         {isExpanded ? (
                           <tr className="bg-slate-50/60">
-                            <td colSpan={6} className="px-5 py-4 border-b border-slate-150">
+                            <td colSpan={7} className="px-5 py-4 border-b border-slate-150">
                               <TravelRequestProgress request={request} />
                             </td>
                           </tr>
@@ -536,6 +545,14 @@ export default function TravelRequestsPage() {
               </tbody>
             </table>
           </div>
+          <Pagination
+            page={requestsPagination.page}
+            totalPages={requestsPagination.totalPages}
+            onPageChange={requestsPagination.setPage}
+            total={requestsPagination.total}
+            pageSize={requestsPagination.pageSize}
+            startIndex={requestsPagination.startIndex}
+          />
         </div>
       ) : null}
 
@@ -545,52 +562,56 @@ export default function TravelRequestsPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs border-collapse min-w-[720px]">
               <thead>
-                <tr className="border-b border-slate-200 bg-slate-100/60 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                <tr className="border-b border-slate-200 bg-slate-100/60 text-center text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                  <th className="px-5 py-3 whitespace-nowrap">S. No</th>
                   <th className="px-5 py-3">Date</th>
                   <th className="px-5 py-3">Route</th>
                   <th className="px-5 py-3">Provider & Ref</th>
                   <th className="px-5 py-3">Amount</th>
                   <th className="px-5 py-3">Tags</th>
-                  <th className="px-5 py-3 text-right">Ticket</th>
+                  <th className="px-5 py-3">Ticket</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-150 font-medium text-slate-700">
                 {(trips || []).length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-5 py-8 text-center text-slate-400 italic">
+                    <td colSpan={7} className="px-5 py-8 text-center text-slate-400 italic">
                       No trip tickets uploaded yet.
                     </td>
                   </tr>
                 ) : (
-                  trips.map((t) => (
+                  tripsPagination.pageItems.map((t, index) => (
                     <tr key={t.id} className="hover:bg-slate-50/50 transition-colors">
-                      <td className="whitespace-nowrap px-5 py-3">{t.travel_date}</td>
-                      <td className="px-5 py-3">
-                        <div className="flex items-center gap-1 font-bold text-slate-800">
+                      <td className="px-5 py-3 text-center text-slate-500">
+                        {tripsPagination.startIndex + index + 1}
+                      </td>
+                      <td className="whitespace-nowrap px-5 py-3 text-center">{t.travel_date}</td>
+                      <td className="px-5 py-3 text-center">
+                        <div className="flex items-center justify-center gap-1 font-bold text-slate-800">
                           <span>{t.from_city}</span>
                           <ArrowRight size={10} className="text-slate-400" />
                           <span>{t.to_city}</span>
                         </div>
                       </td>
-                      <td className="px-5 py-3">
+                      <td className="px-5 py-3 text-center">
                         <span className="font-bold text-slate-800">{t.provider || '—'}</span>
                         {t.reference_id && <span className="text-slate-400 text-[10px] ml-1">({t.reference_id})</span>}
                       </td>
-                      <td className="px-5 py-3 font-bold text-slate-800">
+                      <td className="px-5 py-3 text-center font-bold text-slate-800">
                         ₹{Number(t.amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
-                      <td className="px-5 py-3">
+                      <td className="px-5 py-3 text-center">
                         {t.booked_by_travel_desk ? (
                           <span className="inline-flex items-center rounded-full bg-indigo-50 border border-indigo-100 px-2 py-0.5 text-[9px] font-bold text-indigo-700 uppercase tracking-tight">
                             Desk Booked
                           </span>
                         ) : null}
                       </td>
-                      <td className="px-5 py-3 text-right">
+                      <td className="px-5 py-3 text-center">
                         {t.desk_ticket_id ? (
                           <button
                             type="button"
-                            className="inline-flex h-7 items-center justify-center rounded border border-slate-205 hover:bg-slate-50 text-[10px] font-bold text-slate-700 px-3 transition-all"
+                            className="inline-flex h-7 items-center justify-center rounded-lg border border-slate-200 hover:bg-slate-50 text-[10px] font-bold text-slate-700 px-3 transition-all"
                             onClick={() => previewTripDesk(t)}
                           >
                             View Ticket
@@ -603,6 +624,14 @@ export default function TravelRequestsPage() {
               </tbody>
             </table>
           </div>
+          <Pagination
+            page={tripsPagination.page}
+            totalPages={tripsPagination.totalPages}
+            onPageChange={tripsPagination.setPage}
+            total={tripsPagination.total}
+            pageSize={tripsPagination.pageSize}
+            startIndex={tripsPagination.startIndex}
+          />
         </div>
       ) : null}
 

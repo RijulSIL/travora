@@ -111,8 +111,8 @@ export default function ExpenseLimitsMatrix() {
           </>
         }
       />
-      {error ? <div className="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error.response?.data?.detail || error.message}</div> : null}
-      <section className="panel mb-4 flex flex-wrap items-center justify-between gap-4 rounded p-4">
+      {error ? <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error.response?.data?.detail || error.message}</div> : null}
+      <section className="panel mb-4 flex flex-wrap items-center justify-between gap-4 p-4">
         <div className="flex items-center gap-4">
           <label className="text-sm font-semibold text-slate-700">
             Policy Version:
@@ -126,16 +126,16 @@ export default function ExpenseLimitsMatrix() {
             ))}
           </select>
         </div>
-        <div className="flex items-center gap-2 text-xs font-medium text-slate-500 bg-slate-50 px-3 py-1.5 rounded border border-slate-200">
+        <div className="flex items-center gap-2 text-xs font-medium text-slate-500 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200">
           <Lock size={14} className="text-red-500" />
           <span>= Hard Block (Expense cannot exceed limit)</span>
         </div>
       </section>
-      <section className="panel table-contain overflow-auto rounded">
-        <table className="min-w-max w-full text-left text-sm">
+      <section className="panel table-contain overflow-auto">
+        <table className="min-w-max w-full text-center text-sm">
           <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-wider text-slate-500">
             <tr>
-              <th rowSpan={2} className="sticky left-0 z-20 bg-slate-50 px-4 py-3 align-bottom border-b border-r border-slate-200 shadow-[4px_0_10px_-4px_rgba(0,0,0,0.1)]">Impact Level</th>
+              <th rowSpan={2} className="sticky left-0 z-20 bg-slate-50 px-4 py-3 text-center align-bottom border-b border-r border-slate-200 shadow-[4px_0_10px_-4px_rgba(0,0,0,0.1)]">Impact Level</th>
               {['A', 'B', 'C'].map((group, idx) => (
                 <th key={group} colSpan={4} className={`border-b border-l border-slate-200 px-3 py-2 text-center bg-slate-100/50 ${idx < 2 ? 'border-r-2 border-r-slate-300' : ''}`}>
                   City Group {group}
@@ -153,7 +153,7 @@ export default function ExpenseLimitsMatrix() {
           <tbody>
             {levels.map((level) => (
               <tr key={level.id} className="border-t border-line hover:bg-slate-50/50 transition-colors group">
-                <td className="sticky left-0 z-10 bg-white group-hover:bg-slate-50 px-4 py-2 font-medium border-r border-slate-200 text-slate-700 shadow-[4px_0_10px_-4px_rgba(0,0,0,0.1)] transition-colors">{level.level_code}</td>
+                <td className="sticky left-0 z-10 bg-white group-hover:bg-slate-50 px-4 py-2 text-center font-medium border-r border-slate-200 text-slate-700 shadow-[4px_0_10px_-4px_rgba(0,0,0,0.1)] transition-colors">{level.level_code}</td>
                 {['A', 'B', 'C'].flatMap((group) => {
                   const key = `${level.id}:${group}`;
                   const limit =
@@ -166,7 +166,7 @@ export default function ExpenseLimitsMatrix() {
                     };
                   return fields.map((field) => (
                     <td key={`${key}-${field}`} className={`px-2 py-1.5 ${field === 'hotel' ? 'border-l border-slate-100' : ''} ${field === 'day_visit' && group !== 'C' ? 'border-r-2 border-r-slate-300' : ''}`}>
-                      <div className="flex items-center justify-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1.5 focus-within:border-brand focus-within:ring-1 focus-within:ring-brand/30 hover:border-slate-300 transition-colors shadow-sm">
+                      <div className="flex items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1.5 focus-within:border-brand focus-within:ring-1 focus-within:ring-brand/30 hover:border-slate-300 transition-colors shadow-sm">
                         <span className="text-[10px] font-semibold text-slate-400">₹</span>
                         <input 
                           className="w-20 bg-transparent p-0 text-xs text-right focus:ring-0 border-none outline-none text-slate-700" 

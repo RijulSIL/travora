@@ -41,46 +41,46 @@ export default function NotificationTemplates() {
     <>
       <PageHeader title="" />
       {error ? (
-        <div className="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
           {error.response?.data?.detail || error.message}
         </div>
       ) : null}
-      <section className="panel table-contain mt-4 overflow-hidden rounded">
-        <table className="w-full text-left text-sm">
-          <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-wider text-slate-500">
+      <section className="panel table-contain mt-4 overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-center text-[11px] font-bold uppercase tracking-wider text-slate-500">
             <tr>
               <th className="px-4 py-3">Key</th>
               <th className="px-4 py-3">Channel</th>
               <th className="px-4 py-3">Subject</th>
               <th className="px-4 py-3">Body Preview</th>
               <th className="px-4 py-3">Updated</th>
-              <th className="px-4 py-3 text-right">Actions</th>
+              <th className="px-4 py-3">Actions</th>
             </tr>
           </thead>
           <tbody>
             {templates.map((template) => (
               <Fragment key={template.id}>
                 <tr className="border-t border-line hover:bg-slate-50/50 transition-colors">
-                  <td className="px-4 py-3 font-semibold text-slate-700">{template.template_key}</td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3 text-center font-semibold text-slate-700">{template.template_key}</td>
+                  <td className="px-4 py-3 text-center">
                     <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-600 ring-1 ring-inset ring-slate-500/20">{template.channel}</span>
                   </td>
-                  <td className="max-w-[240px] px-4 py-3 text-slate-600 truncate" title={template.subject}>
+                  <td className="max-w-[240px] px-4 py-3 text-center text-slate-600 truncate" title={template.subject}>
                     {template.subject || '—'}
                   </td>
-                  <td className="max-w-[320px] px-4 py-3 text-slate-600 truncate" title={template.body_text}>
+                  <td className="max-w-[320px] px-4 py-3 text-center text-slate-600 truncate" title={template.body_text}>
                     {template.body_text || '—'}
                   </td>
-                  <td className="px-4 py-3 text-slate-500 text-xs">
+                  <td className="px-4 py-3 text-center text-slate-500 text-xs">
                     {template.updated_at
                       ? new Date(template.updated_at).toLocaleDateString()
                       : '—'}
                   </td>
-                  <td className="px-4 py-3 text-right">
+                  <td className="px-4 py-3 text-center">
                     {canEdit && (
                       <button
                         type="button"
-                        className="inline-flex items-center justify-center rounded bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-sm ring-1 ring-inset ring-slate-300 hover:bg-slate-50 transition-all"
+                        className="inline-flex items-center justify-center rounded-lg bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-sm ring-1 ring-inset ring-slate-300 hover:bg-slate-50 transition-all"
                         onClick={() => {
                           setEditingId(template.id);
                           setEditForm({ subject: template.subject, body_text: template.body_text });
@@ -134,7 +134,7 @@ export default function NotificationTemplates() {
                           </button>
                         </div>
                         {saveAction.error ? (
-                          <div className="mt-3 text-sm text-red-700 p-2 bg-red-50 rounded border border-red-100">
+                          <div className="mt-3 text-sm text-red-700 p-2 bg-red-50 rounded-lg border border-red-100">
                             {saveAction.error.response?.data?.detail || saveAction.error.message}
                           </div>
                         ) : null}

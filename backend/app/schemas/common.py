@@ -237,3 +237,11 @@ class CompanyProfileIn(BaseModel):
 
 class CompanyProfileOut(CompanyProfileIn):
     id: int
+
+
+class DelegationConfigOut(BaseModel):
+    enabled: bool
+
+
+class DelegationConfigIn(BaseModel):
+    enabled: bool

@@ -5,6 +5,7 @@ import { NavLink } from 'react-router-dom';
 import { useAuthStore } from '../../store/authStore';
 import { hasAnyPermission } from '../../services/permissions';
 import { getFlatNavItems, getNavConfig } from './navConfig';
+import { NAV_ICON_MAP } from './navIcons';
 import MobileMoreSheet from './MobileMoreSheet';
 
 export default function MobileBottomNav({ role }) {
@@ -14,7 +15,7 @@ export default function MobileBottomNav({ role }) {
   const primary = useMemo(() => {
     return getFlatNavItems(role, profile).filter((item) => {
       if (!item.anyOf?.length) return true;
-      return hasAnyPermission(role, item.anyOf);
+      return hasAnyPermission(role, item.anyOf, profile?.delegated_roles);
     });
   }, [role]);
   const mobileItems = useMemo(
@@ -30,18 +31,21 @@ export default function MobileBottomNav({ role }) {
     <>
       <nav className="fixed bottom-0 left-0 right-0 z-[60] border-t border-line bg-white md:hidden">
         <div className="grid grid-cols-5">
-          {mobileItems.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              className={({ isActive }) =>
-                `flex min-h-[44px] flex-col items-center justify-center gap-0.5 px-1 py-1 text-[11px] ${isActive ? 'text-brand' : 'text-slate-600'}`
-              }
-            >
-              <span>{item.emoji}</span>
-              <span>{item.label}</span>
-            </NavLink>
-          ))}
+          {mobileItems.map((item) => {
+            const IconComponent = NAV_ICON_MAP[item.icon];
+            return (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                className={({ isActive }) =>
+                  `flex min-h-[44px] flex-col items-center justify-center gap-0.5 px-1 py-1 text-[11px] ${isActive ? 'text-brand' : 'text-slate-600'}`
+                }
+              >
+                {IconComponent ? <IconComponent size={18} /> : null}
+                <span>{item.label}</span>
+              </NavLink>
+            );
+          })}
           <button
             type="button"
             className="flex min-h-[44px] flex-col items-center justify-center gap-0.5 px-1 py-1 text-[11px] text-slate-600"

@@ -1,3 +1,4 @@
+import { BarChart3, Users } from 'lucide-react';
 import { lazy, Suspense } from 'react';
 import { Navigate, Outlet, Route, Routes } from 'react-router-dom';
 
@@ -21,12 +22,14 @@ const PaymentQueuePage = lazy(() => import('./pages/finance/PaymentQueuePage'));
 const ReportsPage = lazy(() => import('./pages/reports/ReportsPage'));
 const InvoiceReview = lazy(() => import('./pages/InvoiceReview'));
 const InvoiceUpload = lazy(() => import('./pages/InvoiceUpload'));
+const ArchivedInvoices = lazy(() => import('./pages/ArchivedInvoices'));
 const MyClaims = lazy(() => import('./pages/MyClaims'));
 const NotificationsPage = lazy(() => import('./pages/NotificationsPage'));
 const PendingApprovals = lazy(() => import('./pages/PendingApprovals'));
 const AllClaimsPage = lazy(() => import('./pages/claims/AllClaimsPage'));
 const ClaimDetail = lazy(() => import('./pages/claims/ClaimDetail'));
-const ClaimWizard = lazy(() => import('./pages/claims/ClaimWizard'));
+const TravelClaimWizard = lazy(() => import('./pages/claims/TravelClaimWizard'));
+const GeneralReimbursementWizard = lazy(() => import('./pages/claims/GeneralReimbursementWizard'));
 const TravelDeskPage = lazy(() => import('./pages/travel/TravelDeskPage'));
 const TravelRequestsPage = lazy(() => import('./pages/travel/TravelRequestsPage'));
 const CityGroupClassification = lazy(() => import('./pages/admin/CityGroupClassification'));
@@ -46,6 +49,7 @@ const ComplianceDashboard = lazy(() => import('./pages/ComplianceDashboard'));
 const ExceptionRequestsPage = lazy(() => import('./pages/hr/ExceptionRequestsPage'));
 const TeamClaims = lazy(() => import('./pages/team/TeamClaims'));
 const TeamSpend = lazy(() => import('./pages/team/TeamSpend'));
+
 export default function App() {
   return (
     <>
@@ -65,10 +69,12 @@ export default function App() {
 
             <Route element={<RoleGuard permission="submit_claim" />}>
               <Route path="invoices" element={<InvoiceUpload />} />
+              <Route path="invoices/archived" element={<ArchivedInvoices />} />
               <Route path="invoices/:invoiceId/review" element={<InvoiceReview />} />
-              <Route path="claims/draft" element={<Navigate to="/claims/new" replace />} />
-              <Route path="claims/new" element={<ClaimWizard />} />
-              <Route path="claims/:id/edit" element={<ClaimWizard />} />
+              <Route path="claims/travel/new" element={<TravelClaimWizard />} />
+              <Route path="claims/travel/:id/edit" element={<TravelClaimWizard />} />
+              <Route path="claims/general/new" element={<GeneralReimbursementWizard />} />
+              <Route path="claims/general/:id/edit" element={<GeneralReimbursementWizard />} />
               <Route path="claims/my" element={<MyClaims />} />
               <Route path="travel-requests" element={<TravelRequestsPage />} />
             </Route>
@@ -82,14 +88,13 @@ export default function App() {
               <Route path="claims/:id" element={<ClaimDetail />} />
             </Route>
 
-            <Route element={<RoleGuard roles={['HRBP_HR', 'HRBP']} />}>
+            <Route element={<RoleGuard roles={['HRBP_HR', 'HRBP']} delegatableRoles={['HRBP_HR']} />}>
               <Route path="travel-desk" element={<TravelDeskPage />} />
             </Route>
 
             <Route
               element={
                 <RoleGuard
-                  allowDelegate
                   anyOf={['approve_stage_1', 'approve_stage_2', 'approve_stage_3', 'approve_stage_4', 'process_payments', 'approve_exception']}
                 />
               }
@@ -109,7 +114,14 @@ export default function App() {
               <Route path="admin" element={<Outlet />}>
                 <Route index element={<Dashboard />} />
                 <Route path="policy-versions" element={<PolicyVersionManager />} />
-                <Route path="team-budgets" element={<TeamBudgets />} />
+                <Route
+                  path="team-budgets"
+                  element={
+                    <RoleGuard roles={['IT_ADMIN']}>
+                      <TeamBudgets />
+                    </RoleGuard>
+                  }
+                />
                 <Route path="expense-limits" element={<ExpenseLimitsMatrix />} />
                 <Route path="expense-categories" element={<ExpenseCategoryManager />} />
                 <Route path="impact-levels" element={<ImpactLevelMaster />} />
@@ -148,7 +160,7 @@ export default function App() {
               path="team/claims"
               element={
                 <ComingSoon
-                  emoji="👥"
+                  icon={Users}
                   title="My Team Claims (placeholder)"
                   description="Manager team claims are not implemented yet. This link is shown for navigation alignment only."
                 />
@@ -158,7 +170,7 @@ export default function App() {
               path="team/spend"
               element={
                 <ComingSoon
-                  emoji="📊"
+                  icon={BarChart3}
                   title="Team Spend (placeholder)"
                   description="Team spend analytics are not implemented yet. This link is shown for navigation alignment only."
                 />
@@ -166,10 +178,7 @@ export default function App() {
             />
             <Route
               element={
-                <RoleGuard
-                  allowDelegate
-                  anyOf={['approve_stage_2', 'approve_stage_4', 'configure_policy', 'approve_exception']}
-                />
+                <RoleGuard anyOf={['approve_stage_2', 'approve_stage_4', 'configure_policy', 'approve_exception']} />
               }
             >
               <Route path="hr/exceptions" element={<ExceptionRequestsPage />} />

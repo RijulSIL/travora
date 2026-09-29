@@ -25,6 +25,11 @@ class GstSummaryOut(BaseModel):
     itc_eligible_amount: Decimal
 
 
+class SpendByCategoryOut(BaseModel):
+    category: str
+    amount: Decimal
+
+
 class ERPPostIn(BaseModel):
     claim_id: int
     erp_system: str | None = None
@@ -83,6 +88,8 @@ class ReportScheduleOut(BaseModel):
     recipients: list[str]
     filters: dict | None = None
     is_active: bool
+    last_run_at: datetime | None = None
+    next_run_at: datetime | None = None
     created_by_user_id: int
     created_at: datetime
 

@@ -55,4 +55,6 @@ export const adminApi = {
   managerBudgets: () => api.get('/admin/budgets/managers'),
   upsertManagerBudget: (payload) => api.post('/admin/budgets/managers', payload),
   deleteManagerBudget: (id) => api.delete(`/admin/budgets/managers/${id}`),
+  delegationConfig: () => api.get('/admin/delegation-config'),
+  updateDelegationConfig: (payload) => api.put('/admin/delegation-config', payload),
 };

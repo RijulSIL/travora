@@ -1,5 +1,8 @@
+import { Bus, Plane, ReceiptIndianRupee, TrainFront } from 'lucide-react';
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
+
+const MODE_ICONS = { BUS: Bus, TRAIN: TrainFront, FLIGHT: Plane, CLAIM: ReceiptIndianRupee };
 
 export default function SubmissionAnimation({ mode, status, onComplete }) {
   const [phase, setPhase] = useState('idle');
@@ -130,8 +133,12 @@ export default function SubmissionAnimation({ mode, status, onComplete }) {
           }}
         >
           <div className="flex-1">
-            <h3 className="font-bold text-[#0F6B52] text-[18px] mb-1 tracking-tight">
-              {mode === 'BUS' ? '🚌' : mode === 'TRAIN' ? '🚆' : mode === 'FLIGHT' ? '✈' : '🧾'} Request Submitted
+            <h3 className="flex items-center gap-1.5 font-bold text-[#0F6B52] text-[18px] mb-1 tracking-tight">
+              {(() => {
+                const ModeIcon = MODE_ICONS[mode] || ReceiptIndianRupee;
+                return <ModeIcon size={18} className="shrink-0" />;
+              })()}
+              Request Submitted
             </h3>
             <p className="text-[#2E8B74] text-[13px] font-medium leading-relaxed opacity-90">
               Your {mode === 'CLAIM' ? 'claim' : 'trip'} is on its way.<br/>

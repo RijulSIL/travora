@@ -229,13 +229,13 @@ export default function ManagerDashboard() {
         <div className="overflow-x-auto">
           <table className="min-w-[720px] w-full border-collapse text-sm">
             <thead>
-              <tr className="border-b border-slate-100 bg-slate-50/60 text-left text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+              <tr className="border-b border-slate-100 bg-slate-50/60 text-center text-[11px] font-bold text-slate-400 uppercase tracking-wider">
                 <th className="px-5 py-3">Reference</th>
                 <th className="px-5 py-3">Employee</th>
                 <th className="px-5 py-3">Trip</th>
                 <th className="px-5 py-3">Amount</th>
                 <th className="px-5 py-3">SLA</th>
-                <th className="px-5 py-3 text-right">Action</th>
+                <th className="px-5 py-3">Action</th>
               </tr>
             </thead>
             <tbody>
@@ -247,18 +247,18 @@ export default function ManagerDashboard() {
               ) : null}
               {topFive.map((row) => (
                 <tr key={row.claim_id} className="border-b border-slate-50 last:border-none hover:bg-slate-50/50 transition-colors">
-                  <td className="px-5 py-3.5 font-bold text-ink">{row.claim_reference}</td>
-                  <td className="px-5 py-3.5 font-medium text-slate-700">{row.employee_label}</td>
-                  <td className="max-w-[220px] truncate px-5 py-3.5 text-xs text-slate-500">{row.trip_summary}</td>
-                  <td className="px-5 py-3.5 font-bold text-ink">₹{row.amount}</td>
-                  <td className="px-5 py-3.5">
-                    <div className={`inline-flex items-center gap-1.5 text-xs font-semibold ${slaClass(row.sla_bucket)}`}>
+                  <td className="px-5 py-3.5 text-center font-bold text-ink">{row.claim_reference}</td>
+                  <td className="px-5 py-3.5 text-center font-medium text-slate-700">{row.employee_label}</td>
+                  <td className="max-w-[220px] truncate px-5 py-3.5 text-center text-xs text-slate-500">{row.trip_summary}</td>
+                  <td className="px-5 py-3.5 text-center font-bold text-ink">₹{row.amount}</td>
+                  <td className="px-5 py-3.5 text-center">
+                    <div className={`inline-flex items-center justify-center gap-1.5 text-xs font-semibold ${slaClass(row.sla_bucket)}`}>
                       <Clock size={13} className="shrink-0" />
                       <span>{row.sla_remaining_label}</span>
                     </div>
                   </td>
-                  <td className="px-5 py-3.5 text-right">
-                    <div className="inline-flex items-center gap-2">
+                  <td className="px-5 py-3.5 text-center">
+                    <div className="inline-flex items-center justify-center gap-2">
                       <button
                         type="button"
                         className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-all shadow-sm"
@@ -296,12 +296,12 @@ export default function ManagerDashboard() {
         <div className="overflow-x-auto">
           <table className="min-w-[720px] w-full border-collapse text-sm">
             <thead>
-              <tr className="border-b border-slate-100 bg-slate-50/60 text-left text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+              <tr className="border-b border-slate-100 bg-slate-50/60 text-center text-[11px] font-bold text-slate-400 uppercase tracking-wider">
                 <th className="px-5 py-3">Employee</th>
                 <th className="px-5 py-3">When</th>
                 <th className="px-5 py-3">Route</th>
                 <th className="px-5 py-3">Mode</th>
-                <th className="px-5 py-3 text-right">Action</th>
+                <th className="px-5 py-3">Action</th>
               </tr>
             </thead>
             <tbody>
@@ -313,15 +313,15 @@ export default function ManagerDashboard() {
               ) : null}
               {topFiveTravel.map((item) => (
                 <tr key={item.request.id} className="border-b border-slate-50 last:border-none hover:bg-slate-50/50 transition-colors">
-                  <td className="px-5 py-3.5 font-medium text-slate-700">{item.employee_display_name}</td>
-                  <td className="px-5 py-3.5 text-slate-500">
+                  <td className="px-5 py-3.5 text-center font-medium text-slate-700">{item.employee_display_name}</td>
+                  <td className="px-5 py-3.5 text-center text-slate-500">
                     {item.request.trip_type === 'MULTI_CITY' && item.request.legs?.length > 0 ? item.request.legs[0].travel_date : item.request.travel_date}
                   </td>
-                  <td className="px-5 py-3.5 text-ink">
+                  <td className="px-5 py-3.5 text-center text-ink">
                     {item.request.trip_type === 'MULTI_CITY' && item.request.legs && item.request.legs.length > 0 ? (
-                      <div className="flex flex-col gap-1">
+                      <div className="flex flex-col items-center gap-1">
                         {item.request.legs.map((leg, i) => (
-                          <div key={i} className="flex items-center gap-1 text-[11px]">
+                          <div key={i} className="flex items-center justify-center gap-1 text-[11px]">
                             <span>{leg.from_city}</span>
                             <span className="text-slate-400 font-normal">→</span>
                             <span>{leg.to_city}</span>
@@ -330,7 +330,7 @@ export default function ManagerDashboard() {
                         <div className="mt-0.5"><span className="inline-flex items-center rounded-sm bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600">Multi City</span></div>
                       </div>
                     ) : (
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center justify-center gap-1">
                         <span>{item.request.from_city}</span>
                         <span className="text-slate-400 font-normal">→</span>
                         <span>{item.request.to_city}</span>
@@ -340,9 +340,9 @@ export default function ManagerDashboard() {
                       </div>
                     )}
                   </td>
-                  <td className="px-5 py-3.5 text-slate-500">{item.request.travel_mode}</td>
-                  <td className="px-5 py-3.5 text-right">
-                    <div className="inline-flex items-center gap-2">
+                  <td className="px-5 py-3.5 text-center text-slate-500">{item.request.travel_mode}</td>
+                  <td className="px-5 py-3.5 text-center">
+                    <div className="inline-flex items-center justify-center gap-2">
                       <button
                         type="button"
                         disabled={actingTravel || rejectingTravel}
@@ -379,7 +379,7 @@ export default function ManagerDashboard() {
         <div className="overflow-x-auto">
           <table className="min-w-[720px] w-full border-collapse text-sm">
             <thead>
-              <tr className="border-b border-slate-100 bg-slate-50/60 text-left text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+              <tr className="border-b border-slate-100 bg-slate-50/60 text-center text-[11px] font-bold text-slate-400 uppercase tracking-wider">
                 <th className="px-5 py-3">Employee</th>
                 <th className="px-5 py-3">Date</th>
                 <th className="px-5 py-3">Route</th>
@@ -401,15 +401,15 @@ export default function ManagerDashboard() {
               ) : null}
               {teamTrips.map((trip) => (
                 <tr key={trip.id} className="border-b border-slate-50 last:border-none hover:bg-slate-50/50 transition-colors">
-                  <td className="px-5 py-3.5 font-medium text-slate-700">{trip.employee_name}</td>
-                  <td className="px-5 py-3.5 text-slate-500">{trip.travel_date}</td>
-                  <td className="px-5 py-3.5 text-ink">{trip.route}</td>
-                  <td className="px-5 py-3.5">
+                  <td className="px-5 py-3.5 text-center font-medium text-slate-700">{trip.employee_name}</td>
+                  <td className="px-5 py-3.5 text-center text-slate-500">{trip.travel_date}</td>
+                  <td className="px-5 py-3.5 text-center text-ink">{trip.route}</td>
+                  <td className="px-5 py-3.5 text-center">
                     <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-600">
                       {trip.mode}
                     </span>
                   </td>
-                  <td className="px-5 py-3.5 font-mono text-[11px] text-slate-400">{trip.reference}</td>
+                  <td className="px-5 py-3.5 text-center font-mono text-[11px] text-slate-400">{trip.reference}</td>
                 </tr>
               ))}
             </tbody>

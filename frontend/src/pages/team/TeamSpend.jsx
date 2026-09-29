@@ -35,7 +35,7 @@ export default function TeamSpend() {
   const maxSpend = categories.length > 0 ? categories[0][1] : 0;
 
   return (
-    <div className="mx-auto max-w-4xl">
+    <div>
       <div className="mb-6">
         <p className="text-sm text-slate-600">
           Summary of reimbursement spend for your team.

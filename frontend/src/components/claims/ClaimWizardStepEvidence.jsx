@@ -83,7 +83,7 @@ export default function ClaimWizardStepEvidence({
                         <span className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[9px] font-bold ${
                           isReviewed ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
                         }`}>
-                          {invoice.status}
+                          {invoice.status.replaceAll('_', ' ')}
                         </span>
                       </div>
                     </div>
@@ -102,13 +102,17 @@ export default function ClaimWizardStepEvidence({
 
         {/* Footer Actions */}
         <div className="mt-6 flex justify-between border-t border-slate-150 pt-4">
-          <button 
-            type="button" 
-            className="inline-flex h-10 items-center justify-center gap-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 bg-white px-5 text-sm font-bold text-slate-700 transition-all duration-200" 
-            onClick={onBack}
-          >
-            <ArrowLeft size={15} /> Back
-          </button>
+          {onBack ? (
+            <button
+              type="button"
+              className="inline-flex h-10 items-center justify-center gap-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 bg-white px-5 text-sm font-bold text-slate-700 transition-all duration-200"
+              onClick={onBack}
+            >
+              <ArrowLeft size={15} /> Back
+            </button>
+          ) : (
+            <span />
+          )}
           <button 
             type="button" 
             className="inline-flex h-10 items-center justify-center gap-1.5 rounded-lg bg-brand px-5 text-sm font-bold text-white hover:bg-brand/90 transition-all duration-200 shadow-md" 

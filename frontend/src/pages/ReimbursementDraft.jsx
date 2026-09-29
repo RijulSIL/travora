@@ -98,7 +98,7 @@ export default function ReimbursementDraft() {
   const netPayable = report.net_payable || 0;
 
   return (
-      <section className="mx-auto max-w-6xl">
+      <section>
         <div className="mb-5 flex items-start justify-between gap-4">
           <div>
             <p className="text-sm text-slate-600">
@@ -131,7 +131,7 @@ export default function ReimbursementDraft() {
             <div className="overflow-x-auto">
               <table className="min-w-full text-left text-sm">
                 <thead>
-                  <tr className="border-b border-line text-xs text-slate-500">
+                  <tr className="border-b border-line text-center text-xs text-slate-500">
                     <th className="py-2 pr-3">Link</th>
                     <th className="py-2 pr-3">Date</th>
                     <th className="py-2 pr-3">Route</th>
@@ -143,24 +143,24 @@ export default function ReimbursementDraft() {
                 <tbody>
                   {availableTrips.map((t) => (
                     <tr key={t.id} className="border-b border-line/70">
-                      <td className="py-2 pr-3">
+                      <td className="py-2 pr-3 text-center">
                         <input
                           type="checkbox"
                           checked={selectedTripIds.includes(t.id)}
                           onChange={(e) => toggleTrip(t.id, e.target.checked)}
                         />
                       </td>
-                      <td className="whitespace-nowrap py-2 pr-3">{t.travel_date}</td>
-                      <td className="py-2 pr-3">
+                      <td className="whitespace-nowrap py-2 pr-3 text-center">{t.travel_date}</td>
+                      <td className="py-2 pr-3 text-center">
                         {t.from_city} → {t.to_city}
                       </td>
-                      <td className="py-2 pr-3">
+                      <td className="py-2 pr-3 text-center">
                         {t.provider} · {t.reference_id}
                       </td>
-                      <td className="py-2 pr-3">
+                      <td className="py-2 pr-3 text-center">
                         {t.booked_by_travel_desk ? <span className="badge badge-submitted text-[10px]">Desk booked</span> : null}
                       </td>
-                      <td className="py-2">
+                      <td className="py-2 text-center">
                         {t.desk_ticket_id ? (
                           <button
                             type="button"

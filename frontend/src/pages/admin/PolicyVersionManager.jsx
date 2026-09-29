@@ -151,7 +151,7 @@ export default function PolicyVersionManager() {
           </>
         }
       />
-      {error ? <div className="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error.response?.data?.detail || error.message}</div> : null}
+      {error ? <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error.response?.data?.detail || error.message}</div> : null}
       <section className="panel rounded-lg shadow-sm border border-slate-100 p-6 mb-6">
         <div className="mb-5 border-b border-line pb-4">
           <h2 className="text-lg font-bold text-slate-900">Create New Draft Version</h2>
@@ -177,27 +177,27 @@ export default function PolicyVersionManager() {
       </section>
 
       <section className="panel table-contain mt-6 overflow-hidden rounded-lg shadow-sm border border-slate-100">
-        <table className="w-full text-left text-sm whitespace-nowrap">
-          <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-wider text-slate-500">
+        <table className="w-full text-sm whitespace-nowrap">
+          <thead className="bg-slate-50 text-center text-[11px] font-bold uppercase tracking-wider text-slate-500">
             <tr>
               <th className="px-5 py-4">Version</th>
               <th className="px-5 py-4">Effective Dates</th>
               <th className="px-5 py-4 text-center">Status</th>
-              <th className="px-5 py-4 text-right">Actions</th>
+              <th className="px-5 py-4">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {versions.map((version) => (
               <tr key={version.id} className="hover:bg-slate-50/50 transition-colors">
-                <td className="px-5 py-4 font-bold text-slate-900">{version.version_number}</td>
-                <td className="px-5 py-4 font-medium text-slate-600">{version.effective_from} <span className="text-slate-400 mx-1">to</span> {version.effective_to || 'Present'}</td>
+                <td className="px-5 py-4 text-center font-bold text-slate-900">{version.version_number}</td>
+                <td className="px-5 py-4 text-center font-medium text-slate-600">{version.effective_from} <span className="text-slate-400 mx-1">to</span> {version.effective_to || 'Present'}</td>
                 <td className="px-5 py-4 text-center">
                   <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-bold ${version.status === 'ACTIVE' ? 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/20' : version.status === 'DRAFT' ? 'bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-600/20' : 'bg-slate-100 text-slate-600 ring-1 ring-inset ring-slate-500/20'}`}>
                     {version.status}
                   </span>
                 </td>
-                <td className="px-5 py-4 text-right">
-                  <div className="flex justify-end gap-2">
+                <td className="px-5 py-4 text-center">
+                  <div className="flex justify-center gap-2">
                     {version.status === 'DRAFT' && !isViewOnly ? (
                       <>
                         <button className="btn-secondary h-8 px-3 text-[11px] font-bold" onClick={() => navigate(`/admin/impact-levels?versionId=${version.id}`)}>Edit Levels</button>

@@ -1,3 +1,4 @@
+import { CheckCircle2, XCircle } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 
@@ -8,6 +9,8 @@ import useBodyScrollLock from '../../hooks/useBodyScrollLock';
 export default function InvoicePreviewDrawer({ open, onClose, invoice }) {
   const [extraction, setExtraction] = useState(null);
   const [fileUrl, setFileUrl] = useState('');
+  const [proofUrl, setProofUrl] = useState('');
+  const [proofContentType, setProofContentType] = useState('');
   const [tab, setTab] = useState('preview');
   useBodyScrollLock(open);
 
@@ -15,6 +18,7 @@ export default function InvoicePreviewDrawer({ open, onClose, invoice }) {
     if (!open || !invoice?.id) return;
     let mounted = true;
     let nextUrl = '';
+    let nextProofUrl = '';
     (async () => {
       const [exRes, fileRes] = await Promise.all([
         reimbursementApi.invoiceExtraction(invoice.id),
@@ -25,6 +29,20 @@ export default function InvoicePreviewDrawer({ open, onClose, invoice }) {
       const blob = new Blob([fileRes.data], { type: fileRes.headers['content-type'] || 'application/octet-stream' });
       nextUrl = URL.createObjectURL(blob);
       setFileUrl(nextUrl);
+
+      if (invoice.payment_proof_original_filename) {
+        try {
+          const proofRes = await reimbursementApi.paymentProofFileBlob(invoice.id);
+          if (!mounted) return;
+          const contentType = proofRes.headers['content-type'] || 'application/octet-stream';
+          const proofBlob = new Blob([proofRes.data], { type: contentType });
+          nextProofUrl = URL.createObjectURL(proofBlob);
+          setProofContentType(contentType);
+          setProofUrl(nextProofUrl);
+        } catch {
+          setProofUrl('');
+        }
+      }
     })().catch(() => {
       setExtraction(null);
       setFileUrl('');
@@ -32,10 +50,15 @@ export default function InvoicePreviewDrawer({ open, onClose, invoice }) {
     return () => {
       mounted = false;
       if (nextUrl) URL.revokeObjectURL(nextUrl);
+      if (nextProofUrl) URL.revokeObjectURL(nextProofUrl);
     };
-  }, [open, invoice?.id]);
+  }, [open, invoice?.id, invoice?.payment_proof_original_filename]);
 
   const isPdf = useMemo(() => (invoice?.content_type || '').includes('pdf') || (invoice?.original_filename || '').toLowerCase().endsWith('.pdf'), [invoice]);
+  const isProofPdf = useMemo(
+    () => proofContentType.includes('pdf') || (invoice?.payment_proof_original_filename || '').toLowerCase().endsWith('.pdf'),
+    [proofContentType, invoice],
+  );
 
   if (!open || !invoice) return null;
   return createPortal(
@@ -52,9 +75,9 @@ export default function InvoicePreviewDrawer({ open, onClose, invoice }) {
           <button className={`btn-secondary ${tab === 'data' ? 'ring-2 ring-brand/30' : ''}`} onClick={() => setTab('data')}>Extracted Data</button>
         </div>
         <div className="grid gap-4 md:grid-cols-2">
-          <div className={`rounded border border-line p-3 ${tab === 'preview' ? 'block' : 'hidden'} md:block`}>
+          <div className={`rounded-lg border border-line p-3 ${tab === 'preview' ? 'block' : 'hidden'} md:block`}>
             <div className="mb-2 text-xs font-semibold uppercase text-slate-500">File Preview</div>
-            <div className="h-[60vh] overflow-hidden rounded border border-line">
+            <div className="h-[60vh] overflow-hidden rounded-lg border border-line">
               {!fileUrl ? (
                 <div className="p-4 text-sm text-slate-500">Loading preview...</div>
               ) : isPdf ? (
@@ -74,7 +97,7 @@ export default function InvoicePreviewDrawer({ open, onClose, invoice }) {
               </a>
             ) : null}
           </div>
-          <div className={`rounded border border-line p-3 ${tab === 'data' ? 'block' : 'hidden'} md:block`}>
+          <div className={`rounded-lg border border-line p-3 ${tab === 'data' ? 'block' : 'hidden'} md:block`}>
             <div className="mb-2 text-xs font-semibold uppercase text-slate-500">Extracted Data</div>
             {!extraction ? (
               <div className="text-sm text-slate-500">Loading extracted fields...</div>
@@ -82,10 +105,10 @@ export default function InvoicePreviewDrawer({ open, onClose, invoice }) {
               <div className="overflow-hidden rounded-lg border border-line">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="bg-slate-50 text-left text-xs font-semibold uppercase text-slate-600">
+                    <tr className="bg-slate-50 text-center text-xs font-semibold uppercase text-slate-600">
                       <th className="px-4 py-3">Field</th>
                       <th className="px-4 py-3">Value</th>
-                      <th className="px-4 py-3 text-right">Confidence</th>
+                      <th className="px-4 py-3">Confidence</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-line">
@@ -99,13 +122,13 @@ export default function InvoicePreviewDrawer({ open, onClose, invoice }) {
 
                       return (
                         <tr key={field.id} className="hover:bg-slate-50/50">
-                          <td className="px-4 py-3 font-medium text-slate-700">
+                          <td className="px-4 py-3 text-center font-medium text-slate-700">
                             {field.field_key.replace(/_/g, ' ')}
                           </td>
-                          <td className="px-4 py-3 text-ink">
+                          <td className="px-4 py-3 text-center text-ink">
                             {field.final_value || field.original_value || '—'}
                           </td>
-                          <td className="px-4 py-3 text-right">
+                          <td className="px-4 py-3 text-center">
                             <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${badgeColor}`}>
                               {conf.toFixed(0)}%
                             </span>
@@ -121,6 +144,49 @@ export default function InvoicePreviewDrawer({ open, onClose, invoice }) {
               </div>
             )}
           </div>
+        </div>
+
+        <div
+          className={`mt-4 rounded-lg border p-3 ${
+            invoice.payment_proof_original_filename ? 'border-emerald-200 bg-emerald-50/40' : 'border-rose-200 bg-rose-50/40'
+          }`}
+        >
+          <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase text-slate-600">
+            {invoice.payment_proof_original_filename ? (
+              <CheckCircle2 size={15} className="text-emerald-600" />
+            ) : (
+              <XCircle size={15} className="text-rose-600" />
+            )}
+            Payment Proof
+          </div>
+          {invoice.payment_proof_original_filename ? (
+            <>
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
+                <span className="truncate font-medium" title={invoice.payment_proof_original_filename}>
+                  {invoice.payment_proof_original_filename}
+                </span>
+                <span>
+                  {invoice.payment_proof_uploaded_at ? `Uploaded ${formatDate(invoice.payment_proof_uploaded_at)}` : null}
+                </span>
+              </div>
+              <div className="mt-2 h-[40vh] overflow-hidden rounded-lg border border-line bg-white">
+                {!proofUrl ? (
+                  <div className="p-4 text-sm text-slate-500">Loading payment proof...</div>
+                ) : isProofPdf ? (
+                  <iframe title="Payment proof" src={`${proofUrl}#toolbar=0&zoom=page-width`} className="h-full w-full border-0" />
+                ) : (
+                  <img src={proofUrl} alt="Payment proof" className="h-full w-full object-contain" />
+                )}
+              </div>
+              {proofUrl ? (
+                <a href={proofUrl} download={invoice.payment_proof_original_filename} className="btn-secondary mt-3">
+                  Download Payment Proof
+                </a>
+              ) : null}
+            </>
+          ) : (
+            <p className="text-xs text-rose-700">No payment proof was attached to this invoice.</p>
+          )}
         </div>
       </div>
     </div>,

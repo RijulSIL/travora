@@ -56,8 +56,8 @@ export default function CityGroupClassification() {
 
   return (
     <>
-      {error ? <div className="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error.response?.data?.detail || error.message}</div> : null}
-      <section className="panel rounded-lg p-6 shadow-sm border border-slate-100 mb-6">
+      {error ? <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error.response?.data?.detail || error.message}</div> : null}
+      <section className="panel p-6 mb-6">
         <div className="mb-5 border-b border-line pb-4 flex items-center justify-between">
           <h2 className="text-lg font-bold text-slate-900">{editingId ? 'Edit City Classification' : 'Add New City'}</h2>
           {isViewOnly ? <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">View Only</span> : null}
@@ -91,7 +91,7 @@ export default function CityGroupClassification() {
       </section>
       <div className="mt-4 grid gap-6 lg:grid-cols-3">
         {grouped.map(({ group, rows }) => (
-          <section key={group} className="panel rounded-lg shadow-sm border border-slate-100 overflow-hidden flex flex-col bg-white">
+          <section key={group} className="panel overflow-hidden flex flex-col">
             <div className="bg-slate-50/80 border-b border-slate-200 px-5 py-3.5 flex items-center justify-between">
               <h3 className="font-bold text-slate-800">Tier {group} Cities</h3>
               <span className="bg-white text-slate-600 text-[11px] font-bold px-2.5 py-0.5 rounded-full shadow-sm border border-slate-200/60">{rows.length} cities</span>

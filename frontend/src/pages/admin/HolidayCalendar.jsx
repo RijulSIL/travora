@@ -2,8 +2,10 @@ import { Save, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 
 import PageHeader from '../../components/ui/PageHeader';
+import Pagination from '../../components/ui/Pagination';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
+import { usePagination } from '../../hooks/usePagination';
 import { adminApi } from '../../services/adminApi';
 
 const emptyForm = { holiday_date: '', name: '' };
@@ -62,6 +64,7 @@ export default function HolidayCalendar() {
   });
 
   const displayError = loadError || saveAction.error || deleteAction.error;
+  const { page, setPage, totalPages, pageItems, startIndex, pageSize, total } = usePagination(rows);
 
   return (
     <>
@@ -80,12 +83,12 @@ export default function HolidayCalendar() {
         }
       />
       {displayError ? (
-        <div className="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
           {formatApiError(displayError)}
         </div>
       ) : null}
 
-      <section className="panel rounded p-5">
+      <section className="panel p-5">
         <div className="mb-4 pb-3 border-b border-slate-100 flex items-center justify-between">
           <h2 className="text-base font-semibold text-slate-800">{editingId != null ? 'Edit Holiday' : 'Add New Holiday'}</h2>
           {editingId != null && (
@@ -123,27 +126,29 @@ export default function HolidayCalendar() {
         </div>
       </section>
 
-      <section className="panel mt-4 rounded p-4">
+      <section className="panel mt-4 p-4">
         <h2 className="mb-4 text-base font-semibold text-ink">Scheduled Holidays</h2>
-        <div className="overflow-hidden rounded border border-slate-200">
+        <div className="overflow-hidden rounded-lg border border-slate-200">
           <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-wider text-slate-500">
+            <thead className="bg-slate-50 text-center text-[11px] font-bold uppercase tracking-wider text-slate-500">
               <tr>
-                <th className="px-4 py-3 text-left">Date</th>
-                <th className="px-4 py-3 text-left">Name</th>
-                <th className="px-4 py-3 text-right">Actions</th>
+                <th className="px-4 py-3 whitespace-nowrap">S. No</th>
+                <th className="px-4 py-3">Date</th>
+                <th className="px-4 py-3">Name</th>
+                <th className="px-4 py-3">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
+              {pageItems.map((row, index) => (
                 <tr key={row.id} className="border-t border-line hover:bg-slate-50/50 transition-colors group">
-                  <td className="px-4 py-3 text-slate-600">{new Date(row.holiday_date).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}</td>
-                  <td className="px-4 py-3 font-semibold text-slate-800">{row.name}</td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <td className="px-4 py-3 text-center text-slate-500">{startIndex + index + 1}</td>
+                  <td className="px-4 py-3 text-center text-slate-600">{new Date(row.holiday_date).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}</td>
+                  <td className="px-4 py-3 text-center font-semibold text-slate-800">{row.name}</td>
+                  <td className="px-4 py-3 text-center">
+                    <div className="flex items-center justify-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button
                         type="button"
-                        className="inline-flex items-center justify-center rounded bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-sm ring-1 ring-inset ring-slate-300 hover:bg-slate-50 transition-all"
+                        className="inline-flex items-center justify-center rounded-lg bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-sm ring-1 ring-inset ring-slate-300 hover:bg-slate-50 transition-all"
                         title="Edit Holiday"
                         onClick={() => {
                           setEditingId(row.id);
@@ -154,7 +159,7 @@ export default function HolidayCalendar() {
                       </button>
                       <button
                         type="button"
-                        className="inline-flex items-center justify-center rounded bg-white p-1.5 text-slate-400 shadow-sm ring-1 ring-inset ring-slate-300 hover:bg-red-50 hover:text-red-600 disabled:opacity-50 transition-all"
+                        className="inline-flex items-center justify-center rounded-lg bg-white p-1.5 text-slate-400 shadow-sm ring-1 ring-inset ring-slate-300 hover:bg-red-50 hover:text-red-600 disabled:opacity-50 transition-all"
                         disabled={deleteAction.loading}
                         title="Delete Holiday"
                         onClick={() => deleteAction.run(row.id)}
@@ -167,7 +172,7 @@ export default function HolidayCalendar() {
               ))}
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={3} className="px-4 py-8 text-center text-slate-500">
+                  <td colSpan={4} className="px-4 py-8 text-center text-slate-500">
                     No holidays defined yet.
                   </td>
                 </tr>
@@ -175,6 +180,7 @@ export default function HolidayCalendar() {
             </tbody>
           </table>
         </div>
+        <Pagination page={page} totalPages={totalPages} onPageChange={setPage} total={total} pageSize={pageSize} startIndex={startIndex} />
       </section>
     </>
   );

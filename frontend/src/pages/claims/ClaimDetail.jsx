@@ -1,15 +1,17 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { FileText, Plane, Eye, Download, Send, AlertTriangle } from 'lucide-react';
+import { FileText, Plane, Eye, Download, Send, AlertTriangle, CheckCircle2 } from 'lucide-react';
 
 import ApprovalStepper from '../../components/claims/ApprovalStepper';
-import ClaimTimeline from '../../components/claims/ClaimTimeline';
+import ClaimStatusBadge from '../../components/ui/ClaimStatusBadge';
+import ReimbursementCategoryBadge from '../../components/ui/ReimbursementCategoryBadge';
 import InvoicePreviewDrawer from '../../components/ui/InvoicePreviewDrawer';
 import Skeleton from '../../components/ui/Skeleton';
 import TicketPreviewDrawer from '../../components/ui/TicketPreviewDrawer';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import useToast from '../../hooks/useToast';
 import { reimbursementApi } from '../../services/reimbursementApi';
+import { claimEditPath } from '../../utils/claimRoutes';
 import { formatCurrency, formatDatetime } from '../../utils/formatters';
 
 export default function ClaimDetail() {
@@ -65,7 +67,7 @@ export default function ClaimDetail() {
   const sentBackEvent = [...timeline].reverse().find((item) => item.event === 'sent_back');
 
   return (
-    <div className="mx-auto max-w-7xl space-y-6">
+    <div className="space-y-6">
       <div className="grid gap-6 lg:grid-cols-[1.6fr_1fr]">
         <section className="space-y-6">
           <div className="flex justify-end print:hidden">
@@ -84,33 +86,23 @@ export default function ClaimDetail() {
             <div className="flex flex-wrap items-center justify-between gap-4 px-5 py-4 bg-slate-50/50 border-b border-line/60">
               <div>
                 <h1 className="text-xl font-bold text-slate-900 tracking-tight">{claim.claim_reference || `Claim #${claim.id}`}</h1>
-                <p className="mt-1 text-xs font-medium text-slate-500 flex items-center gap-1.5">
-                  <Plane size={13} className="text-slate-400" />
-                  <span>{[claim.office_location, claim.destination_city].filter(Boolean).join(' → ') || 'Trip route pending'}</span>
-                  {claim.departure_date && claim.return_date ? (
-                    <>
-                      <span className="text-slate-300">·</span>
-                      <span>{claim.departure_date} - {claim.return_date}</span>
-                    </>
-                  ) : null}
-                </p>
+                {claim.reimbursement_category !== 'GENERAL' && claim.reimbursement_category !== 'REALLOCATION' ? (
+                  <p className="mt-1 text-xs font-medium text-slate-500 flex items-center gap-1.5">
+                    <Plane size={13} className="text-slate-400" />
+                    <span>{[claim.office_location, claim.destination_city].filter(Boolean).join(' → ') || 'Trip route pending'}</span>
+                    {claim.departure_date && claim.return_date ? (
+                      <>
+                        <span className="text-slate-300">·</span>
+                        <span>{claim.departure_date} - {claim.return_date}</span>
+                      </>
+                    ) : null}
+                  </p>
+                ) : null}
               </div>
-              <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-bold ${
-                claim.status === 'READY_FOR_PAYMENT' || claim.status === 'PAID'
-                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                  : claim.status === 'REJECTED'
-                    ? 'bg-red-50 text-red-700 border-red-200'
-                    : 'bg-amber-50 text-amber-700 border-amber-200'
-              }`}>
-                <span className={`h-1.5 w-1.5 rounded-full ${
-                  claim.status === 'READY_FOR_PAYMENT' || claim.status === 'PAID'
-                    ? 'bg-emerald-500'
-                    : claim.status === 'REJECTED'
-                      ? 'bg-red-500'
-                      : 'bg-amber-500 animate-pulse'
-                }`} />
-                {claim.status}
-              </span>
+              <div className="flex items-center gap-1.5">
+                <ReimbursementCategoryBadge category={claim.reimbursement_category} />
+                <ClaimStatusBadge status={claim.status} />
+              </div>
             </div>
           </div>
 
@@ -138,20 +130,22 @@ export default function ClaimDetail() {
             <div className="overflow-x-auto">
               <table className="w-full border-collapse text-sm">
                 <thead>
-                  <tr className="border-b border-line/60 bg-slate-50/70 text-left text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                  <tr className="border-b border-line/60 bg-slate-50/70 text-center text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                    <th className="px-5 py-3.5 whitespace-nowrap">S. No</th>
                     <th className="px-5 py-3.5">Category</th>
                     <th className="px-5 py-3.5">Claimed</th>
                     <th className="px-5 py-3.5">Policy</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {(claim.expenses || []).map((expense) => {
+                  {(claim.expenses || []).map((expense, index) => {
                     const isCompliant = expense.policy_status === 'Compliant';
                     return (
                       <tr key={expense.id} className="border-b border-slate-100 last:border-none hover:bg-slate-50/50 transition-colors duration-150">
-                        <td className="px-5 py-4 font-semibold text-slate-800">{expense.category_name}</td>
-                        <td className="px-5 py-4 font-bold text-slate-900">{formatCurrency(expense.amount)}</td>
-                        <td className="px-5 py-4">
+                        <td className="px-5 py-4 text-center text-slate-500">{index + 1}</td>
+                        <td className="px-5 py-4 text-center font-semibold text-slate-800">{expense.category_name}</td>
+                        <td className="px-5 py-4 text-center font-bold text-slate-900">{formatCurrency(expense.amount)}</td>
+                        <td className="px-5 py-4 text-center">
                           <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[10px] font-bold ${
                             isCompliant
                               ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
@@ -204,13 +198,24 @@ export default function ClaimDetail() {
             <div className="p-5 space-y-2.5">
               {linkedInvoices.map((invoice) => (
                 <div key={invoice.id} className="flex items-center justify-between rounded-xl border border-slate-100 bg-slate-50/30 p-3.5 text-sm hover:bg-slate-50 transition-colors">
-                  <div className="flex items-center gap-2.5 truncate">
+                  <div className="flex min-w-0 items-center gap-2.5">
                     <FileText size={16} className="text-slate-400 shrink-0" />
                     <span className="truncate font-medium text-slate-700">{invoice.original_filename}</span>
+                    {invoice.payment_proof_original_filename ? (
+                      <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
+                        <CheckCircle2 size={11} />
+                        Payment proof
+                      </span>
+                    ) : (
+                      <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-bold text-rose-700">
+                        <AlertTriangle size={11} />
+                        No payment proof
+                      </span>
+                    )}
                   </div>
                   <button
                     type="button"
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 shadow-sm transition-all active:scale-[0.98]"
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 shadow-sm transition-all active:scale-[0.98]"
                     onClick={() => setInvoicePreview(invoice)}
                   >
                     <Eye size={12} />
@@ -222,48 +227,52 @@ export default function ClaimDetail() {
             </div>
           </div>
 
-          {/* Linked Trips */}
-          <div className="panel overflow-hidden">
-            <div className="border-b border-line/60 bg-slate-50/50 px-5 py-4">
-              <h2 className="text-sm font-bold text-ink uppercase tracking-wider">Linked Trips</h2>
-            </div>
-            <div className="p-5 space-y-2.5">
-              {linkedTrips.map((trip) => (
-                <div key={trip.id} className="flex items-center justify-between rounded-xl border border-slate-100 bg-slate-50/30 p-3.5 text-sm hover:bg-slate-50 transition-colors">
-                  <div className="flex items-center gap-2.5 truncate">
-                    <Plane size={16} className="text-slate-400 shrink-0" />
-                    <span className="truncate font-medium text-slate-700">
-                      {trip.from_city} → {trip.to_city} · {trip.travel_date}
-                    </span>
+          {/* Linked Trips — General/Reallocation claims are never trip-linked (see
+              GeneralReimbursementWizard.jsx, which both share), so this panel has nothing to
+              show for either. */}
+          {claim.reimbursement_category !== 'GENERAL' && claim.reimbursement_category !== 'REALLOCATION' ? (
+            <div className="panel overflow-hidden">
+              <div className="border-b border-line/60 bg-slate-50/50 px-5 py-4">
+                <h2 className="text-sm font-bold text-ink uppercase tracking-wider">Linked Trips</h2>
+              </div>
+              <div className="p-5 space-y-2.5">
+                {linkedTrips.map((trip) => (
+                  <div key={trip.id} className="flex items-center justify-between rounded-xl border border-slate-100 bg-slate-50/30 p-3.5 text-sm hover:bg-slate-50 transition-colors">
+                    <div className="flex items-center gap-2.5 truncate">
+                      <Plane size={16} className="text-slate-400 shrink-0" />
+                      <span className="truncate font-medium text-slate-700">
+                        {trip.from_city} → {trip.to_city} · {trip.travel_date}
+                      </span>
+                    </div>
+                    {trip.desk_ticket_id ? (
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 shadow-sm transition-all active:scale-[0.98]"
+                        onClick={async () => {
+                          try {
+                            const response = await reimbursementApi.travelTicketFileBlob(trip.desk_ticket_id);
+                            setTicketPreview({
+                              open: true,
+                              blob: response.data,
+                              name: `${trip.reference_id || trip.id}-ticket`,
+                              type: response.headers['content-type'] || '',
+                              title: `Trip ${trip.reference_id || trip.id}`,
+                            });
+                          } catch {
+                            showToast('Could not open ticket preview', 'error');
+                          }
+                        }}
+                      >
+                        <Eye size={12} />
+                        <span>View Ticket</span>
+                      </button>
+                    ) : null}
                   </div>
-                  {trip.desk_ticket_id ? (
-                    <button
-                      type="button"
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 shadow-sm transition-all active:scale-[0.98]"
-                      onClick={async () => {
-                        try {
-                          const response = await reimbursementApi.travelTicketFileBlob(trip.desk_ticket_id);
-                          setTicketPreview({
-                            open: true,
-                            blob: response.data,
-                            name: `${trip.reference_id || trip.id}-ticket`,
-                            type: response.headers['content-type'] || '',
-                            title: `Trip ${trip.reference_id || trip.id}`,
-                          });
-                        } catch {
-                          showToast('Could not open ticket preview', 'error');
-                        }
-                      }}
-                    >
-                      <Eye size={12} />
-                      <span>View Ticket</span>
-                    </button>
-                  ) : null}
-                </div>
-              ))}
-              {!linkedTrips.length ? <p className="text-sm text-slate-500">No linked trips.</p> : null}
+                ))}
+                {!linkedTrips.length ? <p className="text-sm text-slate-500">No linked trips.</p> : null}
+              </div>
             </div>
-          </div>
+          ) : null}
         </section>
 
         {/* Right Sidebar */}
@@ -273,7 +282,11 @@ export default function ClaimDetail() {
               <h2 className="text-sm font-bold text-ink uppercase tracking-wider">Approval Stepper</h2>
             </div>
             <div className="p-5">
-              <ApprovalStepper stages={chain?.stages || []} />
+              <ApprovalStepper
+                stages={chain?.stages || []}
+                exceptionStages={chain?.exception_stages || []}
+                upcomingStages={chain?.upcoming_stages || []}
+              />
             </div>
           </div>
           {['SENT_BACK', 'DRAFT'].includes(claim.status) ? (
@@ -298,7 +311,7 @@ export default function ClaimDetail() {
               <button
                 type="button"
                 className="btn-primary mt-4 w-full justify-center gap-1.5"
-                onClick={() => navigate(`/claims/new?edit=${claim.id}`)}
+                onClick={() => navigate(claimEditPath(claim))}
               >
                 {claim.status === 'SENT_BACK' ? <Send size={14} /> : null}
                 <span>{claim.status === 'SENT_BACK' ? 'Edit & Resubmit' : 'Edit Draft'}</span>
@@ -306,16 +319,6 @@ export default function ClaimDetail() {
             </div>
           ) : null}
         </aside>
-      </div>
-
-      {/* Claim Timeline */}
-      <div className="panel overflow-hidden">
-        <div className="border-b border-line/60 bg-slate-50/50 px-5 py-4">
-          <h2 className="text-sm font-bold text-ink uppercase tracking-wider">Claim Timeline</h2>
-        </div>
-        <div className="p-5">
-          <ClaimTimeline items={timeline} />
-        </div>
       </div>
 
       <InvoicePreviewDrawer open={Boolean(invoicePreview)} onClose={() => setInvoicePreview(null)} invoice={invoicePreview} />

@@ -4,11 +4,33 @@ import { useCallback, useEffect, useState } from 'react';
 import PageHeader from '../../components/ui/PageHeader';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
+import useToast from '../../hooks/useToast';
 import { adminApi } from '../../services/adminApi';
 import { reimbursementApi } from '../../services/reimbursementApi';
 import Skeleton from '../../components/ui/Skeleton';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import { formatRole } from '../../utils/formatters';
+
+function ToggleSwitch({ checked, onChange, disabled }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+        checked ? 'bg-brand' : 'bg-slate-300'
+      }`}
+    >
+      <span
+        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+          checked ? 'translate-x-6' : 'translate-x-1'
+        }`}
+      />
+    </button>
+  );
+}
 
 const roles = ['EMPLOYEE', 'REPORTING_MANAGER', 'HRBP_HR', 'PAYROLL', 'FINANCE', 'IT_ADMIN', 'CEO', 'GROUP_HEAD_HR'];
 
@@ -50,6 +72,8 @@ const getInitials = (name, email) => {
 
 export default function UserManagement() {
   useSetPageTitle('User Management');
+  const { showToast } = useToast();
+  const [delegationEnabled, setDelegationEnabled] = useState(true);
   const [users, setUsers] = useState([]);
   const [filters, setFilters] = useState({ department: '', impact_level_id: '', role: '' });
   const [roleDrafts, setRoleDrafts] = useState({});
@@ -98,6 +122,26 @@ export default function UserManagement() {
   useEffect(() => {
     loadUsers();
   }, [loadUsers]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await adminApi.delegationConfig();
+        setDelegationEnabled(Boolean(res.data?.enabled));
+      } catch (err) {
+        console.error('Failed to load delegation config', err);
+      }
+    })();
+  }, []);
+
+  const delegationToggleAction = useAsyncAction(async (next) => {
+    const res = await adminApi.updateDelegationConfig({ enabled: next });
+    setDelegationEnabled(Boolean(res.data?.enabled));
+    showToast(
+      next ? 'Delegation enabled.' : 'Delegation disabled — existing delegations are now inactive.',
+      'success'
+    );
+  });
 
   useEffect(() => {
     (async () => {
@@ -260,70 +304,94 @@ export default function UserManagement() {
           </>
         }
       />
-      <section className="panel rounded p-1 mb-4">
-        <div className="flex flex-wrap items-center gap-3 p-3 bg-slate-50/50 rounded border border-transparent">
-          <div className="flex-1 min-w-[200px] flex items-center bg-white rounded-md border border-slate-200 px-3 py-1.5 focus-within:ring-2 focus-within:ring-brand/20 focus-within:border-brand transition-all">
-            <Search className="text-slate-400 h-4 w-4 mr-2" />
-            <input 
-              className="w-full bg-transparent border-none p-0 text-sm focus:ring-0 text-slate-900 placeholder:text-slate-400" 
-              placeholder="Search by department..." 
-              value={filters.department} 
-              onChange={(event) => setFilters({ ...filters, department: event.target.value })} 
+
+      <section className="panel mb-6 flex flex-wrap items-center justify-between gap-4 p-5">
+        <div>
+          <h3 className="text-[15px] font-bold text-ink">Delegation</h3>
+          <p className="mt-1 max-w-xl text-xs text-slate-500">
+            When enabled, any user can temporarily hand off their current approval queue to a delegate
+            (Profile → Delegation). When disabled, every existing delegation stops taking effect immediately
+            — records aren&apos;t deleted, they just grant nothing while this is off.
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="text-xs font-semibold text-slate-500">{delegationEnabled ? 'Enabled' : 'Disabled'}</span>
+          <ToggleSwitch
+            checked={delegationEnabled}
+            onChange={delegationToggleAction.run}
+            disabled={delegationToggleAction.loading}
+          />
+        </div>
+      </section>
+
+      <section className="panel mb-6 p-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative min-w-[200px] flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <input
+              className="field w-full !pl-9"
+              placeholder="Search by department..."
+              value={filters.department}
+              onChange={(event) => setFilters({ ...filters, department: event.target.value })}
               onKeyDown={(e) => e.key === 'Enter' && searchAction.run()}
             />
           </div>
-          <div className="flex-1 min-w-[150px]">
-            <input 
-              className="field w-full text-sm py-1.5" 
-              placeholder="Impact Level ID" 
-              value={filters.impact_level_id} 
-              onChange={(event) => setFilters({ ...filters, impact_level_id: event.target.value })} 
+          <div className="min-w-[150px] flex-1">
+            <input
+              className="field w-full"
+              placeholder="Impact Level ID"
+              value={filters.impact_level_id}
+              onChange={(event) => setFilters({ ...filters, impact_level_id: event.target.value })}
               onKeyDown={(e) => e.key === 'Enter' && searchAction.run()}
             />
           </div>
-          <div className="flex-1 min-w-[180px]">
-            <select 
-              className="field w-full bg-white text-sm py-1.5" 
-              value={filters.role} 
+          <div className="min-w-[180px] flex-1">
+            <select
+              className="field w-full"
+              value={filters.role}
               onChange={(event) => setFilters({ ...filters, role: event.target.value })}
             >
               <option value="">Any role</option>
               {roles.map((role) => <option key={role} value={role}>{formatRole(role)}</option>)}
             </select>
           </div>
-          <button className="btn-primary shrink-0 h-9" onClick={searchAction.run} disabled={searchAction.loading}>
+          <button className="btn-primary shrink-0" onClick={searchAction.run} disabled={searchAction.loading}>
             Search
           </button>
         </div>
-        {status ? <div className="px-4 pb-3 text-sm font-medium text-emerald-600">{status}</div> : null}
-        {error ? <div className="mx-4 mb-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error.response?.data?.detail || error.message}</div> : null}
+        {status ? <div className="mt-3 text-sm font-medium text-emerald-600">{status}</div> : null}
+        {error ? <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error.response?.data?.detail || error.message}</div> : null}
       </section>
-      <section className="panel table-contain mt-4 overflow-hidden rounded">
+      <section className="panel table-contain overflow-hidden">
         <table className="w-full min-w-[900px] text-left text-sm">
-          <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-wider text-slate-500">
+          <thead className="bg-slate-50 text-center text-[11px] font-bold uppercase tracking-wider text-slate-500">
             <tr>
+              <th className="px-4 py-3 whitespace-nowrap">S. No</th>
               <th className="px-4 py-3">User</th>
               <th className="px-4 py-3">Email</th>
               <th className="px-4 py-3">Department</th>
               <th className="px-4 py-3">Role</th>
-              <th className="px-4 py-3 text-center">Impact Level</th>
+              <th className="px-4 py-3">Impact Level</th>
               <th className="px-4 py-3">Office</th>
               <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {pagedUsers.map((user) => {
+            {pagedUsers.map((user, index) => {
               const currentRole = selectedRole(user);
               const isRoleChanged = currentRole !== (user.role || 'EMPLOYEE');
               return (
                 <tr key={user.user_id} className="border-t border-line text-slate-900 hover:bg-slate-50/50 transition-colors">
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-3">
+                  <td className="px-4 py-3 text-center text-slate-500">
+                    {(currentPage - 1) * USERS_PAGE_SIZE + index + 1}
+                  </td>
+                  <td className="px-4 py-3 text-center">
+                    <div className="flex items-center justify-center gap-3">
                       <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand/10 text-[11px] font-bold text-brand">
                         {getInitials(user.full_name, user.email)}
                       </div>
-                      <div>
+                      <div className="text-left">
                         <button className="font-bold text-left text-ink hover:text-brand hover:underline" onClick={() => openProfile(user)}>
                           {user.full_name || user.email}
                         </button>
@@ -331,20 +399,20 @@ export default function UserManagement() {
                       </div>
                     </div>
                   </td>
-                  <td className="px-4 py-3">{user.email}</td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3 text-center">{user.email}</td>
+                  <td className="px-4 py-3 text-center">
                     {user.department ? (
-                      <span className="inline-flex items-center rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600">
+                      <span className="badge badge-draft">
                         {user.department}
                       </span>
                     ) : (
                       <span className="text-slate-400">—</span>
                     )}
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3 text-center">
                     <div className="relative inline-block w-full max-w-[160px]">
                       <select 
-                        className={`w-full appearance-none rounded border px-3 py-1.5 text-xs font-semibold outline-none transition-colors cursor-pointer pr-8 ${
+                        className={`w-full appearance-none rounded-lg border px-3 py-1.5 text-xs font-semibold outline-none transition-colors cursor-pointer pr-8 ${
                           isRoleChanged
                             ? 'border-amber-300 bg-amber-50 text-amber-800 shadow-sm'
                             : 'border-transparent bg-slate-100 text-slate-700 hover:bg-slate-200 hover:border-slate-300 focus:border-brand focus:bg-white focus:ring-1 focus:ring-brand'
@@ -363,7 +431,7 @@ export default function UserManagement() {
                       if (!level) return <span className="text-slate-400">—</span>;
                       return (
                         <span
-                          className="inline-flex items-center rounded-md bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700"
+                          className="badge badge-draft font-semibold"
                           title={`${level.level_name}${level.policy_version_id !== activePolicyId ? ' (Legacy policy version)' : ''}`}
                         >
                           {level.level_code}
@@ -371,8 +439,8 @@ export default function UserManagement() {
                       );
                     })()}
                   </td>
-                  <td className="px-4 py-3">{user.office_location || <span className="text-slate-400">—</span>}</td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3 text-center">{user.office_location || <span className="text-slate-400">—</span>}</td>
+                  <td className="px-4 py-3 text-center">
                     {user.is_active ? (
                       <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700 ring-1 ring-inset ring-emerald-600/20">
                         Active
@@ -383,10 +451,10 @@ export default function UserManagement() {
                       </span>
                     )}
                   </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-1.5">
+                  <td className="px-4 py-3 text-center">
+                    <div className="flex items-center justify-center gap-1.5">
                       <button 
-                        className="inline-flex items-center justify-center gap-1.5 rounded bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-sm ring-1 ring-inset ring-slate-300 hover:bg-slate-50 disabled:opacity-50 disabled:shadow-none transition-all" 
+                        className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-sm ring-1 ring-inset ring-slate-300 hover:bg-slate-50 disabled:opacity-50 disabled:shadow-none transition-all"
                         onClick={() => roleAction.run(user, currentRole)} 
                         disabled={roleAction.loading || !isRoleChanged}
                       >
@@ -394,7 +462,7 @@ export default function UserManagement() {
                         Save
                       </button>
                       <button 
-                        className="inline-flex items-center justify-center rounded bg-white p-1.5 text-slate-400 shadow-sm ring-1 ring-inset ring-slate-300 hover:bg-red-50 hover:text-red-600 disabled:opacity-50 transition-all" 
+                        className="inline-flex items-center justify-center rounded-lg bg-white p-1.5 text-slate-400 shadow-sm ring-1 ring-inset ring-slate-300 hover:bg-red-50 hover:text-red-600 disabled:opacity-50 transition-all" 
                         onClick={() => setConfirmDeactivate(user)} 
                         disabled={deactivateAction.loading}
                         title="Deactivate User"
@@ -440,7 +508,7 @@ export default function UserManagement() {
       {createOpen ? (
         <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/40 p-4">
           <form
-            className="panel w-full max-w-2xl rounded p-6 shadow-lg max-h-[90vh] overflow-y-auto"
+            className="panel w-full max-w-2xl p-6 max-h-[90vh] overflow-y-auto"
             onSubmit={(event) => {
               event.preventDefault();
               createUserAction.run();
@@ -450,7 +518,7 @@ export default function UserManagement() {
               <h2 className="text-lg font-semibold text-ink">Create User</h2>
               <button
                 type="button"
-                className="rounded p-1 text-slate-500 hover:bg-slate-100"
+                className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
                 onClick={() => {
                   setCreateOpen(false);
                   setCreateForm(emptyCreateForm);
@@ -602,7 +670,7 @@ export default function UserManagement() {
               </div>
             </div>
             {createUserAction.error ? (
-              <div className="mt-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+              <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
                 {createUserAction.error.response?.data?.detail || createUserAction.error.message}
               </div>
             ) : null}
@@ -627,10 +695,10 @@ export default function UserManagement() {
       ) : null}
       {importOpen ? (
         <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/40 p-4">
-          <div className="panel w-full max-w-3xl rounded p-5">
+          <div className="panel w-full max-w-3xl p-5">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-lg font-semibold text-ink">Import Users from CSV</h2>
-              <button className="btn-secondary h-8 px-2" onClick={() => setImportOpen(false)}>
+              <button className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700" onClick={() => setImportOpen(false)}>
                 <X size={16} />
               </button>
             </div>
@@ -680,21 +748,21 @@ export default function UserManagement() {
                 );
               }}
             />
-            <div className="mt-3 max-h-64 overflow-auto rounded border border-line">
+            <div className="mt-3 max-h-64 overflow-auto rounded-lg border border-line">
               <table className="w-full text-sm">
-                <thead className="bg-slate-50">
+                <thead className="bg-slate-50 text-center">
                   <tr>
-                    <th className="px-3 py-2 text-left">Row</th>
-                    <th className="px-3 py-2 text-left">Employee ID</th>
-                    <th className="px-3 py-2 text-left">Name</th>
-                    <th className="px-3 py-2 text-left">Email</th>
-                    <th className="px-3 py-2 text-left">Role</th>
-                    <th className="px-3 py-2 text-left">Validation</th>
+                    <th className="px-3 py-2">Row</th>
+                    <th className="px-3 py-2">Employee ID</th>
+                    <th className="px-3 py-2">Name</th>
+                    <th className="px-3 py-2">Email</th>
+                    <th className="px-3 py-2">Role</th>
+                    <th className="px-3 py-2">Validation</th>
                   </tr>
                 </thead>
                 <tbody>
                   {importRows.map((row) => (
-                    <tr key={row.__row} className={`border-t border-line ${row.__error ? 'bg-red-50' : ''}`}>
+                    <tr key={row.__row} className={`border-t border-line text-center ${row.__error ? 'bg-red-50' : ''}`}>
                       <td className="px-3 py-2">{row.__row}</td>
                       <td className="px-3 py-2">{row.employee_id}</td>
                       <td className="px-3 py-2">{row.full_name}</td>
@@ -722,7 +790,7 @@ export default function UserManagement() {
           <div className="absolute right-0 top-0 h-full w-full max-w-xl overflow-auto bg-white p-5" onClick={(e) => e.stopPropagation()}>
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-lg font-semibold text-ink">User Profile</h2>
-              <button className="btn-secondary h-8 px-2" onClick={() => setSelectedUser(null)}>
+              <button className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700" onClick={() => setSelectedUser(null)}>
                 <X size={16} />
               </button>
             </div>

@@ -19,7 +19,7 @@ python -m venv .venv
 pip install -r requirements.txt
 Copy-Item .env.example .env
 # Edit .env if your MySQL host/port/user/password/db differ from the defaults
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --reload --host 0.0.0.0 --port 9200
 ```
 
 On first startup the backend automatically:
@@ -29,7 +29,7 @@ On first startup the backend automatically:
 3. Seeds policy/impact-level/city-group/expense-category reference data (no-op on subsequent runs).
 4. Creates the IT_ADMIN account from `ADMIN_EMAIL` / `ADMIN_PASSWORD` if it does not already exist.
 
-The API serves at `http://localhost:8000/api/v1` with health checks at `http://localhost:8000/health` and `http://localhost:8000/api/v1/health`.
+The API serves at `http://localhost:9200/api/v1` with health checks at `http://localhost:9200/health` and `http://localhost:9200/api/v1/health`.
 
 ## Run the frontend
 

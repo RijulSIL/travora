@@ -24,10 +24,14 @@ class ModifyAmountBody(BaseModel):
 class PaymentBody(BaseModel):
     utr_reference: str = Field(..., min_length=1)
     amount: Decimal = Field(..., ge=Decimal("0"))
+    tds_deduction: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
 
 
 class ExceptionRequestIn(BaseModel):
-    claim_id: int | None = None
+    # Always required — this endpoint raises an exception against an existing claim's
+    # expense line. Travel-request exceptions are created via a separate path
+    # (create_travel_request_with_exception) that never goes through this schema.
+    claim_id: int
     exception_type: str = Field(..., min_length=1, max_length=128)
     description: str | None = None
 
@@ -86,6 +90,7 @@ class ClaimTimelineEventOut(BaseModel):
     comment: str | None = None
     stage: int | None = None
     utr: str | None = None
+    is_auto: bool = False
 
 
 class NotificationTemplateOut(BaseModel):

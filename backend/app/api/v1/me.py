@@ -102,10 +102,22 @@ async def create_delegation(
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ):
+    from app.core.rbac import DELEGATABLE_PERMISSIONS
+    from app.services.delegation_service import is_delegation_enabled
+
+    if not await is_delegation_enabled(db):
+        raise HTTPException(status_code=409, detail="Delegation is currently disabled by your administrator")
+
     user_id = int(claims["sub"])
+    delegator = await db.get(User, user_id)
+    if delegator is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not DELEGATABLE_PERMISSIONS.get(delegator.role, set()):
+        raise HTTPException(status_code=403, detail="Delegation is not available for your role")
+
     if user_id == payload.delegatee_id:
         raise HTTPException(status_code=400, detail="Cannot delegate to yourself")
-        
+
     delegatee = await db.get(User, payload.delegatee_id)
     if not delegatee:
         raise HTTPException(status_code=404, detail="Delegatee not found")
@@ -188,8 +200,80 @@ async def search_users(
         .limit(10)
     )
     users = result.all()
-    
+
     return [
-        {"id": u.id, "email": u.email, "full_name": u.full_name} 
+        {"id": u.id, "email": u.email, "full_name": u.full_name}
         for u in users
     ]
+
+
+@router.get("/me/org-chart")
+async def get_org_chart(
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+):
+    """Just the viewer's own reporting line — their manager chain up to the top, plus
+    their own subtree of reports. Not the whole company: other branches (peers' teams,
+    unrelated departments) are deliberately left out. Visible to anyone above a plain
+    individual contributor (managers, HR, finance, leadership, admin roles), but not to
+    the EMPLOYEE role. Fields are limited to name/designation/department — nothing from
+    Employee that's sensitive (bank details, cost centre, office location)."""
+    from app.models.employee import Employee
+
+    if Role(claims.get("role")) == Role.EMPLOYEE:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not available for this role")
+
+    user = await db.get(User, int(claims["sub"]))
+    if user is None or not user.employee_id:
+        return {"roots": []}
+
+    employees = (await db.execute(select(Employee).where(Employee.is_active.is_(True)))).scalars().all()
+    by_id = {e.employee_id: e for e in employees}
+    viewer = by_id.get(user.employee_id)
+    if viewer is None:
+        return {"roots": []}
+
+    children_by_manager: dict[str | None, list[Employee]] = {}
+    for e in employees:
+        parent_id = e.reporting_manager_id if e.reporting_manager_id in by_id else None
+        children_by_manager.setdefault(parent_id, []).append(e)
+
+    def build_node(emp: Employee, ancestors: set[str], *, is_viewer: bool = False) -> dict:
+        node = {
+            "employee_id": emp.employee_id,
+            "full_name": emp.full_name,
+            "designation": emp.designation,
+            "department": emp.department,
+            "is_viewer": is_viewer,
+            "children": [],
+        }
+        # Guard against a malformed reporting_manager_id cycle in the underlying HR data
+        # turning this into infinite recursion.
+        if emp.employee_id in ancestors:
+            return node
+        next_ancestors = ancestors | {emp.employee_id}
+        for child in sorted(children_by_manager.get(emp.employee_id, []), key=lambda c: c.full_name):
+            node["children"].append(build_node(child, next_ancestors))
+        return node
+
+    # Walk up the reporting chain (closest manager first), same cycle guard as above.
+    chain: list[Employee] = []
+    seen = {viewer.employee_id}
+    curr = viewer
+    while curr.reporting_manager_id and curr.reporting_manager_id in by_id and curr.reporting_manager_id not in seen:
+        mgr = by_id[curr.reporting_manager_id]
+        chain.append(mgr)
+        seen.add(mgr.employee_id)
+        curr = mgr
+
+    node = build_node(viewer, set(), is_viewer=True)
+    for ancestor in chain:
+        node = {
+            "employee_id": ancestor.employee_id,
+            "full_name": ancestor.full_name,
+            "designation": ancestor.designation,
+            "department": ancestor.department,
+            "is_viewer": False,
+            "children": [node],
+        }
+    return {"roots": [node]}

@@ -25,25 +25,8 @@ async def request_exception(
     db: AsyncSession = Depends(get_db),
 ) -> ExceptionRequestOut:
     user_id = int(claims["sub"])
-    claim_id = payload.claim_id
-    
-    if not claim_id:
-        # Create a shell claim draft in the database
-        from app.models.auth import User
-        from app.models.reimbursement import ClaimDraft, ClaimStatus
-        user = await db.get(User, user_id)
-        claim = ClaimDraft(
-            employee_user_id=user_id,
-            employee_id=user.employee_id if user else None,
-            trip_purpose=f"Auto-generated Shell for Travel Booking Exception ({payload.exception_type})",
-            status=ClaimStatus.DRAFT
-        )
-        db.add(claim)
-        await db.flush()
-        claim_id = claim.id
-
     row = await create_exception_request(
-        claim_id, user_id, payload.exception_type, payload.description, db
+        payload.claim_id, user_id, payload.exception_type, payload.description, db
     )
     return row
 

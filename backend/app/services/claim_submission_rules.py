@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from fastapi import HTTPException, status
 
-from app.models.reimbursement import ClaimDraft
+from app.models.reimbursement import ClaimDraft, ReimbursementCategory
 
 
 def _add_working_days(start: date, days: int) -> date:
@@ -20,6 +20,10 @@ def _add_working_days(start: date, days: int) -> date:
 
 
 def assert_submission_deadline(claim: ClaimDraft, submission_config: dict) -> tuple[bool, int]:
+    # General Reimbursements and Reallocation claims have no trip, so there's no return_date
+    # to anchor a deadline to — the "N working days after return" rule doesn't apply to them.
+    if claim.reimbursement_category in (ReimbursementCategory.GENERAL, ReimbursementCategory.REALLOCATION):
+        return False, 0
     if not claim.return_date:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

@@ -13,6 +13,6 @@ COPY . .
 # Writable upload roots (mounted over in compose for local dev; keep sane defaults for image runs)
 RUN mkdir -p storage/invoices storage/travel_tickets storage/boarding_passes
 
-EXPOSE 8000
+EXPOSE 9200
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9200", "--reload"]

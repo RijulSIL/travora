@@ -1,10 +1,11 @@
-import { Check, X, ArrowLeft, Clock, Circle } from 'lucide-react';
+import { Check, X, ArrowLeft, Clock, Circle, ShieldAlert } from 'lucide-react';
 
 function statusMeta(status) {
   if (status === 'APPROVED') return { icon: Check, className: 'bg-emerald-50 text-emerald-600 border-emerald-200/60' };
   if (status === 'REJECTED') return { icon: X, className: 'bg-red-50 text-red-600 border-red-200/60' };
   if (status === 'SENT_BACK') return { icon: ArrowLeft, className: 'bg-amber-50 text-amber-600 border-amber-200/60' };
   if (status === 'PENDING') return { icon: Clock, className: 'bg-blue-50 text-blue-600 border-blue-200/60 animate-pulse' };
+  if (status === 'AWAITING') return { icon: Circle, className: 'bg-slate-50/60 text-slate-400 border-slate-200/40' };
   return { icon: Circle, className: 'bg-slate-50/60 text-slate-400 border-slate-200/40' };
 }
 
@@ -20,10 +21,71 @@ function slaText(deadlineIso) {
   return { label: `SLA: ${hrs}h ${mins}m remaining`, className: klass };
 }
 
-export default function ApprovalStepper({ stages = [] }) {
-  if (!stages.length) return <p className="text-sm text-slate-500">Approval chain unavailable.</p>;
+function ExceptionApprovalRow({ step }) {
+  const meta = statusMeta(step.status);
+  const IconComponent = step.status === 'PENDING' ? ShieldAlert : meta.icon;
+  return (
+    <div className="rounded-xl border border-amber-100 bg-amber-50/30 p-3.5 shadow-sm">
+      <div className="flex items-center gap-2.5 text-sm font-bold text-slate-800">
+        <span className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border ${meta.className}`}>
+          <IconComponent size={12} className="stroke-[3]" />
+        </span>
+        <span>
+          Exception: {step.exception_type_label} · {step.required_role.replaceAll('_', ' ')} ·{' '}
+          <span className="text-xs uppercase tracking-wider text-slate-500 font-semibold">{step.status}</span>
+        </span>
+      </div>
+      <div className="mt-1.5 pl-[38px] text-xs text-slate-500 font-medium">
+        {step.acted_at
+          ? `${step.acted_by_name ? `${step.acted_by_name} · ` : ''}${new Date(step.acted_at).toLocaleString()}`
+          : step.pending_approver_names?.length
+            ? `Awaiting decision from ${step.pending_approver_names.join(', ')}`
+            : 'Awaiting decision'}
+      </div>
+      {step.comment ? (
+        <div className="mt-2.5 pl-[38px]">
+          <p className="rounded-lg bg-white/60 border border-slate-100/50 px-3 py-2 text-xs italic text-slate-600">
+            &quot;{step.comment}&quot;
+          </p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function UpcomingStageRow({ stage }) {
+  return (
+    <div className="rounded-xl border border-dashed border-slate-200 bg-white p-3.5">
+      <div className="flex items-center gap-2.5 text-sm font-semibold text-slate-400">
+        <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border bg-slate-50/60 text-slate-300 border-slate-200/40">
+          <Circle size={12} className="stroke-[3]" />
+        </span>
+        <span>
+          Stage {stage.stage_number}: {stage.label} ·{' '}
+          <span className="text-xs uppercase tracking-wider">Not started yet</span>
+        </span>
+      </div>
+      <div className="mt-1.5 pl-[38px] text-xs text-slate-400">
+        {stage.pending_approver_names?.length
+          ? `Will go to ${stage.pending_approver_names.join(', ')} once the exception above is resolved.`
+          : 'Starts once the exception above is resolved.'}
+      </div>
+    </div>
+  );
+}
+
+export default function ApprovalStepper({ stages = [], exceptionStages = [], upcomingStages = [] }) {
+  if (!stages.length && !exceptionStages.length) {
+    return <p className="text-sm text-slate-500">Approval chain unavailable.</p>;
+  }
   return (
     <div className="space-y-3.5">
+      {exceptionStages.map((step, idx) => (
+        <ExceptionApprovalRow key={`exc-${step.exception_request_id}-${idx}`} step={step} />
+      ))}
+      {upcomingStages.map((stage) => (
+        <UpcomingStageRow key={`upcoming-${stage.stage_number}`} stage={stage} />
+      ))}
       {stages.map((stage) => {
         const meta = statusMeta(stage.status);
         const IconComponent = meta.icon;
@@ -42,7 +104,11 @@ export default function ApprovalStepper({ stages = [] }) {
               </span>
             </div>
             <div className="mt-1.5 pl-[38px] text-xs text-slate-500 font-medium">
-              {stage.decided_at ? new Date(stage.decided_at).toLocaleString() : 'Not started'}
+              {stage.decided_at
+                ? `${stage.decided_by_name ? `${stage.decided_by_name} · ` : ''}${new Date(stage.decided_at).toLocaleString()}`
+                : stage.pending_approver_names?.length
+                  ? `${stage.status === 'PENDING' ? 'Awaiting' : 'Assigned to'}: ${stage.pending_approver_names.join(', ')}`
+                  : 'Not started'}
             </div>
             {sla ? (
               <div className={`mt-1.5 pl-[38px] text-xs flex items-center gap-1.5 ${sla.className}`}>

@@ -284,11 +284,11 @@ export default function LandingPage() {
       <header className="sticky top-0 z-20 border-b border-line bg-white/85 backdrop-blur-lg">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-5 py-3 md:px-8">
           <div className="flex items-center gap-3">
-            <img src="/companylogo.png" alt="Company Logo" className="h-12 w-auto object-contain rounded" />
+            <img src="/assets/travoralogo.png" alt="Travora" className="h-16 w-auto object-contain" />
           </div>
           <button
             type="button"
-            className="group flex items-center gap-1.5 rounded-lg bg-emerald-50 text-brand px-5 h-9 text-[13px] font-bold shadow-sm ring-1 ring-emerald-500/20 transition-all hover:bg-emerald-100 hover:shadow-md active:scale-95"
+            className="group flex items-center gap-1.5 rounded-xl bg-emerald-50 text-brand px-5 h-9 text-[13px] font-bold shadow-sm ring-1 ring-emerald-500/20 transition-all hover:bg-emerald-100 hover:shadow-md active:scale-95"
             onClick={() => navigate('/login')}
           >
             Sign in

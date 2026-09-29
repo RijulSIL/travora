@@ -23,7 +23,7 @@ export default function ClaimTimeline({ items = [] }) {
           <div className="min-w-0 flex-1">
             <div className="text-sm font-bold text-slate-800">{eventLabel(item)}</div>
             <div className="text-xs text-slate-500 font-medium mt-0.5">
-              {(item.actor || 'System')}{item.role ? ` · ${item.role}` : ''} · {
+              {(item.actor || 'System')}{item.is_auto ? ' (Auto Approved)' : ''}{item.role ? ` · ${item.role}` : ''} · {
                 (() => {
                   const dateStr = item.timestamp.endsWith('Z') || item.timestamp.includes('+') 
                     ? item.timestamp 

@@ -392,7 +392,7 @@ export default function TravelDeskPage() {
   const queueCount = queue.length;
 
   return (
-    <section className="mx-auto max-w-6xl space-y-6 px-4 py-4">
+    <section className="space-y-6">
       {/* Header Panel */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between border-b border-slate-200 pb-5 gap-4">
         <div>
@@ -559,7 +559,7 @@ export default function TravelDeskPage() {
                         </div>
                       </div>
 
-                      <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[9px] font-bold tracking-tight uppercase ${statusDetails.bg}`}>
+                      <span className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-[9px] font-bold tracking-tight uppercase ${statusDetails.bg}`}>
                         {statusDetails.label}
                       </span>
                     </div>
@@ -597,7 +597,7 @@ export default function TravelDeskPage() {
           </div>
 
           {/* Details & Actions Panel */}
-          <div className="panel sticky top-[7.5rem] self-start max-h-[calc(100vh-9rem)] overflow-y-auto rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="panel sticky top-16 self-start max-h-[calc(100vh-5.5rem)] overflow-y-auto rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             {bookedSuccess ? (
               <div className="flex flex-col items-center justify-center py-20 text-center">
                 <div className="relative flex h-16 w-16 items-center justify-center">
@@ -871,7 +871,8 @@ export default function TravelDeskPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs border-collapse">
               <thead>
-                <tr className="border-b border-slate-200 bg-slate-100/60 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                <tr className="border-b border-slate-200 bg-slate-100/60 text-center text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                  <th className="px-5 py-3 whitespace-nowrap">S. No</th>
                   <th className="px-5 py-3">Employee</th>
                   <th className="px-5 py-3">Submitted</th>
                   <th className="px-5 py-3">Travel Date</th>
@@ -884,28 +885,31 @@ export default function TravelDeskPage() {
               <tbody className="divide-y divide-slate-150 font-medium text-slate-700">
                 {(allRows || []).length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-5 py-8 text-center text-slate-400 italic">
+                    <td colSpan={8} className="px-5 py-8 text-center text-slate-400 italic">
                       No matching records located.
                     </td>
                   </tr>
                 ) : (
-                  pagedAllRows.map(({ request: r, employee_display_name, impact_level_code }) => {
+                  pagedAllRows.map(({ request: r, employee_display_name, impact_level_code }, index) => {
                     const statusDetails = getStatusDetails(r.status);
 
                     return (
                       <tr key={r.id} className="hover:bg-slate-50/50 transition-colors">
-                        <td className="whitespace-nowrap px-5 py-3 font-bold text-slate-800">
+                        <td className="px-5 py-3 text-center text-slate-500">
+                          {(allPage - 1) * QUEUE_PAGE_SIZE + index + 1}
+                        </td>
+                        <td className="whitespace-nowrap px-5 py-3 text-center font-bold text-slate-800">
                           {employee_display_name || '—'}
                         </td>
-                        <td className="whitespace-nowrap px-5 py-3">
+                        <td className="whitespace-nowrap px-5 py-3 text-center">
                           {r.requested_at ? new Date(r.requested_at).toLocaleString('en-IN') : '—'}
                         </td>
-                        <td className="whitespace-nowrap px-5 py-3">
+                        <td className="whitespace-nowrap px-5 py-3 text-center">
                           {r.trip_type === 'MULTI_CITY' && r.legs?.length > 0 ? r.legs[0].travel_date : r.travel_date}
                         </td>
-                        <td className="px-5 py-3">
+                        <td className="px-5 py-3 text-center">
                           {r.trip_type === 'MULTI_CITY' && r.legs && r.legs.length > 0 ? (
-                            <div className="flex flex-col gap-1">
+                            <div className="flex flex-col items-center gap-1">
                               {r.legs.map((leg, i) => (
                                 <div key={i} className="flex items-center gap-1 font-bold text-slate-800 text-[11px]">
                                   <span>{leg.from_city}</span>
@@ -917,7 +921,7 @@ export default function TravelDeskPage() {
                               <div className="mt-0.5"><span className="inline-flex items-center rounded-sm bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600">Multi City</span></div>
                             </div>
                           ) : (
-                            <div className="flex items-center gap-1 font-bold text-slate-800">
+                            <div className="flex items-center justify-center gap-1 font-bold text-slate-800">
                               <span>{r.from_city}</span>
                               <ArrowRight size={10} className="text-slate-400" />
                               <span>{r.to_city}</span>
@@ -927,9 +931,9 @@ export default function TravelDeskPage() {
                             </div>
                           )}
                         </td>
-                        <td className="px-5 py-3">
+                        <td className="px-5 py-3 text-center">
                           {r.trip_type === 'MULTI_CITY' && r.legs?.length > 0 ? (
-                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                            <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
                               {[...new Set(r.legs.map((leg) => leg.travel_mode || r.travel_mode))].map((m) => (
                                 <span key={m} className="flex items-center gap-1">
                                   <ModeIcon mode={m} className="text-slate-400" />
@@ -938,19 +942,19 @@ export default function TravelDeskPage() {
                               ))}
                             </div>
                           ) : (
-                            <div className="flex items-center gap-1.5">
+                            <div className="flex items-center justify-center gap-1.5">
                               <ModeIcon mode={r.travel_mode} className="text-slate-400" />
                               <span>{r.travel_mode}</span>
                             </div>
                           )}
                         </td>
-                        <td className="px-5 py-3">
-                          <span className="inline-flex items-center rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600">
+                        <td className="px-5 py-3 text-center">
+                          <span className="badge badge-draft text-[10px]">
                             {impact_level_code || '—'}
                           </span>
                         </td>
-                        <td className="px-5 py-3">
-                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[9px] font-bold tracking-tight uppercase ${statusDetails.bg}`}>
+                        <td className="whitespace-nowrap px-5 py-3 text-center">
+                          <span className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-[9px] font-bold tracking-tight uppercase ${statusDetails.bg}`}>
                             {statusDetails.label}
                           </span>
                         </td>

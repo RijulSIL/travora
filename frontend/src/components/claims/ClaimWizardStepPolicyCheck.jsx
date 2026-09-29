@@ -6,6 +6,7 @@ function money(value) {
 
 export default function ClaimWizardStepPolicyCheck({
   claim,
+  isGeneral,
   onBack,
   onNext,
   onRequestException,
@@ -16,8 +17,10 @@ export default function ClaimWizardStepPolicyCheck({
   const exceptions = report.exceptions || [];
   const hardBlocks = expenses.filter((expense) => expense.policy_status === 'HARD_BLOCK').length;
   const softFlags = exceptions.length - hardBlocks;
-  const hasUnresolvedHardBlocks = expenses.some(
-    (expense) => expense.policy_status === 'HARD_BLOCK' && !expense.exception_requested
+  // Any flagged expense — hard block or soft deviation — must have an exception on file
+  // before you can move on; there's no other way to resolve a deviation from this screen.
+  const hasUnresolvedDeviations = expenses.some(
+    (expense) => expense.policy_status !== 'OK' && !expense.exception_requested
   );
 
   return (
@@ -156,11 +159,12 @@ export default function ClaimWizardStepPolicyCheck({
         </div>
         <div className="space-y-0.5">
           <div>
-            {!exceptions.length && 'Compliance Verified: All expenses conform to internal travel policies.'}
-            {!!softFlags && !hardBlocks && `Policy Check: ${softFlags} policy deviation(s) identified. You can request exception approval or adjust your amounts.`}
+            {!exceptions.length &&
+              `Compliance Verified: All expenses conform to internal ${isGeneral ? 'reimbursement' : 'travel'} policies.`}
+            {!!softFlags && !hardBlocks && `Action Required: ${softFlags} policy deviation(s) identified. Request an exception for each flagged item to proceed.`}
             {!!hardBlocks && `Action Required: ${hardBlocks} hard policy restriction(s) detected. You must submit exception request details to proceed.`}
           </div>
-          {hardBlocks > 0 && (
+          {exceptions.length > 0 && (
             <div className="text-[10px] font-medium text-rose-700 mt-1">
               * Ensure you select &apos;Request Exception&apos; and provide justification for the flagged line items.
             </div>
@@ -181,7 +185,7 @@ export default function ClaimWizardStepPolicyCheck({
           type="button" 
           className="inline-flex h-10 items-center justify-center gap-1.5 rounded-lg bg-brand px-5 text-sm font-bold text-white hover:bg-brand/90 transition-all duration-200 shadow-md disabled:bg-slate-100 disabled:text-slate-400 disabled:shadow-none" 
           onClick={onNext}
-          disabled={hasUnresolvedHardBlocks}
+          disabled={hasUnresolvedDeviations}
         >
           Next: Review & Submit <ArrowRight size={15} />
         </button>

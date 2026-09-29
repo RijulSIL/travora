@@ -1,23 +1,15 @@
+import { ArrowRight, Users } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import ClaimApprovalStepper from '../../components/claims/ClaimApprovalStepper';
+import ClaimStatusBadge from '../../components/ui/ClaimStatusBadge';
+import ReimbursementCategoryBadge from '../../components/ui/ReimbursementCategoryBadge';
 import EmptyState from '../../components/ui/EmptyState';
 import Skeleton from '../../components/ui/Skeleton';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { reimbursementApi } from '../../services/reimbursementApi';
 import { formatCurrency, formatDate } from '../../utils/formatters';
-
-const STATUS_LABELS = {
-  DRAFT: 'Draft',
-  SUBMITTED: 'Submitted',
-  IN_APPROVAL: 'In approval',
-  READY_FOR_PAYMENT: 'Ready for payment',
-  SENT_BACK: 'Sent back',
-  REJECTED: 'Rejected',
-  ON_HOLD: 'On hold',
-  PAID: 'Paid',
-};
 
 export default function TeamClaims() {
   useSetPageTitle('My Team Claims');
@@ -64,7 +56,7 @@ export default function TeamClaims() {
   }, []);
 
   return (
-    <div className="mx-auto max-w-4xl">
+    <div>
       <div className="mb-6">
         <p className="text-sm text-slate-600">
           Track reimbursement claims submitted by your team members.
@@ -81,7 +73,7 @@ export default function TeamClaims() {
 
       {!loading && !claims.length ? (
         <EmptyState
-          icon="👥"
+          icon={Users}
           title="No team claims yet"
           description="Claims submitted by your team will appear here."
         />
@@ -110,8 +102,9 @@ export default function TeamClaims() {
                     ? ` · ${formatDate(claim.departure_date)}–${formatDate(claim.return_date)}`
                     : ''}
                 </div>
-                <div className="mt-2 text-xs font-medium text-slate-500">
-                  {STATUS_LABELS[claim.status] || claim.status}
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <ClaimStatusBadge status={claim.status} />
+                  <ReimbursementCategoryBadge category={claim.reimbursement_category} />
                 </div>
               </div>
               <div className="text-right">
@@ -126,13 +119,18 @@ export default function TeamClaims() {
                 currentStageNumber={current}
                 claimStatus={claim.status}
               />
+            ) : claim.status === 'PENDING_EXCEPTION' ? (
+              <ClaimApprovalStepper
+                stages={[]}
+                emptyHint="Awaiting policy exception review before approval can begin."
+              />
             ) : claim.status !== 'DRAFT' ? (
               <ClaimApprovalStepper stages={[]} emptyHint="Approval details unavailable." />
             ) : null}
-            
+
             <div className="mt-3 border-t border-slate-100 pt-3">
-              <Link className="text-sm font-semibold text-blue-700" to={`/claims/${claim.id}`}>
-                View details
+              <Link className="inline-flex items-center gap-1 text-sm font-semibold text-brand hover:underline" to={`/claims/${claim.id}`}>
+                View details <ArrowRight className="h-3.5 w-3.5" />
               </Link>
             </div>
           </div>

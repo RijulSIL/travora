@@ -4,7 +4,7 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.policy import CityGroupType
-from app.models.reimbursement import ClaimStatus, GstinValidationStatus, InvoiceStatus
+from app.models.reimbursement import ClaimStatus, GstinValidationStatus, InvoiceStatus, ReimbursementCategory
 
 
 class InvoiceFieldOut(BaseModel):
@@ -51,6 +51,15 @@ class InvoiceOut(BaseModel):
     extraction_error: str | None = None
     created_at: datetime
     total_amount: Decimal | None = None
+    reimbursement_category: ReimbursementCategory = ReimbursementCategory.TRAVEL
+    payment_proof_original_filename: str | None = None
+    payment_proof_uploaded_at: datetime | None = None
+    linked_claim_id: int | None = None
+    linked_claim_reference: str | None = None
+    linked_claim_status: str | None = None
+    is_archived: bool = False
+    is_locked: bool = False
+    can_delete: bool = True
 
 
 class InvoiceExtractionOut(InvoiceOut):
@@ -89,6 +98,11 @@ class DuplicateCheckOut(BaseModel):
 
 class ClaimDraftIn(BaseModel):
     claim_id: int | None = None
+    # Which "New Claim" entry point created this draft — TRAVEL (default) or GENERAL. The
+    # claim's *effective* routing category can still end up REALLOCATION if any linked
+    # invoice is tagged that way (see reimbursement_service._resolve_claim_reimbursement_category);
+    # this field is just what the wizard itself was opened as.
+    reimbursement_category: ReimbursementCategory = ReimbursementCategory.TRAVEL
     invoice_ids: list[int] = Field(default_factory=list)
     trip_ids: list[int] = Field(default_factory=list)
     trip_purpose: str | None = None
@@ -125,6 +139,7 @@ class ClaimDraftOut(BaseModel):
     from_city: str | None = None
     destination_city: str | None = None
     destination_city_group: CityGroupType | None = None
+    reimbursement_category: ReimbursementCategory = ReimbursementCategory.TRAVEL
     advance_received: Decimal
     status: ClaimStatus
     claim_reference: str | None = None
@@ -132,6 +147,7 @@ class ClaimDraftOut(BaseModel):
     approved_amount: Decimal | None = None
     payment_utr: str | None = None
     payment_amount: Decimal | None = None
+    tds_deduction: Decimal = Decimal("0")
     payment_recorded_at: datetime | None = None
     reject_reason: str | None = None
     submitted_at: datetime | None = None

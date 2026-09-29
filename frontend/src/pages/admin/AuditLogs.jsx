@@ -1,9 +1,11 @@
 import { Download, Search } from 'lucide-react';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import Pagination from '../../components/ui/Pagination';
 import PageHeader from '../../components/ui/PageHeader';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
+import { usePagination } from '../../hooks/usePagination';
 import { adminApi } from '../../services/adminApi';
 
 const entityOptions = ['All', 'claim_draft', 'user', 'erp_ledger_entry', 'policy_version', 'expense_limit'];
@@ -95,6 +97,7 @@ export default function AuditLogs() {
   });
 
   const chainStatus = useMemo(() => getChainStatus(rows), [rows]);
+  const { page, setPage, totalPages, pageItems, startIndex, pageSize, total } = usePagination(rows);
   const error = loadError || searchAction.error || exportAction.error;
   const hasFilters = filters.entity_type !== 'All' || !!filters.action || !!filters.actor_id || !!filters.claim_id || !!filters.from_date || !!filters.to_date;
 
@@ -117,7 +120,7 @@ export default function AuditLogs() {
       />
       {hasFilters ? null : (
         <div
-          className={`mb-4 rounded border p-3 text-sm ${chainStatus.ok ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-red-200 bg-red-50 text-red-700'}`}
+          className={`mb-4 rounded-lg border p-3 text-sm ${chainStatus.ok ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-red-200 bg-red-50 text-red-700'}`}
         >
           {chainStatus.ok
             ? 'Audit chain integrity verified'
@@ -125,23 +128,23 @@ export default function AuditLogs() {
         </div>
       )}
       {error ? (
-        <div className="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
           {error.response?.data?.detail || error.message}
         </div>
       ) : null}
-      <section className="panel rounded p-1 mb-4">
-        <div className="flex flex-wrap items-center gap-3 p-3 bg-slate-50/50 rounded border border-transparent">
-          <div className="flex-1 min-w-[200px] flex items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-1.5 focus-within:border-brand focus-within:ring-1 focus-within:ring-brand/30">
-            <Search className="text-slate-400" size={16} />
-            <input className="w-full border-none p-0 text-sm focus:ring-0 text-slate-700 bg-transparent placeholder:text-slate-400 outline-none" placeholder="Actor ID or Name" value={filters.actor_id} onChange={(event) => setFilters({ ...filters, actor_id: event.target.value })} />
+      <section className="panel mb-6 p-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative min-w-[200px] flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <input className="field w-full !pl-9" placeholder="Actor ID or Name" value={filters.actor_id} onChange={(event) => setFilters({ ...filters, actor_id: event.target.value })} />
           </div>
-          <div className="flex-1 min-w-[150px] flex items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-1.5 focus-within:border-brand focus-within:ring-1 focus-within:ring-brand/30">
-            <span className="text-slate-400 font-medium text-xs">#</span>
-            <input className="w-full border-none p-0 text-sm focus:ring-0 text-slate-700 bg-transparent placeholder:text-slate-400 outline-none" placeholder="Claim ID" value={filters.claim_id} onChange={(event) => setFilters({ ...filters, claim_id: event.target.value })} />
+          <div className="relative min-w-[150px] flex-1">
+            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-slate-400">#</span>
+            <input className="field w-full !pl-8" placeholder="Claim ID" value={filters.claim_id} onChange={(event) => setFilters({ ...filters, claim_id: event.target.value })} />
           </div>
-          <input className="field flex-1 min-w-[150px] text-sm py-1.5 bg-white" placeholder="Action (e.g. UPDATE)" value={filters.action} onChange={(event) => setFilters({ ...filters, action: event.target.value })} />
+          <input className="field min-w-[150px] flex-1" placeholder="Action (e.g. UPDATE)" value={filters.action} onChange={(event) => setFilters({ ...filters, action: event.target.value })} />
           <select
-            className="field flex-1 min-w-[160px] text-sm py-1.5 bg-white"
+            className="field min-w-[160px] flex-1"
             value={filters.entity_type}
             onChange={(event) => setFilters({ ...filters, entity_type: event.target.value })}
           >
@@ -152,17 +155,17 @@ export default function AuditLogs() {
             ))}
           </select>
           <div className="flex items-center gap-2">
-            <input className="field text-sm py-1.5 bg-white w-[130px]" type="date" title="From Date" value={filters.from_date} onChange={(event) => setFilters({ ...filters, from_date: event.target.value })} />
-            <span className="text-slate-400 text-xs font-medium">to</span>
-            <input className="field text-sm py-1.5 bg-white w-[130px]" type="date" title="To Date" value={filters.to_date} onChange={(event) => setFilters({ ...filters, to_date: event.target.value })} />
+            <input className="field w-[130px]" type="date" title="From Date" value={filters.from_date} onChange={(event) => setFilters({ ...filters, from_date: event.target.value })} />
+            <span className="text-xs font-medium text-slate-400">to</span>
+            <input className="field w-[130px]" type="date" title="To Date" value={filters.to_date} onChange={(event) => setFilters({ ...filters, to_date: event.target.value })} />
           </div>
         </div>
       </section>
-      <section className="panel table-contain overflow-hidden rounded">
+      <section className="panel table-contain overflow-hidden">
         <table className="w-full text-left text-sm">
-          <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-wider text-slate-500">
+          <thead className="bg-slate-50 text-center text-[11px] font-bold uppercase tracking-wider text-slate-500">
             <tr>
-              <th className="px-4 py-3">#</th>
+              <th className="px-4 py-3 whitespace-nowrap">S. No</th>
               <th className="px-4 py-3">Timestamp</th>
               <th className="px-4 py-3">Entity</th>
               <th className="px-4 py-3">Entity ID</th>
@@ -172,19 +175,19 @@ export default function AuditLogs() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((row, idx) => {
+            {pageItems.map((row, idx) => {
               const isOpen = expandedId === row.id;
               const diffRows = getDiffRows(row.old_value, row.new_value);
               return (
                 <Fragment key={row.id}>
                   <tr className={`cursor-pointer border-t border-line transition-colors ${isOpen ? 'bg-slate-50/80' : 'hover:bg-slate-50/50'}`} onClick={() => setExpandedId(isOpen ? null : row.id)}>
-                    <td className="px-4 py-3 text-slate-500 font-medium">{idx + 1}</td>
-                    <td className="px-4 py-3 text-slate-700">{new Date(row.timestamp).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</td>
-                    <td className="px-4 py-3"><span className="inline-flex items-center rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] font-bold text-indigo-700 ring-1 ring-inset ring-indigo-600/20">{row.entity_type}</span></td>
-                    <td className="px-4 py-3 font-mono text-xs text-slate-600">{row.entity_id}</td>
-                    <td className="px-4 py-3 font-semibold text-slate-700">{row.action}</td>
-                    <td className="px-4 py-3 text-slate-600">{row.actor_id || '-'}</td>
-                    <td className="max-w-[200px] truncate px-4 py-3 font-mono text-xs text-slate-400" title={row.event_hash}>{row.event_hash}</td>
+                    <td className="px-4 py-3 text-center text-slate-500 font-medium">{startIndex + idx + 1}</td>
+                    <td className="px-4 py-3 text-center text-slate-700">{new Date(row.timestamp).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</td>
+                    <td className="px-4 py-3 text-center"><span className="inline-flex items-center rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] font-bold text-indigo-700 ring-1 ring-inset ring-indigo-600/20">{row.entity_type}</span></td>
+                    <td className="px-4 py-3 text-center font-mono text-xs text-slate-600">{row.entity_id}</td>
+                    <td className="px-4 py-3 text-center font-semibold text-slate-700">{row.action}</td>
+                    <td className="px-4 py-3 text-center text-slate-600">{row.actor_id || '-'}</td>
+                    <td className="max-w-[200px] truncate px-4 py-3 text-center font-mono text-xs text-slate-400" title={row.event_hash}>{row.event_hash}</td>
                   </tr>
                   {isOpen ? (
                     <tr className="border-t border-line bg-slate-50/80">
@@ -240,6 +243,7 @@ export default function AuditLogs() {
             {rows.length === 0 ? <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-500">No audit logs match your search.</td></tr> : null}
           </tbody>
         </table>
+        <Pagination page={page} totalPages={totalPages} onPageChange={setPage} total={total} pageSize={pageSize} startIndex={startIndex} />
       </section>
     </>
   );

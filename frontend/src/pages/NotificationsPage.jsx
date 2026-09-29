@@ -38,7 +38,7 @@ export default function NotificationsPage() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-semibold text-ink">Notifications</h2>
-        <select className="rounded border border-line px-2 py-1 text-sm" value={category} onChange={(e) => setCategory(e.target.value)}>
+        <select className="field h-9 w-auto" value={category} onChange={(e) => setCategory(e.target.value)}>
           <option value="">All categories</option>
           <option value="APPROVAL_REQUIRED">Approval required</option>
           <option value="CLAIM_UPDATE">Claim update</option>
@@ -48,12 +48,12 @@ export default function NotificationsPage() {
           <option value="SYSTEM">System</option>
         </select>
       </div>
-      <div className="rounded border border-line bg-white">
+      <div className="panel overflow-hidden">
         {paginated.map((item) => (
-          <button key={item.sqlid} className="w-full border-b border-line px-4 py-3 text-left hover:bg-slate-50" onClick={() => open(item)}>
+          <button key={item.sqlid} className="w-full border-b border-slate-100 px-4 py-3 text-left last:border-b-0 hover:bg-slate-50" onClick={() => open(item)}>
             <div className="flex items-center justify-between">
               <div className="text-sm font-semibold text-ink">{item.title}</div>
-              {!item.is_read ? <span className="rounded bg-red-100 px-2 py-0.5 text-[10px] font-semibold text-red-800">New</span> : null}
+              {!item.is_read ? <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-700 ring-1 ring-inset ring-red-600/20">New</span> : null}
             </div>
             <div className="text-xs text-slate-600">{item.body || '—'}</div>
           </button>

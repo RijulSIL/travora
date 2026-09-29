@@ -15,13 +15,39 @@ from app.schemas.common import (
     AdminUserCreateIn,
     AdminUserOut,
     AdminUserUpdateIn,
+    DelegationConfigIn,
+    DelegationConfigOut,
     UserOut,
     UserRoleUpdateIn,
 )
 from app.services.audit_service import log_event
 from app.services.auth_service import hash_password
+from app.services.delegation_service import is_delegation_enabled, set_delegation_enabled
 
 router = APIRouter(prefix="/admin", tags=["admin-users"])
+
+
+@router.get(
+    "/delegation-config",
+    dependencies=[Depends(require_permission("manage_users")), Depends(require_mfa)],
+    response_model=DelegationConfigOut,
+)
+async def get_delegation_config(db: AsyncSession = Depends(get_db)) -> dict:
+    return {"enabled": await is_delegation_enabled(db)}
+
+
+@router.put(
+    "/delegation-config",
+    dependencies=[Depends(require_permission("manage_users")), Depends(require_mfa)],
+    response_model=DelegationConfigOut,
+)
+async def update_delegation_config(
+    payload: DelegationConfigIn,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    enabled = await set_delegation_enabled(payload.enabled, int(claims["sub"]), db)
+    return {"enabled": enabled}
 
 
 @router.get(

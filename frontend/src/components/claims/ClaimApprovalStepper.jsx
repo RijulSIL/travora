@@ -1,3 +1,5 @@
+import { Check } from 'lucide-react';
+
 export default function ClaimApprovalStepper({
   stages = [],
   currentStageNumber,
@@ -38,7 +40,7 @@ export default function ClaimApprovalStepper({
               <div
                 className={`flex h-8 w-8 items-center justify-center rounded-full border-2 text-xs font-bold ${circleClass}`}
               >
-                {done ? '✓' : s.stage_number}
+                {done ? <Check size={14} /> : s.stage_number}
               </div>
               <div className="mt-1 text-center text-[10px] font-medium text-slate-600">{label}</div>
               <div className="text-center text-[10px] text-slate-400">

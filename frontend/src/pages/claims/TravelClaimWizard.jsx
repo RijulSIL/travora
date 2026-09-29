@@ -33,14 +33,13 @@ function addWorkingDays(date, days) {
   return value;
 }
 
-export default function ClaimWizard() {
-  useSetPageTitle('Claim Wizard');
+export default function TravelClaimWizard() {
+  useSetPageTitle('Travel Claim');
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
   const { id } = useParams();
   const [searchParams] = useSearchParams();
-  const editIdFromQuery = searchParams.get('edit');
-  const effectiveEditId = id || editIdFromQuery || null;
+  const effectiveEditId = id || null;
   const invoiceIdsFromUrl = useMemo(
     () =>
       (searchParams.get('invoiceIds') || '')
@@ -94,7 +93,7 @@ export default function ClaimWizard() {
     (async () => {
       const [tripOutcome, invoiceOutcome, meOutcome] = await Promise.allSettled([
         reimbursementApi.bookingTripsMy({ unlinked_only: true }),
-        reimbursementApi.invoices({ unlinked: true }),
+        reimbursementApi.invoices({ unlinked: true, editing_claim_id: effectiveEditId || undefined }),
         reimbursementApi.me(),
       ]);
       if (!cancelled) {
@@ -203,6 +202,14 @@ export default function ClaimWizard() {
     localStorage.setItem('travora_claim_draft', JSON.stringify(draftData));
   }, [form, selectedTripIds, selectedInvoiceIds, currentStep, effectiveEditId]);
 
+  // A Travel claim can only draw from Travel-tagged invoices — General and Reallocation both
+  // belong in the trip-less General Reimbursement wizard's picker instead (see
+  // GeneralReimbursementWizard.jsx's visibleInvoices), never here.
+  const visibleInvoices = useMemo(
+    () => invoices.filter((invoice) => invoice.reimbursement_category === 'TRAVEL'),
+    [invoices],
+  );
+
   const reviewWarning = useMemo(() => {
     const selected = invoices.filter((invoice) => selectedInvoiceIds.includes(invoice.id));
     return selected.some((invoice) => invoice.status !== 'REVIEWED')
@@ -211,16 +218,18 @@ export default function ClaimWizard() {
   }, [invoices, selectedInvoiceIds]);
 
   const sentBackHint = claim?.status === 'SENT_BACK' ? 'Invoice missing — add hotel invoice.' : '';
-  
+
   useEffect(() => {
-    if (effectiveEditId || selectedTripIds.length === 0 || trips.length === 0) return;
-    
+    // Fills only fields that are still blank (see the per-field checks below), so this is
+    // safe to run for an existing claim too — it never overwrites something already saved.
+    if (selectedTripIds.length === 0 || trips.length === 0) return;
+
     const firstTrip = trips.find(t => selectedTripIds.includes(t.id));
     if (firstTrip) {
       setForm(prev => {
         const next = { ...prev };
         let changed = false;
-        
+
         if (!next.from_city && firstTrip.from_city) {
           next.from_city = firstTrip.from_city;
           changed = true;
@@ -241,9 +250,9 @@ export default function ClaimWizard() {
           next.trip_purpose = firstTrip.travel_purpose || firstTrip.purpose;
           changed = true;
         }
-        
+
         if (!next.office_location && next.from_city) {
-          const match = officeLocations.find(loc => 
+          const match = officeLocations.find(loc =>
             loc.toLowerCase() === next.from_city.toLowerCase()
           );
           if (match) {
@@ -251,17 +260,11 @@ export default function ClaimWizard() {
             changed = true;
           }
         }
-        
+
         return changed ? next : prev;
       });
     }
-  }, [selectedTripIds, trips, officeLocations, effectiveEditId]);
-  
-  useEffect(() => {
-    if (form.office_location && !form.from_city) {
-      setForm(prev => ({ ...prev, from_city: prev.office_location }));
-    }
-  }, [form.office_location, form.from_city]);
+  }, [selectedTripIds, trips, officeLocations]);
 
   const onChange = (key, value) => {
     setForm((prev) => {
@@ -327,6 +330,7 @@ export default function ClaimWizard() {
     try {
       const payload = {
         claim_id: claim?.id || (effectiveEditId ? Number(effectiveEditId) : null),
+        reimbursement_category: 'TRAVEL',
         invoice_ids: selectedInvoiceIds,
         trip_ids: selectedTripIds,
         trip_purpose: form.trip_purpose || null,
@@ -355,6 +359,10 @@ export default function ClaimWizard() {
       if (!file) return;
       const formData = new FormData();
       formData.append('file', file);
+      // Quick-uploading from inside the wizard always tags the invoice Travel — Reallocation
+      // invoices are deliberately only created via the standalone Upload Invoices page's
+      // 3-way selector, then attached here.
+      formData.append('reimbursement_category', 'TRAVEL');
       setUploadingInvoice(true);
       try {
         const uploaded = await reimbursementApi.uploadInvoice(formData);
@@ -427,73 +435,86 @@ export default function ClaimWizard() {
 
   const goStep2 = async () => {
     if (!validateStep1()) return;
-    
+
     if (form.return_date) {
       const returnDate = new Date(form.return_date);
       const maxDays = workflowConfig?.submission?.max_working_days_after_return ?? 5;
       const mode = workflowConfig?.submission?.deadline_mode ?? 'hard_block';
       const deadline = addWorkingDays(returnDate, maxDays);
-      
+
       if (new Date() > deadline && mode === 'soft_warning') {
         setShowLateModal(true);
         return;
       }
     }
-    
+
     setCurrentStep(2);
   };
 
   const goStep3 = async () => {
-    const draft = await saveDraft();
-    if (!draft?.id) return;
-    const checked = await reimbursementApi.policyCheck(draft.id);
-    setClaim((prev) => ({ ...prev, ...checked.data }));
-    setCurrentStep(3);
+    try {
+      const draft = await saveDraft();
+      if (!draft?.id) return;
+      const checked = await reimbursementApi.policyCheck(draft.id);
+      setClaim((prev) => ({ ...prev, ...checked.data }));
+      setCurrentStep(3);
+    } catch (error) {
+      showToast(error?.response?.data?.detail || 'Could not save the claim draft', 'error');
+    }
   };
 
   const goStep4 = async () => {
-    const draft = await saveDraft();
-    if (!draft?.id) return;
-    const checked = await reimbursementApi.policyCheck(draft.id);
-    setClaim((prev) => ({ ...prev, ...checked.data }));
-    setCurrentStep(4);
+    try {
+      const draft = await saveDraft();
+      if (!draft?.id) return;
+      const checked = await reimbursementApi.policyCheck(draft.id);
+      setClaim((prev) => ({ ...prev, ...checked.data }));
+      setCurrentStep(4);
+    } catch (error) {
+      showToast(error?.response?.data?.detail || 'Could not save the claim draft', 'error');
+    }
   };
 
   return (
-    <section className="mx-auto max-w-6xl space-y-6 px-4 py-4">
+    <section className="space-y-6">
+      <div>
+        <h1 className="text-lg font-bold text-ink">{effectiveEditId ? 'Edit Travel Claim' : 'New Travel Claim'}</h1>
+        <p className="mt-0.5 text-sm text-slate-500">For expenses incurred on a business trip.</p>
+      </div>
+
       {/* Connected Progress Stepper Header */}
       <div className="rounded-xl border border-slate-200 bg-white px-6 sm:px-10 py-5 shadow-sm">
         <div className="relative grid grid-cols-4">
           {/* Background Connected Track */}
           <div className="absolute left-[12.5%] right-[12.5%] top-[18px] h-0.5 -translate-y-1/2 bg-slate-100">
             {/* Foreground Progress Fill */}
-            <div 
+            <div
               className="absolute left-0 top-0 h-full bg-brand transition-all duration-300"
-              style={{ 
+              style={{
                 width: `${((currentStep - 1) / (STEP_LABELS.length - 1)) * 100}%`
               }}
             ></div>
           </div>
-          
+
           {STEP_LABELS.map((label, idx) => {
             const stepNum = idx + 1;
             const isCompleted = currentStep > stepNum;
             const isActive = currentStep === stepNum;
-            
+
             return (
               <div key={label} className="relative z-10 flex flex-col items-center">
-                <div 
+                <div
                   className={`flex h-9 w-9 items-center justify-center rounded-full border-2 text-xs font-bold transition-all duration-300 ${
-                    isCompleted 
-                      ? 'border-emerald-500 bg-emerald-500 text-white' 
-                      : isActive 
-                        ? 'border-brand bg-brand text-white shadow-lg shadow-brand/10 ring-4 ring-brand/10' 
+                    isCompleted
+                      ? 'border-emerald-500 bg-emerald-500 text-white'
+                      : isActive
+                        ? 'border-brand bg-brand text-white shadow-lg shadow-brand/10 ring-4 ring-brand/10'
                         : 'border-slate-200 bg-white text-slate-400'
                   }`}
                 >
                   {isCompleted ? <Check size={14} /> : stepNum}
                 </div>
-                <span 
+                <span
                   className={`mt-2 text-xs font-bold tracking-tight transition-colors duration-200 ${
                     isActive ? 'text-brand' : isCompleted ? 'text-slate-700' : 'text-slate-400'
                   }`}
@@ -527,7 +548,7 @@ export default function ClaimWizard() {
 
       {currentStep === 2 ? (
         <ClaimWizardStepEvidence
-          invoices={invoices}
+          invoices={visibleInvoices}
           selectedInvoiceIds={selectedInvoiceIds}
           onToggleInvoice={(invoiceId, checked) =>
             setSelectedInvoiceIds((prev) =>
@@ -589,14 +610,14 @@ export default function ClaimWizard() {
         title={drawer.title}
       />
       {showAnimation && (
-        <OrigamiAnimation 
-          onComplete={() => navigate('/claims/my')} 
+        <OrigamiAnimation
+          onComplete={() => navigate('/claims/my')}
           employeeName={user?.full_name || user?.email || 'Employee'}
           destination={form.destination_city}
           date={form.departure_date}
         />
       )}
-      
+
       {showLateModal && createPortal(
         <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4">
           <div className="w-full max-w-md rounded-2xl border border-amber-200 bg-white p-6 shadow-2xl">

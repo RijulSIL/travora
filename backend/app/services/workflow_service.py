@@ -23,12 +23,13 @@ from app.models.claim_workflow import (
     WorkflowConfigRow,
 )
 from app.models.employee import AuditLog, Employee
-from app.models.reimbursement import ClaimDraft, ClaimStatus
+from app.models.reimbursement import ClaimDraft, ClaimStatus, ReimbursementCategory
 from app.services.audit_service import log_event
 from app.services.claim_submission_rules import (
     parse_auto_approve_threshold,
     total_claimed_from_report,
 )
+from app.services.finance_reporting_service import post_ledger_entry_to_erp
 from app.services.notification_service import create_notification
 
 STAGE_STATUS_NOT_STARTED = "NOT_STARTED"
@@ -128,12 +129,42 @@ def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
-async def _user_ids_for_stage(claim: ClaimDraft, stage_def: dict, db: AsyncSession) -> list[int]:
-    route_role = str(stage_def.get("route_role") or "")
+async def _active_delegator_ids(user_id: int, db: AsyncSession) -> list[int]:
+    """User ids of everyone currently delegating to `user_id` (active, in-window Delegation
+    row with them as delegatee). Shared by every claim/exception authorization check below —
+    previously several of them omitted this, which silently made delegation a view-only
+    feature (a delegate could see a claim/exception in their queue but not act on it)."""
+    if not user_id:
+        return []
+
+    from app.services.delegation_service import is_delegation_enabled
+
+    if not await is_delegation_enabled(db):
+        return []
+
+    now = _now()
+    return list(
+        (
+            await db.execute(
+                select(Delegation.delegator_id).where(
+                    Delegation.delegatee_id == user_id,
+                    Delegation.is_active,
+                    Delegation.start_date <= now,
+                    Delegation.end_date >= now,
+                )
+            )
+        ).scalars().all()
+    )
+
+
+async def _user_ids_for_role(route_role: str, employee_id: str | None, db: AsyncSession) -> list[int]:
+    """Resolves the user(s) who can act for a given route role, for the subject employee
+    of the claim/exception in question. REPORTING_MANAGER and FUNCTION_HEAD resolve to a
+    single specific person; the other roles are pools — anyone holding that system role."""
     if route_role == Role.REPORTING_MANAGER.value:
-        if not claim.employee_id:
+        if not employee_id:
             return []
-        employee = await db.get(Employee, claim.employee_id)
+        employee = await db.get(Employee, employee_id)
         if employee is None or not employee.reporting_manager_id:
             return []
         result = await db.execute(
@@ -144,9 +175,9 @@ async def _user_ids_for_stage(claim: ClaimDraft, stage_def: dict, db: AsyncSessi
         )
         return [int(user_id) for user_id in result.scalars().all()]
     if route_role == "FUNCTION_HEAD":
-        if not claim.employee_id:
+        if not employee_id:
             return []
-        fh = await _get_function_head(claim.employee_id, db)
+        fh = await _get_function_head(employee_id, db)
         if not fh:
             return []
         result = await db.execute(
@@ -164,6 +195,11 @@ async def _user_ids_for_stage(claim: ClaimDraft, stage_def: dict, db: AsyncSessi
         result = await db.execute(select(User.id).where(User.role == Role(route_role)))
         return [int(user_id) for user_id in result.scalars().all()]
     return []
+
+
+async def _user_ids_for_stage(claim: ClaimDraft, stage_def: dict, db: AsyncSession) -> list[int]:
+    route_role = str(stage_def.get("route_role") or "")
+    return await _user_ids_for_role(route_role, claim.employee_id, db)
 
 
 async def _notify_stage_approver(claim: ClaimDraft, stage_def: dict, db: AsyncSession) -> None:
@@ -230,43 +266,70 @@ DEFAULT_WORKFLOW_CONFIG: dict = {
 }
 
 
-def _validate_workflow_config(config: dict) -> None:
-    if not isinstance(config, dict):
-        raise HTTPException(status_code=422, detail="Workflow config must be an object")
-    stages = config.get("stages")
-    if not isinstance(stages, list):
-        raise HTTPException(status_code=422, detail="Workflow config must include a stages list")
-    if not 1 <= len(stages) <= 6:
-        raise HTTPException(status_code=422, detail="Workflow stages must be between 1 and 6")
+_ALLOWED_WORKFLOW_ROLES = {
+    Role.REPORTING_MANAGER.value,
+    Role.HRBP_HR.value,
+    Role.PAYROLL.value,
+    Role.FINANCE.value,
+    Role.CEO.value,
+    Role.GROUP_HEAD_HR.value,
+    Role.IT_ADMIN.value,
+    "FUNCTION_HEAD",
+}
 
-    allowed_roles = {
-        Role.REPORTING_MANAGER.value,
-        Role.HRBP_HR.value,
-        Role.PAYROLL.value,
-        Role.FINANCE.value,
-        Role.CEO.value,
-        Role.GROUP_HEAD_HR.value,
-        Role.IT_ADMIN.value,
-        "FUNCTION_HEAD",
-    }
+_CATEGORY_OVERRIDE_KEYS = {c.value for c in ReimbursementCategory} | {"TRAVEL_REQUEST"}
+
+
+def _validate_stage_list(stages: Any, *, label_prefix: str = "Stage", require_finance_stage: bool = True) -> None:
+    if not isinstance(stages, list):
+        raise HTTPException(status_code=422, detail=f"{label_prefix} list must be a list")
+    if not 1 <= len(stages) <= 6:
+        raise HTTPException(status_code=422, detail=f"{label_prefix} list must contain between 1 and 6 stages")
+
     finance_count = 0
     for idx, stage in enumerate(stages, start=1):
         if not isinstance(stage, dict):
-            raise HTTPException(status_code=422, detail=f"Stage {idx} must be an object")
+            raise HTTPException(status_code=422, detail=f"{label_prefix} {idx} must be an object")
         if not isinstance(stage.get("label"), str) or not str(stage.get("label")).strip():
-            raise HTTPException(status_code=422, detail=f"Stage {idx} label is required")
-        if stage.get("route_role") not in allowed_roles:
-            raise HTTPException(status_code=422, detail=f"Stage {idx} route_role '{stage.get('route_role')}' is unsupported")
+            raise HTTPException(status_code=422, detail=f"{label_prefix} {idx} label is required")
+        if stage.get("route_role") not in _ALLOWED_WORKFLOW_ROLES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{label_prefix} {idx} route_role '{stage.get('route_role')}' is unsupported",
+            )
         if not isinstance(stage.get("sla_hours"), int) or int(stage["sla_hours"]) <= 0:
-            raise HTTPException(status_code=422, detail=f"Stage {idx} sla_hours must be a positive integer")
+            raise HTTPException(status_code=422, detail=f"{label_prefix} {idx} sla_hours must be a positive integer")
         if stage.get("route_role") == Role.FINANCE.value:
             finance_count += 1
 
-    if finance_count < 1:
+    if require_finance_stage and finance_count < 1:
         raise HTTPException(
             status_code=422,
-            detail="Workflow must include at least one finance stage",
+            detail=f"{label_prefix} list must include at least one finance stage",
         )
+
+
+def _validate_workflow_config(config: dict) -> None:
+    if not isinstance(config, dict):
+        raise HTTPException(status_code=422, detail="Workflow config must be an object")
+    _validate_stage_list(config.get("stages"), label_prefix="Stage")
+    allowed_roles = _ALLOWED_WORKFLOW_ROLES
+
+    category_overrides = config.get("category_overrides")
+    if category_overrides is not None:
+        if not isinstance(category_overrides, dict):
+            raise HTTPException(status_code=422, detail="category_overrides must be an object")
+        for category, override in category_overrides.items():
+            if category not in _CATEGORY_OVERRIDE_KEYS:
+                raise HTTPException(status_code=422, detail=f"Unknown category override '{category}'")
+            if not isinstance(override, dict):
+                raise HTTPException(status_code=422, detail=f"category_overrides['{category}'] must be an object")
+            if "stages" in override:
+                _validate_stage_list(
+                    override["stages"],
+                    label_prefix=f"{category} override stage",
+                    require_finance_stage=category != "TRAVEL_REQUEST",
+                )
 
     submission = config.get("submission")
     if submission is None or not isinstance(submission, dict):
@@ -321,9 +384,17 @@ def _validate_workflow_config(config: dict) -> None:
         for key, chain in exception_chains.items():
             if not isinstance(chain, list):
                 raise HTTPException(status_code=422, detail=f"exception_chain '{key}' must be a list")
+            # An empty chain creates zero ExceptionApproval rows (see init_claim_approval_chain),
+            # so the request would never get an approver and would be stuck forever.
+            if not chain:
+                raise HTTPException(
+                    status_code=422, detail=f"exception_chain '{key}' must have at least one approver role"
+                )
             for role in chain:
                 if role not in allowed_roles:
-                    raise HTTPException(status_code=422, detail=f"exception_chain '{key}' contains unsupported role '{role}'")
+                    raise HTTPException(
+                        status_code=422, detail=f"exception_chain '{key}' contains unsupported role '{role}'"
+                    )
 
 
 def _normalize_stage_defs(config: dict) -> list[dict]:
@@ -347,7 +418,12 @@ def _normalize_stage_defs(config: dict) -> list[dict]:
     return stage_defs
 
 
-async def get_workflow_config(db: AsyncSession) -> dict:
+async def get_workflow_config(db: AsyncSession, category: str | None = None) -> dict:
+    """`category` (TRAVEL/GENERAL/REALLOCATION) selects that category's stage override from
+    config_json.category_overrides, if an admin has configured one — everything else
+    (exception_chains, submission, auto_approve_below_amount) stays shared. With no
+    override configured for that category, this returns exactly the same stages as
+    category=None, so existing behavior is unchanged until an admin opts in."""
     row = await db.get(WorkflowConfigRow, 1)
     if row is None or not row.config_json:
         return dict(DEFAULT_WORKFLOW_CONFIG)
@@ -357,18 +433,59 @@ async def get_workflow_config(db: AsyncSession) -> dict:
         merged["stages"] = row.config_json["stages"]
     if "exception_chains" in row.config_json:
         merged["exception_chains"] = row.config_json["exception_chains"]
+    if category:
+        override = (row.config_json.get("category_overrides") or {}).get(category)
+        if isinstance(override, dict) and override.get("stages"):
+            merged["stages"] = override["stages"]
     return merged
+
+
+# REPORTING_MANAGER and FUNCTION_HEAD are resolved relative to each claim's employee
+# (see _user_ids_for_role / _get_function_head), so an org-wide "any user has this role"
+# count doesn't reflect real routing capability for them — only check the absolute roles.
+_ROLES_REQUIRING_COVERAGE = _ALLOWED_WORKFLOW_ROLES - {Role.REPORTING_MANAGER.value, "FUNCTION_HEAD"}
+
+
+async def _assert_roles_have_active_users(config: dict, db: AsyncSession) -> None:
+    route_roles: set[str] = {s.get("route_role") for s in config.get("stages") or [] if isinstance(s, dict)}
+    for override in (config.get("category_overrides") or {}).values():
+        if isinstance(override, dict):
+            route_roles |= {s.get("route_role") for s in override.get("stages") or [] if isinstance(s, dict)}
+    route_roles &= _ROLES_REQUIRING_COVERAGE
+
+    for role in route_roles:
+        count = (
+            await db.execute(
+                select(func.count()).select_from(User).where(User.role == role, User.is_active.is_(True))
+            )
+        ).scalar_one()
+        if not count:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Role '{role}' is used in a stage but no active user currently has that role",
+            )
 
 
 async def save_workflow_config(config: dict, user_id: int | None, db: AsyncSession) -> dict:
     _validate_workflow_config(config)
+    await _assert_roles_have_active_users(config, db)
     row = await db.get(WorkflowConfigRow, 1)
+    old_config = row.config_json if row is not None else None
     if row is None:
         row = WorkflowConfigRow(id=1, config_json=config, updated_by_user_id=user_id)
         db.add(row)
     else:
         row.config_json = config
         row.updated_by_user_id = user_id
+    await log_event(
+        entity_type="workflow_config",
+        entity_id="1",
+        action="update_workflow_config",
+        actor_id=user_id,
+        old=old_config,
+        new=config,
+        db=db,
+    )
     await db.commit()
     await db.refresh(row)
     return row.config_json
@@ -438,8 +555,29 @@ async def _can_user_act_on_exception(
         subject_user = await db.get(User, travel_request.employee_user_id)
         subject_employee_id = subject_user.employee_id if subject_user else None
 
-    route_role = active_stage.required_role
-    if route_role == Role.REPORTING_MANAGER.value:
+    return await _user_matches_required_role(user, active_stage.required_role, subject_employee_id, db)
+
+
+async def _user_matches_required_role(
+    user: User, required_role: str, subject_employee_id: str | None, db: AsyncSession
+) -> bool:
+    """Does `user` satisfy `required_role` for this subject employee — directly, or via an
+    active delegation from whoever actually holds (or would hold) that role? Shared by
+    exception decision-making (decide_exception_request) and the read-side check above, so
+    the two can never drift out of sync the way they used to (one supported delegation for
+    pooled roles, the other didn't; one had a query bug that crashed, the other didn't)."""
+    active_delegator_ids = await _active_delegator_ids(user.id, db)
+    delegator_emp_ids: list[str] = []
+    delegator_roles: set[Role] = set()
+    if active_delegator_ids:
+        delegator_emp_ids = (
+            await db.execute(select(User.employee_id).where(User.id.in_(active_delegator_ids)))
+        ).scalars().all()
+        delegator_roles = set(
+            (await db.execute(select(User.role).where(User.id.in_(active_delegator_ids)))).scalars().all()
+        )
+
+    if required_role == Role.REPORTING_MANAGER.value:
         if not subject_employee_id:
             return True
         emp = await db.get(Employee, subject_employee_id)
@@ -447,39 +585,21 @@ async def _can_user_act_on_exception(
             return True
         if emp.reporting_manager_id == user.employee_id:
             return True
-            
-        now = _now()
-        delegators_q = select(Delegation.delegator_id).where(
-            Delegation.delegatee_id == user.id,
-            Delegation.is_active,
-            Delegation.start_date <= now,
-            Delegation.end_date >= now
-        )
-        delegator_ids = (await db.execute(delegators_q)).scalars().all()
-        if delegator_ids:
-            managers_q = select(Employee.employee_id).where(Employee.user_id.in_(delegator_ids))
-            manager_emp_ids = (await db.execute(managers_q)).scalars().all()
-            if emp.reporting_manager_id in manager_emp_ids:
-                return True
-        return False
-    if route_role == Role.HRBP_HR.value:
-        return user.role == Role.HRBP_HR
-    if route_role == Role.PAYROLL.value:
-        return user.role == Role.PAYROLL
-    if route_role == Role.FINANCE.value:
-        return user.role == Role.FINANCE
-    if route_role == Role.CEO.value:
-        return user.role == Role.CEO
-    if route_role == Role.GROUP_HEAD_HR.value:
-        return user.role == Role.GROUP_HEAD_HR
-    if route_role == Role.IT_ADMIN.value:
-        return user.role == Role.IT_ADMIN
-    if route_role == "FUNCTION_HEAD":
+        return bool(delegator_emp_ids) and emp.reporting_manager_id in delegator_emp_ids
+    if required_role == "FUNCTION_HEAD":
         if not subject_employee_id:
             return False
         fh = await _get_function_head(subject_employee_id, db)
-        return fh and fh.employee_id == user.employee_id
-    return False
+        if not fh:
+            return False
+        if fh.employee_id == user.employee_id:
+            return True
+        return bool(delegator_emp_ids) and fh.employee_id in delegator_emp_ids
+    try:
+        role_enum = Role(required_role)
+    except ValueError:
+        return False
+    return user.role == role_enum or role_enum in delegator_roles
 
 
 async def _can_user_act_on_claim_stage(
@@ -569,7 +689,7 @@ async def _can_user_act_on_claim_stage(
 
 
 async def init_claim_approval_chain(claim: ClaimDraft, db: AsyncSession) -> None:
-    cfg = await get_workflow_config(db)
+    cfg = await get_workflow_config(db, category=claim.reimbursement_category.value)
     stage_defs = _normalize_stage_defs(cfg)
     now = _now()
     total = total_claimed_from_report(claim)
@@ -707,16 +827,101 @@ async def assert_user_can_view_claim_workflow(claim_id: int, user_id: int, db: A
     stages = await _load_stages(claim_id, db)
     pending = _active_pending_stage(claim, stages)
     if pending:
-        cfg = await get_workflow_config(db)
+        cfg = await get_workflow_config(db, category=claim.reimbursement_category.value)
         stage_defs = _normalize_stage_defs(cfg)
         stage_def = next((s for s in stage_defs if int(s["number"]) == pending.stage_number), None)
-        if stage_def and await _can_user_act_on_claim_stage(user, claim, stage_def, db):
+        active_delegator_ids = await _active_delegator_ids(user_id, db)
+        if stage_def and await _can_user_act_on_claim_stage(
+            user, claim, stage_def, db, stage_row=pending, active_delegator_ids=active_delegator_ids
+        ):
             return claim
     raise HTTPException(status_code=403, detail="Cannot view this claim")
 
 
+async def _pending_approver_names(route_role: str, employee_id: str | None, db: AsyncSession) -> list[str]:
+    user_ids = await _user_ids_for_role(route_role, employee_id, db)
+    names = []
+    for uid in user_ids:
+        name, _ = await _user_identity(uid, db)
+        if name:
+            names.append(name)
+    return names
+
+
 async def get_approval_chain(claim: ClaimDraft, db: AsyncSession) -> dict:
     stages = await _load_stages(claim.id, db)
+
+    # A PENDING_EXCEPTION claim has no ClaimApprovalStage rows yet — init_claim_approval_chain
+    # deliberately skips creating them until the exception is resolved (see that function).
+    # Surface the exception's own approval chain instead, so the stepper shows *something*
+    # rather than "unavailable" while a real approval is genuinely in progress.
+    exception_stages: list[dict] = []
+    exc_requests = (
+        await db.execute(
+            select(ExceptionRequest)
+            .where(ExceptionRequest.claim_id == claim.id)
+            .order_by(ExceptionRequest.id)
+        )
+    ).scalars().all()
+    for req in exc_requests:
+        approvals = (
+            await db.execute(
+                select(ExceptionApproval)
+                .where(ExceptionApproval.exception_request_id == req.id)
+                .order_by(ExceptionApproval.id)
+            )
+        ).scalars().all()
+        for approval in approvals:
+            acted_by_name, _ = await _user_identity(approval.acted_by_user_id, db)
+            pending_names: list[str] = []
+            if approval.status in (ExceptionRequestStatus.PENDING.value, "AWAITING"):
+                pending_names = await _pending_approver_names(approval.required_role, claim.employee_id, db)
+            exception_stages.append(
+                {
+                    "exception_request_id": req.id,
+                    "exception_type": req.exception_type,
+                    "exception_type_label": _humanize_token(req.exception_type),
+                    "required_role": approval.required_role,
+                    "status": approval.status,
+                    "acted_at": approval.acted_at.isoformat() if approval.acted_at else None,
+                    "acted_by_user_id": approval.acted_by_user_id,
+                    "acted_by_name": acted_by_name,
+                    "pending_approver_names": pending_names,
+                    "comment": approval.comment,
+                }
+            )
+
+    # Once the exception(s) clear, the claim gets the *real* stage rows above — this is
+    # only meant to preview what's coming next while none exist yet.
+    upcoming_stages: list[dict] = []
+    if claim.status == ClaimStatus.PENDING_EXCEPTION and not stages:
+        cfg = await get_workflow_config(db, category=claim.reimbursement_category.value)
+        for s in _normalize_stage_defs(cfg):
+            names = await _pending_approver_names(str(s.get("route_role") or ""), claim.employee_id, db)
+            upcoming_stages.append(
+                {"stage_number": s["number"], "label": s["label"], "pending_approver_names": names}
+            )
+
+    stage_dicts = []
+    for s in stages:
+        decided_by_name, _ = await _user_identity(s.decided_by_user_id, db)
+        pending_names: list[str] = []
+        if s.status in (ClaimApprovalStageStatus.PENDING.value, STAGE_STATUS_NOT_STARTED) and s.required_role:
+            pending_names = await _pending_approver_names(s.required_role, claim.employee_id, db)
+        stage_dicts.append(
+            {
+                "stage_number": s.stage_number,
+                "label": s.stage_label,
+                "status": s.status,
+                "sla_deadline_at": s.sla_deadline_at.isoformat() if s.sla_deadline_at else None,
+                "decided_at": s.decided_at.isoformat() if s.decided_at else None,
+                "decided_by_user_id": s.decided_by_user_id,
+                "decided_by_name": decided_by_name,
+                "pending_approver_names": pending_names,
+                "comment": s.comment,
+            }
+        )
+
     return {
         "claim_id": claim.id,
         "claim_reference": claim.claim_reference,
@@ -727,18 +932,9 @@ async def get_approval_chain(claim: ClaimDraft, db: AsyncSession) -> dict:
         "payment_amount": str(claim.payment_amount) if claim.payment_amount is not None else None,
         "reject_reason": claim.reject_reason,
         "authoritative_payable_amount": str(_authoritative_payable_amount(claim)),
-        "stages": [
-            {
-                "stage_number": s.stage_number,
-                "label": s.stage_label,
-                "status": s.status,
-                "sla_deadline_at": s.sla_deadline_at.isoformat() if s.sla_deadline_at else None,
-                "decided_at": s.decided_at.isoformat() if s.decided_at else None,
-                "decided_by_user_id": s.decided_by_user_id,
-                "comment": s.comment,
-            }
-            for s in stages
-        ],
+        "stages": stage_dicts,
+        "exception_stages": exception_stages,
+        "upcoming_stages": upcoming_stages,
     }
 
 
@@ -815,6 +1011,7 @@ async def get_claim_timeline(claim: ClaimDraft, db: AsyncSession) -> list[dict]:
     event_by_action = {
         "approve_stage": "stage_approved",
         "approve_stage_partial": "stage_approved",
+        "approve_stage_auto": "stage_approved",
         "send_back": "sent_back",
         "reject_claim": "rejected",
         "record_payment": "payment_processed",
@@ -825,7 +1022,7 @@ async def get_claim_timeline(claim: ClaimDraft, db: AsyncSession) -> list[dict]:
             continue
         actor, role = await _user_identity(log.actor_id, db)
         new_value = log.new_value or {}
-        if log.action in ("approve_stage", "approve_stage_partial"):
+        if log.action in ("approve_stage", "approve_stage_partial", "approve_stage_auto"):
             stage = new_value.get("approved_stage_number")
             comment = new_value.get("comment")
         elif log.action == "reject_claim":
@@ -843,6 +1040,7 @@ async def get_claim_timeline(claim: ClaimDraft, db: AsyncSession) -> list[dict]:
                 "comment": comment,
                 "stage": stage,
                 "utr": new_value.get("payment_utr"),
+                "is_auto": log.action == "approve_stage_auto",
             }
         )
 
@@ -880,7 +1078,7 @@ async def approve_claim_stage(claim_id: int, user_id: int, comment: str | None, 
     if pending is None:
         raise HTTPException(status_code=409, detail="No pending approval stage")
 
-    cfg = await get_workflow_config(db)
+    cfg = await get_workflow_config(db, category=claim.reimbursement_category.value)
     stage_defs = _normalize_stage_defs(cfg)
     stage_def = next((s for s in stage_defs if int(s["number"]) == pending.stage_number), None)
     if stage_def is None:
@@ -891,7 +1089,10 @@ async def approve_claim_stage(claim_id: int, user_id: int, comment: str | None, 
             detail="Finance stage is completed via payment initiation endpoint",
         )
 
-    if not await _can_user_act_on_claim_stage(user, claim, stage_def, db, stage_row=pending):
+    active_delegator_ids = await _active_delegator_ids(user_id, db)
+    if not await _can_user_act_on_claim_stage(
+        user, claim, stage_def, db, stage_row=pending, active_delegator_ids=active_delegator_ids
+    ):
         raise HTTPException(status_code=403, detail="Not allowed to approve this stage")
     now = _now()
     previous_status = claim.status.value
@@ -993,14 +1194,17 @@ async def send_back_claim(claim_id: int, user_id: int, comment: str, db: AsyncSe
     if pending is None:
         raise HTTPException(status_code=409, detail="No send-back allowed at this stage")
 
-    cfg = await get_workflow_config(db)
+    cfg = await get_workflow_config(db, category=claim.reimbursement_category.value)
     stage_defs = _normalize_stage_defs(cfg)
     stage_def = next((s for s in stage_defs if int(s["number"]) == pending.stage_number), None)
     if stage_def is None:
         raise HTTPException(status_code=500, detail="Approval chain is misconfigured")
     if str(stage_def["route_role"]) == Role.FINANCE.value:
         raise HTTPException(status_code=409, detail="No send-back allowed at finance stage")
-    if not await _can_user_act_on_claim_stage(user, claim, stage_def, db):
+    active_delegator_ids = await _active_delegator_ids(user_id, db)
+    if not await _can_user_act_on_claim_stage(
+        user, claim, stage_def, db, stage_row=pending, active_delegator_ids=active_delegator_ids
+    ):
         raise HTTPException(status_code=403, detail="Not allowed to send back this claim")
 
     now = _now()
@@ -1059,12 +1263,15 @@ async def reject_claim(claim_id: int, user_id: int, reason: str, db: AsyncSessio
     if pending is None:
         raise HTTPException(status_code=409, detail="No pending stage to reject")
 
-    cfg = await get_workflow_config(db)
+    cfg = await get_workflow_config(db, category=claim.reimbursement_category.value)
     stage_defs = _normalize_stage_defs(cfg)
     stage_def = next((s for s in stage_defs if int(s["number"]) == pending.stage_number), None)
     if stage_def is None:
         raise HTTPException(status_code=500, detail="Approval chain is misconfigured")
-    if not await _can_user_act_on_claim_stage(user, claim, stage_def, db):
+    active_delegator_ids = await _active_delegator_ids(user_id, db)
+    if not await _can_user_act_on_claim_stage(
+        user, claim, stage_def, db, stage_row=pending, active_delegator_ids=active_delegator_ids
+    ):
         raise HTTPException(status_code=403, detail="Not allowed to reject at this stage")
 
     now = _now()
@@ -1116,14 +1323,17 @@ async def modify_claim_amount(
     if pending is None:
         raise HTTPException(status_code=409, detail="Modify amount is not allowed at this stage")
 
-    cfg = await get_workflow_config(db)
+    cfg = await get_workflow_config(db, category=claim.reimbursement_category.value)
     stage_defs = _normalize_stage_defs(cfg)
     stage_def = next((s for s in stage_defs if int(s["number"]) == pending.stage_number), None)
     if stage_def is None:
         raise HTTPException(status_code=500, detail="Approval chain is misconfigured")
     if str(stage_def["route_role"]) == Role.FINANCE.value:
         raise HTTPException(status_code=409, detail="Modify amount is not allowed at finance stage")
-    if not await _can_user_act_on_claim_stage(user, claim, stage_def, db):
+    active_delegator_ids = await _active_delegator_ids(user_id, db)
+    if not await _can_user_act_on_claim_stage(
+        user, claim, stage_def, db, stage_row=pending, active_delegator_ids=active_delegator_ids
+    ):
         raise HTTPException(status_code=403, detail="Not allowed to modify amount for this claim")
 
     old = str(claim.approved_amount) if claim.approved_amount is not None else None
@@ -1143,7 +1353,12 @@ async def modify_claim_amount(
 
 
 async def record_claim_payment(
-    claim_id: int, user_id: int, utr: str, amount: Decimal, db: AsyncSession
+    claim_id: int,
+    user_id: int,
+    utr: str,
+    amount: Decimal,
+    db: AsyncSession,
+    tds_deduction: Decimal = Decimal("0"),
 ) -> ClaimDraft:
     if not utr or not utr.strip():
         raise HTTPException(status_code=422, detail="UTR reference is required")
@@ -1158,7 +1373,7 @@ async def record_claim_payment(
     if user is None or user.role != Role.FINANCE:
         raise HTTPException(status_code=403, detail="Only finance can record payment")
 
-    cfg = await get_workflow_config(db)
+    cfg = await get_workflow_config(db, category=claim.reimbursement_category.value)
     stage_defs = _normalize_stage_defs(cfg)
     finance_stage_number = int(
         next(s["number"] for s in stage_defs if str(s["route_role"]) == Role.FINANCE.value)
@@ -1172,12 +1387,20 @@ async def record_claim_payment(
 
     expected = _authoritative_payable_amount(claim)
     provided = amount.quantize(Decimal("0.01"))
-    if provided != expected:
+    deduction = tds_deduction.quantize(Decimal("0.01"))
+    if deduction < 0 or deduction > expected:
+        raise HTTPException(
+            status_code=422,
+            detail=f"TDS/other deductions must be between 0 and the approved amount {expected}.",
+        )
+    # provided is what actually gets transferred to the employee — deduction is withheld
+    # (TDS and similar), so the two together must still add up to the full approved amount.
+    if provided + deduction != expected:
         raise HTTPException(
             status_code=422,
             detail=(
-                f"Payment amount must match authoritative payable amount {expected}. "
-                "Use approved amount when set, otherwise net payable after advances."
+                f"Payment amount plus TDS/other deductions must equal the authoritative payable "
+                f"amount {expected}. Use approved amount when set, otherwise net payable after advances."
             ),
         )
 
@@ -1186,13 +1409,21 @@ async def record_claim_payment(
     stage4.status = ClaimApprovalStageStatus.APPROVED.value
     stage4.decided_at = now
     stage4.decided_by_user_id = user_id
-    stage4.comment = f"UTR {utr.strip()}"
+    stage4.comment = f"UTR {utr.strip()}" + (f" (TDS/deductions {deduction})" if deduction else "")
 
     claim.status = ClaimStatus.PAID
     claim.payment_utr = utr.strip()
     claim.payment_amount = provided
+    claim.tds_deduction = deduction
     claim.payment_recorded_at = now
     claim.payment_recorded_by = user_id
+
+    # Posting to the ERP ledger used to be a second, separate API call the frontend made
+    # right after this one (see PaymentQueuePage.jsx) — if that second call ever failed for
+    # any reason (dropped connection, a server restart mid-request, ...) the claim was left
+    # PAID with no ledger entry and no way to tell from the UI. Folding it into this same
+    # transaction makes the two atomic: either both land or neither does.
+    await post_ledger_entry_to_erp(claim_id, user_id, None, db)
 
     await log_event(
         entity_type="claim_draft",
@@ -1208,6 +1439,7 @@ async def record_claim_payment(
             "status": claim.status.value,
             "payment_utr": claim.payment_utr,
             "payment_amount": str(claim.payment_amount),
+            "tds_deduction": str(claim.tds_deduction),
             "stage_number": stage4.stage_number,
         },
         db=db,
@@ -1215,7 +1447,10 @@ async def record_claim_payment(
     await _notify_employee_update(
         claim,
         title=f"Payment recorded: {claim.claim_reference or f'CLM-{claim.id}'}",
-        body=f"UTR {claim.payment_utr} was recorded for INR {claim.payment_amount}.",
+        body=(
+            f"UTR {claim.payment_utr} was recorded for INR {claim.payment_amount}"
+            + (f" (INR {claim.tds_deduction} withheld as TDS/other deductions)." if claim.tds_deduction else ".")
+        ),
         category=NotificationCategory.PAYMENT,
         db=db,
     )
@@ -1241,15 +1476,8 @@ async def list_pending_approvals(user_id: int, db: AsyncSession) -> list[dict]:
     if user is None:
         return []
         
-    now = _now()
-    active_delegators_q = select(Delegation.delegator_id).where(
-        Delegation.delegatee_id == user_id,
-        Delegation.is_active,
-        Delegation.start_date <= now,
-        Delegation.end_date >= now
-    )
-    active_delegator_ids = (await db.execute(active_delegators_q)).scalars().all()
-    
+    active_delegator_ids = await _active_delegator_ids(user_id, db)
+
     delegator_roles = []
     if active_delegator_ids:
         roles_q = select(User.role).where(User.id.in_(active_delegator_ids))
@@ -1257,26 +1485,30 @@ async def list_pending_approvals(user_id: int, db: AsyncSession) -> list[dict]:
         
     user_roles = [user.role.value] + delegator_roles
 
-    cfg = await get_workflow_config(db)
-    stage_defs = _normalize_stage_defs(cfg)
-    stage_by_number = {int(s["number"]): s for s in stage_defs}
-    allowed_stage_numbers = [
-        int(s["number"]) for s in stage_defs if str(s["route_role"]) in user_roles
-    ]
-    if not allowed_stage_numbers:
-        return []
-
+    # Each claim's own category can have its own configured stage roles (see
+    # get_workflow_config's category param), so stage-number -> route_role isn't a single
+    # global mapping any more — it has to be resolved per claim, not filtered in the query.
     q = select(ClaimDraft).where(
-        ClaimDraft.current_approval_stage.in_(allowed_stage_numbers),
+        ClaimDraft.current_approval_stage.isnot(None),
         ClaimDraft.status.in_([ClaimStatus.IN_APPROVAL, ClaimStatus.READY_FOR_PAYMENT]),
+        ClaimDraft.is_exception_shell.is_(False),
     )
 
     rows = (await db.execute(q)).scalars().unique().all()
+    stage_by_number_by_category: dict[str, dict[int, dict]] = {}
     out: list[dict] = []
     for claim in rows:
+        category = claim.reimbursement_category.value
+        if category not in stage_by_number_by_category:
+            cfg = await get_workflow_config(db, category=category)
+            stage_by_number_by_category[category] = {
+                int(s["number"]): s for s in _normalize_stage_defs(cfg)
+            }
+        stage_by_number = stage_by_number_by_category[category]
+
         active_stage_number = int(claim.current_approval_stage or 0)
         stage_def = stage_by_number.get(active_stage_number)
-        if stage_def is None:
+        if stage_def is None or str(stage_def["route_role"]) not in user_roles:
             continue
 
         stages = await _load_stages(claim.id, db)
@@ -1338,6 +1570,7 @@ async def list_pending_approvals(user_id: int, db: AsyncSession) -> list[dict]:
                 "employee_label": f"{emp.full_name if emp else 'Unknown'} ({claim.employee_id or '—'})",
                 "employee_name": emp.full_name if emp else "Unknown",
                 "department": emp.department if emp else None,
+                "reimbursement_category": claim.reimbursement_category.value,
                 "trip_summary": trip,
                 "amount": str(total),
                 "advance_deducted": str(advance_deducted),
@@ -1565,12 +1798,11 @@ async def create_exception_request(
         for exp in expense_rows:
             exp.exception_requested = True
 
-    # A claim with a live, approver-notified exception can no longer be treated as a
-    # private draft: the approvers it now depends on must be able to view it. Mirrors
-    # the status transition already applied when an exception is auto-detected at
-    # submission time (see submit_claim / trigger_exceptions_if_needed).
-    if claim.status in (ClaimStatus.DRAFT, ClaimStatus.SENT_BACK):
-        claim.status = ClaimStatus.PENDING_EXCEPTION
+    # Requesting an exception mid-wizard no longer locks the claim out of DRAFT — the
+    # employee can keep building/navigating/submitting the claim normally. The approver
+    # is still notified right away (below), but the claim itself only moves to
+    # PENDING_EXCEPTION once the employee actually submits (see submit_claim), which is
+    # also when any *other* pending exception requests on this claim get folded in.
 
     cfg = await get_workflow_config(db)
     required_roles = cfg.get("exception_chains", EXCEPTION_APPROVAL_CHAINS).get(exception_type, ["HRBP_HR"])
@@ -1669,18 +1901,9 @@ async def decide_exception_request(
             detail="There is no active pending stage for this exception request"
         )
 
-    # Check if approver matches active_stage
-    is_match = False
-    if approver.role.value == active_stage.required_role:
-        is_match = True
-    elif active_stage.required_role == "REPORTING_MANAGER" and subject_employee_id:
-        employee = await db.get(Employee, subject_employee_id)
-        if employee and employee.reporting_manager_id == approver.employee_id:
-            is_match = True
-    elif active_stage.required_role == "FUNCTION_HEAD" and subject_employee_id:
-        fh = await _get_function_head(subject_employee_id, db)
-        if fh and fh.employee_id == approver.employee_id:
-            is_match = True
+    # Check if approver matches active_stage — directly, or via an active delegation from
+    # whoever holds that role (see _user_matches_required_role).
+    is_match = await _user_matches_required_role(approver, active_stage.required_role, subject_employee_id, db)
 
     if not is_match:
         raise HTTPException(
@@ -1712,6 +1935,28 @@ async def decide_exception_request(
 
             travel_request.status = TravelRequestStatus.REJECTED.value
             travel_request.rejection_reason = comment or f"Exception '{_exception_label(row)}' was rejected."
+        elif claim is not None:
+            # A claim sitting in PENDING_EXCEPTION has no path forward once its exception is
+            # rejected — it never got real ClaimApprovalStage rows to reject instead (see
+            # init_claim_approval_chain). Reject the claim itself, the same way reject_claim
+            # does, so it doesn't get stuck unresubmittable and its invoices go back to
+            # Archived/reusable via the normal rejected-claim flow.
+            previous_status = claim.status.value
+            claim.status = ClaimStatus.REJECTED
+            claim.reject_reason = comment or f"Exception '{_exception_label(row)}' was rejected."
+            await log_event(
+                entity_type="claim_draft",
+                entity_id=str(claim.id),
+                action="reject_claim_via_exception",
+                actor_id=approver_id,
+                old={"status": previous_status, "reject_reason": None},
+                new={
+                    "status": claim.status.value,
+                    "reject_reason": claim.reject_reason,
+                    "exception_request_id": row.id,
+                },
+                db=db,
+            )
     else:
         # Check if there is a next stage in "AWAITING" state
         next_stage = None
@@ -1740,7 +1985,9 @@ async def decide_exception_request(
                     ExceptionRequest.status != ExceptionRequestStatus.APPROVED.value
                 )
                 other_active = (await db.execute(active_exceptions_stmt)).scalars().first()
-                if not other_active:
+                # A shell claim exists only to carry this exception request — it has no
+                # expenses to review or pay, so it never enters the claim approval workflow.
+                if not other_active and not claim.is_exception_shell:
                     claim.status = ClaimStatus.IN_APPROVAL
                     await init_claim_approval_chain(claim, db)
             else:
@@ -1952,9 +2199,11 @@ async def process_auto_approvals(db: AsyncSession) -> None:
     and auto-approve them if they have been pending for at least 5 minutes.
     """
     now = _now()
+    # threshold/exception_chains/submission are shared across categories, but stage_defs
+    # (route_role per stage number) can differ per category override — resolved per claim below.
     cfg = await get_workflow_config(db)
     threshold = parse_auto_approve_threshold(cfg)
-    stage_defs = _normalize_stage_defs(cfg)
+    stage_defs_by_category: dict[str, list[dict]] = {}
 
     # Fetch all claims in IN_APPROVAL status
     result = await db.execute(
@@ -1971,6 +2220,12 @@ async def process_auto_approvals(db: AsyncSession) -> None:
         pending = _active_pending_stage(claim, stages)
         if not pending:
             continue
+
+        category = claim.reimbursement_category.value
+        if category not in stage_defs_by_category:
+            category_cfg = await get_workflow_config(db, category=category)
+            stage_defs_by_category[category] = _normalize_stage_defs(category_cfg)
+        stage_defs = stage_defs_by_category[category]
 
         # Finance stage is never auto-approved
         stage_def = next((s for s in stage_defs if int(s["number"]) == pending.stage_number), None)
@@ -2010,10 +2265,17 @@ async def process_auto_approvals(db: AsyncSession) -> None:
             previous_status = claim.status.value
             previous_stage = claim.current_approval_stage
 
+            # Attribute the auto-approval to whoever was actually assigned to this stage
+            # (the claim owner's manager for REPORTING_MANAGER, or the first user holding
+            # the stage's role for a role-pool stage) so the timeline can show their name
+            # with an "(Auto Approved)" label instead of an unattributed "System" entry.
+            eligible_user_ids = await _user_ids_for_stage(claim, stage_def, db)
+            attributed_user_id = eligible_user_ids[0] if eligible_user_ids else None
+
             pending.status = ClaimApprovalStageStatus.APPROVED.value
             pending.decided_at = now
-            pending.decided_by_user_id = None
-            pending.comment = None  # User requested: "dont make it say that it is auto approved"
+            pending.decided_by_user_id = attributed_user_id
+            pending.comment = None
 
             # Transition to the next stage
             next_stage_number = min((s.stage_number for s in stages if s.stage_number > pending.stage_number), default=None)
@@ -2038,8 +2300,8 @@ async def process_auto_approvals(db: AsyncSession) -> None:
             await log_event(
                 entity_type="claim_draft",
                 entity_id=str(claim.id),
-                action="approve_stage",
-                actor_id=None,
+                action="approve_stage_auto",
+                actor_id=attributed_user_id,
                 old={"status": previous_status, "current_approval_stage": previous_stage},
                 new={
                     "status": claim.status.value,

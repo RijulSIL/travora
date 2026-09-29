@@ -132,12 +132,12 @@ export default function TeamBudgets() {
         actions={isViewOnly ? <span className="badge bg-slate-100 text-slate-700">View Only</span> : null}
       />
       {error ? (
-        <div className="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
           {error.response?.data?.detail || error.message}
         </div>
       ) : null}
 
-      <section className="panel mb-6 flex flex-wrap items-center justify-between gap-4 rounded p-5">
+      <section className="panel mb-6 flex flex-wrap items-center justify-between gap-4 p-5">
         <div>
           <h3 className="text-[15px] font-bold text-ink">Team budgets</h3>
           <p className="mt-1 max-w-xl text-xs text-slate-500">
@@ -152,25 +152,25 @@ export default function TeamBudgets() {
         </div>
       </section>
 
-      <section className="panel mb-6 overflow-hidden rounded">
+      <section className="panel mb-6 overflow-hidden">
         <div className="border-b border-slate-100 px-5 py-4">
           <h3 className="text-[15px] font-bold text-ink">Department budgets</h3>
           <p className="text-xs text-slate-400 mt-0.5">Default monthly budget applied to a manager by their own department, unless a manager override exists.</p>
         </div>
         <table className="w-full border-collapse text-sm">
           <thead>
-            <tr className="border-b border-slate-100 bg-slate-50/60 text-left text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+            <tr className="border-b border-slate-100 bg-slate-50/60 text-center text-[11px] font-bold text-slate-400 uppercase tracking-wider">
               <th className="px-5 py-3">Department</th>
               <th className="px-5 py-3">Monthly Budget</th>
-              <th className="px-5 py-3 text-right">Actions</th>
+              <th className="px-5 py-3">Actions</th>
             </tr>
           </thead>
           <tbody>
             {departments.map((row) => (
               <tr key={row.id} className="border-b border-slate-50 last:border-none">
-                <td className="px-5 py-3 font-medium text-ink">{row.department}</td>
-                <td className="px-5 py-3">
-                  <div className="flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 w-36">
+                <td className="px-5 py-3 text-center font-medium text-ink">{row.department}</td>
+                <td className="px-5 py-3 text-center">
+                  <div className="flex items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1 w-36">
                     <span className="text-[10px] font-semibold text-slate-400">₹</span>
                     <input
                       className="w-full bg-transparent p-0 text-xs focus:ring-0 border-none outline-none text-slate-700"
@@ -180,9 +180,9 @@ export default function TeamBudgets() {
                     />
                   </div>
                 </td>
-                <td className="px-5 py-3 text-right">
+                <td className="px-5 py-3 text-center">
                   {!isViewOnly ? (
-                    <div className="inline-flex items-center gap-2">
+                    <div className="inline-flex items-center justify-center gap-2">
                       <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={saveDeptRowAction.loading} onClick={() => saveDeptRowAction.run(row)}>
                         <Save size={13} />
                       </button>
@@ -199,19 +199,19 @@ export default function TeamBudgets() {
             ) : null}
             {!isViewOnly && availableDepartments.length ? (
               <tr className="bg-slate-50/40">
-                <td className="px-5 py-3">
+                <td className="px-5 py-3 text-center">
                   <select className="field text-sm py-1.5 bg-white" value={newDept} onChange={(e) => setNewDept(e.target.value)}>
                     <option value="">Select department…</option>
                     {availableDepartments.map((d) => <option key={d} value={d}>{d}</option>)}
                   </select>
                 </td>
-                <td className="px-5 py-3">
-                  <div className="flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 w-36">
+                <td className="px-5 py-3 text-center">
+                  <div className="flex items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1 w-36">
                     <span className="text-[10px] font-semibold text-slate-400">₹</span>
                     <input className="w-full bg-transparent p-0 text-xs focus:ring-0 border-none outline-none text-slate-700" placeholder="0.00" value={newDeptAmount} onChange={(e) => setNewDeptAmount(e.target.value)} />
                   </div>
                 </td>
-                <td className="px-5 py-3 text-right">
+                <td className="px-5 py-3 text-center">
                   <button type="button" className="btn-primary h-8 px-3 text-xs" disabled={!newDept || !newDeptAmount || addDeptAction.loading} onClick={addDeptAction.run}>
                     <Plus size={13} /> Add
                   </button>
@@ -222,30 +222,30 @@ export default function TeamBudgets() {
         </table>
       </section>
 
-      <section className="panel overflow-hidden rounded">
+      <section className="panel overflow-hidden">
         <div className="border-b border-slate-100 px-5 py-4">
           <h3 className="text-[15px] font-bold text-ink">Manager overrides</h3>
           <p className="text-xs text-slate-400 mt-0.5">Takes precedence over the department default for this specific reporting manager.</p>
         </div>
         <table className="w-full border-collapse text-sm">
           <thead>
-            <tr className="border-b border-slate-100 bg-slate-50/60 text-left text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+            <tr className="border-b border-slate-100 bg-slate-50/60 text-center text-[11px] font-bold text-slate-400 uppercase tracking-wider">
               <th className="px-5 py-3">Manager</th>
               <th className="px-5 py-3">Department</th>
               <th className="px-5 py-3">Monthly Budget</th>
-              <th className="px-5 py-3 text-right">Actions</th>
+              <th className="px-5 py-3">Actions</th>
             </tr>
           </thead>
           <tbody>
             {managers.map((row) => (
               <tr key={row.id} className="border-b border-slate-50 last:border-none">
-                <td className="px-5 py-3">
+                <td className="px-5 py-3 text-center">
                   <div className="font-medium text-ink">{row.manager_name}</div>
                   <div className="text-xs text-slate-400">{row.manager_email}</div>
                 </td>
-                <td className="px-5 py-3 text-slate-500">{row.department || '—'}</td>
-                <td className="px-5 py-3">
-                  <div className="flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 w-36">
+                <td className="px-5 py-3 text-center text-slate-500">{row.department || '—'}</td>
+                <td className="px-5 py-3 text-center">
+                  <div className="flex items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1 w-36">
                     <span className="text-[10px] font-semibold text-slate-400">₹</span>
                     <input
                       className="w-full bg-transparent p-0 text-xs focus:ring-0 border-none outline-none text-slate-700"
@@ -255,9 +255,9 @@ export default function TeamBudgets() {
                     />
                   </div>
                 </td>
-                <td className="px-5 py-3 text-right">
+                <td className="px-5 py-3 text-center">
                   {!isViewOnly ? (
-                    <div className="inline-flex items-center gap-2">
+                    <div className="inline-flex items-center justify-center gap-2">
                       <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={saveManagerRowAction.loading} onClick={() => saveManagerRowAction.run(row)}>
                         <Save size={13} />
                       </button>
@@ -274,7 +274,7 @@ export default function TeamBudgets() {
             ) : null}
             {!isViewOnly && availableManagers.length ? (
               <tr className="bg-slate-50/40">
-                <td className="px-5 py-3" colSpan={2}>
+                <td className="px-5 py-3 text-center" colSpan={2}>
                   <select className="field text-sm py-1.5 bg-white w-full" value={newManagerId} onChange={(e) => setNewManagerId(e.target.value)}>
                     <option value="">Select manager…</option>
                     {availableManagers.map((m) => (
@@ -284,13 +284,13 @@ export default function TeamBudgets() {
                     ))}
                   </select>
                 </td>
-                <td className="px-5 py-3">
-                  <div className="flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 w-36">
+                <td className="px-5 py-3 text-center">
+                  <div className="flex items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1 w-36">
                     <span className="text-[10px] font-semibold text-slate-400">₹</span>
                     <input className="w-full bg-transparent p-0 text-xs focus:ring-0 border-none outline-none text-slate-700" placeholder="0.00" value={newManagerAmount} onChange={(e) => setNewManagerAmount(e.target.value)} />
                   </div>
                 </td>
-                <td className="px-5 py-3 text-right">
+                <td className="px-5 py-3 text-center">
                   <button type="button" className="btn-primary h-8 px-3 text-xs" disabled={!newManagerId || !newManagerAmount || addManagerAction.loading} onClick={addManagerAction.run}>
                     <Plus size={13} /> Add
                   </button>

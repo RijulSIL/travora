@@ -1,10 +1,29 @@
 import { Fragment, useCallback, useEffect, useState } from 'react';
-import { Check, ChevronDown, Clock, Eye, Filter, GitBranch, RotateCcw, X } from 'lucide-react';
+import {
+  Armchair,
+  Bus,
+  Calendar,
+  Check,
+  ChevronDown,
+  Clock,
+  Eye,
+  FileText,
+  Filter,
+  GitBranch,
+  Layers,
+  MessageSquare,
+  Plane,
+  RotateCcw,
+  TrainFront,
+  X,
+} from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
 import { useAuthStore, selectResolvedRole } from '../store/authStore';
 
 import ClaimReviewModal from '../components/claims/ClaimReviewModal';
 import TravelRequestProgress from '../components/travel/TravelRequestProgress';
 import EmptyState from '../components/ui/EmptyState';
+import ReimbursementCategoryBadge from '../components/ui/ReimbursementCategoryBadge';
 import Skeleton from '../components/ui/Skeleton';
 import { useSetPageTitle } from '../context/PageTitleContext';
 import { useAsyncAction } from '../hooks/useAsyncAction';
@@ -13,18 +32,40 @@ import { reimbursementApi } from '../services/reimbursementApi';
 import { formatCurrency } from '../utils/formatters';
 import { normalizeApiError } from '../utils/apiErrors';
 
-function slaClass(bucket) {
-  if (bucket === 'breached') return 'sla-breached';
-  if (bucket === 'warning') return 'sla-warning';
-  return 'sla-ok';
-}
+const TRAVEL_MODE_ICONS = { BUS: Bus, TRAIN: TrainFront, FLIGHT: Plane };
+
+const titleCase = (value) =>
+  String(value || '')
+    .split('_')
+    .map((w) => w.charAt(0) + w.slice(1).toLowerCase())
+    .join(' ');
+
+const formatRequestedAt = (value) =>
+  value
+    ? new Date(value).toLocaleString('en-IN', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    : null;
 
 export default function PendingApprovals() {
   useSetPageTitle('Pending Approvals');
   const { showToast } = useToast();
   const role = useAuthStore(selectResolvedRole);
   const profile = useAuthStore((state) => state.profile);
-  const [tab, setTab] = useState('claims');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [tab, setTabState] = useState(searchParams.get('tab') === 'travel' ? 'travel' : 'claims');
+  const setTab = (next) => {
+    setTabState(next);
+    setSearchParams(next === 'travel' ? { tab: 'travel' } : {}, { replace: true });
+  };
+
+  useEffect(() => {
+    setTabState(searchParams.get('tab') === 'travel' ? 'travel' : 'claims');
+  }, [searchParams]);
   const [rows, setRows] = useState([]);
   const [travelRows, setTravelRows] = useState([]);
   const [error, setError] = useState(null);
@@ -32,6 +73,7 @@ export default function PendingApprovals() {
   const [now, setNow] = useState(Date.now());
   const [expanded, setExpanded] = useState({});
   const [slaFilter, setSlaFilter] = useState('ALL');
+  const [categoryFilter, setCategoryFilter] = useState('ALL');
   const [minAmount, setMinAmount] = useState('');
   const [maxAmount, setMaxAmount] = useState('');
   const [reviewClaimId, setReviewClaimId] = useState(null);
@@ -120,11 +162,13 @@ export default function PendingApprovals() {
     const min = Number(minAmount || 0);
     const max = Number(maxAmount || Number.POSITIVE_INFINITY);
     const matchSla = slaFilter === 'ALL' ? true : row.sla_bucket.toUpperCase() === slaFilter;
-    return matchSla && amount >= min && amount <= max;
+    const matchCategory =
+      categoryFilter === 'ALL' ? true : (row.reimbursement_category || 'TRAVEL') === categoryFilter;
+    return matchSla && matchCategory && amount >= min && amount <= max;
   });
 
   return (
-    <div className="mx-auto max-w-6xl">
+    <div>
       <div className="mb-6">
         <p className="text-sm text-slate-600">
           Claims awaiting your review. SLA is driven from workflow configuration (default 48h per
@@ -163,7 +207,7 @@ export default function PendingApprovals() {
             <Filter size={14} />
             <span>Filter Claims</span>
           </div>
-          <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-4">
+          <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-5">
             <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-500">
               SLA status
               <select className="field mt-0.5" value={slaFilter} onChange={(e) => setSlaFilter(e.target.value)}>
@@ -171,6 +215,15 @@ export default function PendingApprovals() {
                 <option value="OK">OK</option>
                 <option value="WARNING">Warning</option>
                 <option value="BREACHED">Breached</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-500">
+              Reimbursement type
+              <select className="field mt-0.5" value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
+                <option value="ALL">All</option>
+                <option value="TRAVEL">Travel</option>
+                <option value="GENERAL">General</option>
+                <option value="REALLOCATION">Reallocation</option>
               </select>
             </label>
             <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-500">
@@ -185,7 +238,7 @@ export default function PendingApprovals() {
               <button
                 type="button"
                 className="btn-secondary w-full gap-2 font-bold"
-                onClick={() => { setSlaFilter('ALL'); setMinAmount(''); setMaxAmount(''); }}
+                onClick={() => { setSlaFilter('ALL'); setCategoryFilter('ALL'); setMinAmount(''); setMaxAmount(''); }}
               >
                 <RotateCcw size={14} />
                 <span>Reset</span>
@@ -202,122 +255,118 @@ export default function PendingApprovals() {
       ) : null}
 
       {tab === 'claims' && (
-        <div className="panel overflow-hidden">
-          <table className="w-full border-collapse text-sm">
+        <div className="panel overflow-x-auto">
+          <table className="w-full min-w-[900px] border-collapse text-sm">
             <thead>
-              <tr className="border-b border-line/60 bg-slate-50/70 text-left text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                <th className="px-5 py-3.5">Reference</th>
-                <th className="px-5 py-3.5">Employee</th>
-                <th className="px-5 py-3.5">Trip</th>
-                <th className="px-5 py-3.5">Amount</th>
+              <tr className="border-b border-line/60 bg-slate-50/70 text-center text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                <th className="px-5 py-3.5 whitespace-nowrap">S. No</th>
+                <th className="px-5 py-3.5 whitespace-nowrap">Reference</th>
+                <th className="px-5 py-3.5 whitespace-nowrap">Employee</th>
+                <th className="px-5 py-3.5 whitespace-nowrap">Trip</th>
+                <th className="px-5 py-3.5 whitespace-nowrap">Amount</th>
                 <th className="px-5 py-3.5">Exceptions</th>
-                <th className="px-5 py-3.5">SLA</th>
-                <th className="px-5 py-3.5 text-right">Actions</th>
+                <th className="px-5 py-3.5 whitespace-nowrap">SLA</th>
+                <th className="px-5 py-3.5 whitespace-nowrap">Actions</th>
               </tr>
             </thead>
             <tbody>
               {loading && !rows.length ? (
                 <tr>
-                  <td colSpan={7} className="px-5 py-6 text-center text-slate-500">
-                    <Skeleton variant="table" rows={4} columns={7} />
+                  <td colSpan={8} className="px-5 py-6 text-center text-slate-500">
+                    <Skeleton variant="table" rows={4} columns={8} />
                   </td>
                 </tr>
               ) : null}
               {!loading && !rows.length ? (
                 <tr>
-                  <td colSpan={7} className="px-5 py-5">
+                  <td colSpan={8} className="px-5 py-5">
                     <EmptyState
-                      icon="📋"
                       title="No pending approvals"
                       description="You're all caught up! New claims will appear here."
                     />
                   </td>
                 </tr>
               ) : null}
-              {filteredRows.map((r) => {
+              {filteredRows.map((r, index) => {
                 const quickApproveEligible = (r.exceptions_summary || []).every((x) => x === 'Compliant') && r.sla_bucket !== 'breached';
+                const slaBadge =
+                  r.sla_bucket === 'breached'
+                    ? 'border-red-200 bg-red-50 text-red-700'
+                    : r.sla_bucket === 'warning'
+                      ? 'border-amber-200 bg-amber-50 text-amber-700'
+                      : 'border-emerald-200 bg-emerald-50 text-emerald-700';
                 return (
-                  <Fragment key={r.claim_id}>
-                    <tr className="border-b border-slate-100 hover:bg-slate-50/50 transition-colors duration-150">
-                      <td className="px-5 py-4 font-bold text-slate-900">{r.claim_reference}</td>
-                      <td className="px-5 py-4 font-medium text-slate-800">{r.employee_label}</td>
-                      <td className="px-5 py-4 text-slate-600">{r.trip_summary}</td>
-                      <td className="px-5 py-4 font-bold text-slate-900">{formatCurrency(r.amount)}</td>
-                      <td className="px-5 py-4">
-                        <div className="flex flex-wrap gap-1.5">
-                          {(r.exceptions_summary || []).map((x) => {
-                            const isCompliant = x === 'Compliant';
-                            return (
-                              <span
-                                key={x}
-                                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-medium shadow-sm transition-all duration-150 ${
-                                  isCompliant
-                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                                    : 'bg-red-50 text-red-700 border-red-200'
-                                }`}
-                              >
-                                <span className={`h-1.5 w-1.5 rounded-full ${isCompliant ? 'bg-emerald-500' : 'bg-red-500 animate-pulse'}`} />
-                                {x}
-                              </span>
-                            );
-                          })}
-                        </div>
-                      </td>
-                      <td className="px-5 py-4">
-                        <div className={`inline-flex items-center gap-1.5 text-xs font-semibold ${slaClass(r.sla_bucket)}`}>
-                          <Clock size={13} className="shrink-0" />
-                          <span>{liveSla(r)}</span>
-                        </div>
-                      </td>
-                      <td className="px-5 py-4 text-right">
-                        <div className="flex items-center justify-end gap-2.5">
-                          <button
-                            type="button"
-                            className="inline-flex items-center gap-1 text-xs font-semibold text-slate-500 hover:text-slate-800 transition-colors duration-150"
-                            onClick={() => setExpanded((prev) => ({ ...prev, [r.claim_id]: !prev[r.claim_id] }))}
-                          >
-                            <span>{expanded[r.claim_id] ? 'Hide' : 'Details'}</span>
-                            <ChevronDown
-                              size={14}
-                              className={`transform transition-transform duration-200 ${
-                                expanded[r.claim_id] ? 'rotate-180' : ''
-                              }`}
-                            />
-                          </button>
-                          <button
-                            type="button"
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-all shadow-sm"
-                            onClick={() => setReviewClaimId(r.claim_id)}
-                          >
-                            <Eye size={13} />
-                            <span>Review</span>
-                          </button>
-                          <button
-                            type="button"
-                            disabled={acting || !quickApproveEligible}
-                            className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 border border-emerald-200/60 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100 active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:scale-100 shadow-sm"
-                            onClick={() => approve(r.claim_id)}
-                          >
-                            <Check size={13} />
-                            <span>Quick Approve</span>
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                    {expanded[r.claim_id] ? (
-                      <tr className="border-b border-slate-100 bg-slate-50/50">
-                        <td colSpan={7} className="px-5 py-3 text-xs text-slate-600">
-                          <div className="flex items-center gap-4 pl-4">
-                            <div><strong>Summary:</strong> Total {formatCurrency(r.amount)}</div>
-                            <div className="text-slate-300">|</div>
-                            <div><strong>Exceptions:</strong> {(r.exceptions_summary || []).length}</div>
-                            <div className="text-slate-300">|</div>
-                            <div><strong>Destination:</strong> {r.trip_summary}</div>
+                  <tr key={r.claim_id} className="border-b border-slate-100 align-middle hover:bg-slate-50/50 transition-colors duration-150">
+                    <td className="px-5 py-4 text-center text-slate-500">{index + 1}</td>
+                    <td className="px-5 py-4 text-center font-bold text-slate-900">
+                      <div className="flex flex-wrap items-center justify-center gap-1.5">
+                        <span className="whitespace-nowrap">{r.claim_reference}</span>
+                        <ReimbursementCategoryBadge category={r.reimbursement_category} />
+                      </div>
+                    </td>
+                    <td className="px-5 py-4 text-center font-medium text-slate-800 whitespace-nowrap">{r.employee_label}</td>
+                    <td className="px-5 py-4 text-center text-slate-600 whitespace-nowrap">
+                      {(() => {
+                        const [route, dates] = (r.trip_summary || '—').split(' · ');
+                        return (
+                          <div className="flex flex-col items-center gap-0.5">
+                            <span className="font-medium text-slate-800">{route}</span>
+                            {dates ? <span className="text-xs text-slate-500">{dates}</span> : null}
                           </div>
-                        </td>
-                      </tr>
-                    ) : null}
-                  </Fragment>
+                        );
+                      })()}
+                    </td>
+                    <td className="px-5 py-4 text-center font-bold tabular-nums text-slate-900 whitespace-nowrap">
+                      {formatCurrency(r.amount)}
+                    </td>
+                    <td className="px-5 py-4 text-center">
+                      <div className="flex flex-wrap justify-center gap-1.5">
+                        {(r.exceptions_summary || []).map((x) => {
+                          const isCompliant = x === 'Compliant';
+                          return (
+                            <span
+                              key={x}
+                              className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-0.5 text-[11px] font-medium shadow-sm transition-all duration-150 ${
+                                isCompliant
+                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                  : 'bg-red-50 text-red-700 border-red-200'
+                              }`}
+                            >
+                              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${isCompliant ? 'bg-emerald-500' : 'bg-red-500 animate-pulse'}`} />
+                              {x}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </td>
+                    <td className="px-5 py-4 text-center whitespace-nowrap">
+                      <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold shadow-sm ${slaBadge}`}>
+                        <Clock size={12} className={`shrink-0 ${r.sla_bucket === 'breached' ? 'animate-pulse' : ''}`} />
+                        {liveSla(r)}
+                      </span>
+                    </td>
+                    <td className="px-5 py-4 text-center">
+                      <div className="flex items-center justify-center gap-2">
+                        <button
+                          type="button"
+                          className="inline-flex h-8 flex-none items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-all shadow-sm"
+                          onClick={() => setReviewClaimId(r.claim_id)}
+                        >
+                          <Eye size={13} />
+                          <span>Review</span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={acting || !quickApproveEligible}
+                          className="inline-flex h-8 flex-none items-center gap-1.5 whitespace-nowrap rounded-lg bg-emerald-50 border border-emerald-200/60 px-3 text-xs font-bold text-emerald-700 hover:bg-emerald-100 active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:scale-100 shadow-sm"
+                          onClick={() => approve(r.claim_id)}
+                        >
+                          <Check size={13} />
+                          <span>Quick Approve</span>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
                 );
               })}
             </tbody>
@@ -330,6 +379,7 @@ export default function PendingApprovals() {
           <table className="w-full border-collapse text-sm">
             <thead>
               <tr className="border-b border-line/60 bg-slate-50/70 text-left text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                <th className="px-5 py-3.5 whitespace-nowrap">S. No</th>
                 <th className="px-5 py-3.5">Employee</th>
                 <th className="px-5 py-3.5">When</th>
                 <th className="px-5 py-3.5">Route</th>
@@ -341,25 +391,45 @@ export default function PendingApprovals() {
             <tbody>
               {loading && !travelRows.length ? (
                 <tr>
-                  <td colSpan={6} className="px-5 py-6 text-center text-slate-500">
-                    <Skeleton variant="table" rows={4} columns={6} />
+                  <td colSpan={7} className="px-5 py-6 text-center text-slate-500">
+                    <Skeleton variant="table" rows={4} columns={7} />
                   </td>
                 </tr>
               ) : null}
               {!loading && !travelRows.length ? (
                 <tr>
-                  <td colSpan={6} className="px-5 py-5">
+                  <td colSpan={7} className="px-5 py-5">
                     <EmptyState
-                      icon="✈️"
+                      icon={Plane}
                       title="No pending travel requests"
                       description="You're all caught up!"
                     />
                   </td>
                 </tr>
               ) : null}
-              {travelRows.map(({ request, employee_display_name, impact_level_code }) => (
+              {travelRows.map(({ request, employee_display_name, impact_level_code }, index) => {
+                const isMultiCity = request.trip_type === 'MULTI_CITY' && request.legs?.length > 0;
+                const modeLabel = isMultiCity
+                  ? [...new Set(request.legs.map((leg) => leg.travel_mode || request.travel_mode))].join(', ')
+                  : request.travel_mode;
+                const ModeIcon = !isMultiCity ? TRAVEL_MODE_ICONS[request.travel_mode] : null;
+                const detailFields = [
+                  { icon: FileText, label: 'Purpose', value: request.purpose },
+                  {
+                    icon: Layers,
+                    label: 'Trip Type',
+                    value: request.trip_type ? titleCase(request.trip_type) : null,
+                  },
+                  { icon: Armchair, label: 'Preferred Class', value: request.preferred_class },
+                  { icon: Calendar, label: 'Return Date', value: request.return_date },
+                  { icon: MessageSquare, label: 'Notes', value: request.notes },
+                  { icon: Clock, label: 'Requested On', value: formatRequestedAt(request.requested_at) },
+                ].filter((f) => f.value);
+
+                return (
                 <Fragment key={request.id}>
                   <tr className="border-b border-slate-100 hover:bg-slate-50/50 transition-colors duration-150">
+                    <td className="px-5 py-4 text-center text-slate-500">{index + 1}</td>
                     <td className="px-5 py-4 font-medium text-slate-800">
                       <div className="flex items-center gap-2">
                         <span>{employee_display_name || '—'}</span>
@@ -401,9 +471,10 @@ export default function PendingApprovals() {
                       )}
                     </td>
                     <td className="px-5 py-4 text-slate-600">
-                      {request.trip_type === 'MULTI_CITY' && request.legs?.length > 0
-                        ? [...new Set(request.legs.map((leg) => leg.travel_mode || request.travel_mode))].join(', ')
-                        : request.travel_mode}
+                      <div className="flex items-center gap-1.5">
+                        {ModeIcon ? <ModeIcon size={14} className="shrink-0 text-slate-400" /> : null}
+                        <span>{modeLabel}</span>
+                      </div>
                     </td>
                     <td className="px-5 py-4">
                       <span className="badge badge-in-approval">{request.status}</span>
@@ -443,22 +514,29 @@ export default function PendingApprovals() {
                     </td>
                   </tr>
                   {expanded[`travel_${request.id}`] ? (
-                    <tr className="border-b border-slate-100 bg-slate-50/50">
-                      <td colSpan={6} className="px-5 py-4 text-xs text-slate-600">
-                        <div className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-2 pl-4 max-w-3xl">
-                          <div><strong>Purpose:</strong> {request.purpose || '—'}</div>
-                          <div><strong>Notes:</strong> {request.notes || '—'}</div>
-                          <div><strong>Preferred Class:</strong> {request.preferred_class || '—'}</div>
-                          <div><strong>Trip Type:</strong> {request.trip_type ? request.trip_type.replace('_', ' ') : '—'}</div>
-                          {request.return_date && <div><strong>Return Date:</strong> {request.return_date}</div>}
-                          <div><strong>Employee Level:</strong> {impact_level_code || '—'}</div>
-                          <div>
-                            <strong>Requested On:</strong>{' '}
-                            {request.requested_at ? new Date(request.requested_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}
-                          </div>
+                    <tr className="border-b border-slate-100 bg-slate-50/40">
+                      <td colSpan={7} className="px-5 py-4">
+                        <div className="max-w-3xl rounded-xl border border-slate-200/70 bg-white p-4 shadow-sm">
+                          {detailFields.length ? (
+                            <div className="grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-3">
+                              {detailFields.map((f) => (
+                                <div key={f.label} className="flex items-start gap-2">
+                                  <f.icon size={14} className="mt-0.5 shrink-0 text-slate-400" />
+                                  <div>
+                                    <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                                      {f.label}
+                                    </div>
+                                    <div className="text-xs font-medium text-slate-700">{f.value}</div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-xs text-slate-400">No additional trip details provided.</p>
+                          )}
                         </div>
                         {request.exception ? (
-                          <div className="mt-4 pl-4 max-w-3xl border-t border-slate-200 pt-3">
+                          <div className="mt-3 max-w-3xl rounded-xl border border-slate-200/70 bg-white p-4 shadow-sm">
                             <TravelRequestProgress request={request} />
                           </div>
                         ) : null}
@@ -466,7 +544,8 @@ export default function PendingApprovals() {
                     </tr>
                   ) : null}
                 </Fragment>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>

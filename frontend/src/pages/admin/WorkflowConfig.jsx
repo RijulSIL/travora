@@ -51,6 +51,22 @@ function sanitizeAutoApproveAmount(raw) {
   return n.toFixed(2);
 }
 
+const STAGE_CATEGORIES = [
+  { value: 'DEFAULT', label: 'Default (all categories)' },
+  { value: 'TRAVEL', label: 'Travel claims' },
+  { value: 'GENERAL', label: 'General reimbursements' },
+  { value: 'REALLOCATION', label: 'Reallocations' },
+];
+
+const ALLOWED_STAGE_ROLES = ['REPORTING_MANAGER', 'HRBP_HR', 'PAYROLL', 'FINANCE', 'CEO', 'GROUP_HEAD_HR', 'IT_ADMIN'];
+
+function sanitizeStageRoles(stageList) {
+  return (stageList || []).map((s) => ({
+    ...s,
+    route_role: ALLOWED_STAGE_ROLES.includes(s.route_role) ? s.route_role : 'HRBP_HR',
+  }));
+}
+
 function errorMessage(err) {
   if (!err) return '';
   const d = err.response?.data?.detail;
@@ -64,7 +80,9 @@ export default function WorkflowConfig() {
   const role = useAuthStore((s) => s.user?.role);
   const isViewOnly = !canEditWorkflowConfig(role);
   const [selectedWorkflow, setSelectedWorkflow] = useState('STANDARD');
+  const [selectedCategory, setSelectedCategory] = useState('DEFAULT');
   const [stages, setStages] = useState([]);
+  const [categoryOverrides, setCategoryOverrides] = useState({});
   const [exceptionChains, setExceptionChains] = useState({});
   const [draggedIdx, setDraggedIdx] = useState(null);
   const [submission, setSubmission] = useState({
@@ -81,14 +99,17 @@ export default function WorkflowConfig() {
       const cfg = res.data?.config || {};
 
 
-      const loadedStages = cfg.stages || [];
+      setStages(sanitizeStageRoles(cfg.stages || []));
 
-      const allowedRoles = ['REPORTING_MANAGER', 'HRBP_HR', 'PAYROLL', 'FINANCE'];
-      const sanitizedStages = loadedStages.map((s) => ({
-        ...s,
-        route_role: allowedRoles.includes(s.route_role) ? s.route_role : 'HRBP_HR',
-      }));
-      setStages(sanitizedStages);
+      const loadedOverrides = cfg.category_overrides || {};
+      const sanitizedOverrides = {};
+      for (const cat of ['TRAVEL', 'GENERAL', 'REALLOCATION']) {
+        if (loadedOverrides[cat]?.stages?.length) {
+          sanitizedOverrides[cat] = { stages: sanitizeStageRoles(loadedOverrides[cat].stages) };
+        }
+      }
+      setCategoryOverrides(sanitizedOverrides);
+      setSelectedCategory('DEFAULT');
       setExceptionChains(cfg.exception_chains || {});
 
       const sub = cfg.submission || {};
@@ -111,12 +132,19 @@ export default function WorkflowConfig() {
   }, []);
 
   const saveAction = useAsyncAction(async () => {
+    const normalizeStages = (list) =>
+      list.map((s, idx) => ({ ...s, number: idx + 1, sla_hours: sanitizeSlaHours(s.sla_hours) }));
+
+    const category_overrides = {};
+    for (const [cat, override] of Object.entries(categoryOverrides)) {
+      if (override?.stages?.length) {
+        category_overrides[cat] = { stages: normalizeStages(override.stages) };
+      }
+    }
+
     const config = {
-      stages: stages.map((s, idx) => ({
-        ...s,
-        number: idx + 1,
-        sla_hours: sanitizeSlaHours(s.sla_hours),
-      })),
+      stages: normalizeStages(stages),
+      category_overrides,
       submission: {
         max_working_days_after_return: sanitizeMaxWorkingDaysAfterReturn(
           submission.max_working_days_after_return,
@@ -156,13 +184,13 @@ export default function WorkflowConfig() {
         }
       />
       {displayError ? (
-        <div className="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
           {errorMessage(displayError)}
         </div>
       ) : null}
 
-      <section className="panel mb-4 flex flex-wrap items-center justify-between gap-4 rounded p-4">
-        <div className="flex items-center gap-4">
+      <section className="panel mb-4 flex flex-wrap items-center justify-between gap-4 p-4">
+        <div className="flex flex-wrap items-center gap-4">
           <label className="text-sm font-semibold text-slate-700">
             Workflow Type:
           </label>
@@ -170,20 +198,66 @@ export default function WorkflowConfig() {
             <option value="STANDARD">Standard Claim Approval</option>
             <optgroup label="Exception Workflows">
               {Object.entries(EXCEPTION_TYPES).map(([key, label]) => (
-                <option key={key} value={key}>{label}</option>
+                <option key={key} value={key}>
+                  {label}
+                  {key === 'AIR_TRAVEL_UNLOCK' || key === 'FLIGHT_ADVANCE_BOOKING_OVERRIDE' ? ' (Travel Request)' : ''}
+                </option>
               ))}
             </optgroup>
           </select>
+          {selectedWorkflow === 'STANDARD' ? (
+            <>
+              <label className="text-sm font-semibold text-slate-700">Applies to:</label>
+              <select
+                className="field min-w-56 bg-slate-50 py-1.5 text-sm"
+                value={selectedCategory}
+                onChange={(event) => setSelectedCategory(event.target.value)}
+              >
+                {STAGE_CATEGORIES.map((c) => (
+                  <option key={c.value} value={c.value}>{c.label}</option>
+                ))}
+              </select>
+            </>
+          ) : null}
         </div>
       </section>
 
-      <section className="panel rounded p-4">
-        <h2 className="mb-3 text-base font-semibold text-ink">{selectedWorkflow === 'STANDARD' ? 'Approval Stages' : EXCEPTION_TYPES[selectedWorkflow]}</h2>
+      {selectedWorkflow === 'STANDARD' && selectedCategory !== 'DEFAULT' ? (
+        <section className="panel mb-4 flex flex-wrap items-center justify-between gap-3 p-4">
+          {categoryOverrides[selectedCategory]?.stages?.length ? (
+            <span className="badge bg-brand/10 text-brand">Custom route configured for this category</span>
+          ) : (
+            <span className="badge bg-slate-100 text-slate-700">Using the shared default route below</span>
+          )}
+          {!isViewOnly && categoryOverrides[selectedCategory]?.stages?.length ? (
+            <button
+              type="button"
+              className="btn-secondary text-xs"
+              onClick={() =>
+                setCategoryOverrides((prev) => {
+                  const next = { ...prev };
+                  delete next[selectedCategory];
+                  return next;
+                })
+              }
+            >
+              Reset to shared default
+            </button>
+          ) : null}
+        </section>
+      ) : null}
+
+      <section className="panel p-4">
+        <h2 className="mb-3 text-base font-semibold text-ink">
+          {selectedWorkflow === 'STANDARD'
+            ? `Approval Stages — ${STAGE_CATEGORIES.find((c) => c.value === selectedCategory)?.label}`
+            : EXCEPTION_TYPES[selectedWorkflow]}
+        </h2>
         <p className="mb-3 text-xs text-slate-500">
           Stages run in order. Finance must be the final stage. Maximum 6 stages.
         </p>
         <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-wider text-slate-500">
+          <thead className="bg-slate-50 text-center text-[11px] font-bold uppercase tracking-wider text-slate-500">
             <tr>
               <th className="px-4 py-3">#</th>
               <th className="px-4 py-3">Label</th>
@@ -194,14 +268,23 @@ export default function WorkflowConfig() {
           </thead>
           <tbody>
             {(() => {
-              const currentStages = selectedWorkflow === 'STANDARD' ? stages : (exceptionChains[selectedWorkflow] || []).map((r, i) => ({
-                label: `Exception Approval ${i + 1}`,
-                route_role: r,
-                sla_hours: 48,
-              }));
+              const isCategoryOverride = selectedWorkflow === 'STANDARD' && selectedCategory !== 'DEFAULT';
+              const currentStages = isCategoryOverride
+                ? categoryOverrides[selectedCategory]?.stages?.length
+                  ? categoryOverrides[selectedCategory].stages
+                  : stages
+                : selectedWorkflow === 'STANDARD'
+                  ? stages
+                  : (exceptionChains[selectedWorkflow] || []).map((r, i) => ({
+                      label: `Exception Approval ${i + 1}`,
+                      route_role: r,
+                      sla_hours: 48,
+                    }));
 
               const updateCurrentStages = (newStages) => {
-                if (selectedWorkflow === 'STANDARD') {
+                if (isCategoryOverride) {
+                  setCategoryOverrides((prev) => ({ ...prev, [selectedCategory]: { stages: newStages } }));
+                } else if (selectedWorkflow === 'STANDARD') {
                   setStages(newStages);
                 } else {
                   setExceptionChains({
@@ -228,17 +311,17 @@ export default function WorkflowConfig() {
                     setDraggedIdx(null);
                   }}
                 >
-                  <td className="px-4 py-3">
-                  <div className="flex items-center gap-3">
+                  <td className="px-4 py-3 text-center">
+                  <div className="flex items-center justify-center gap-3">
                     {!isViewOnly && <GripVertical className="text-slate-300 cursor-move hover:text-slate-500 transition-colors" size={16} />}
                     <div className="flex h-7 w-7 items-center justify-center rounded-full bg-brand/10 text-xs font-bold text-brand shadow-sm">
                       {idx + 1}
                     </div>
                   </div>
                 </td>
-                <td className="px-4 py-3">
+                <td className="px-4 py-3 text-center">
                   <input
-                    className="w-full rounded-md border border-transparent bg-slate-50 px-3 py-1.5 text-sm hover:border-slate-200 focus:border-brand focus:bg-white focus:ring-1 focus:ring-brand/30 transition-all outline-none disabled:opacity-50 disabled:bg-slate-100 disabled:text-slate-500"
+                    className="w-full rounded-lg border border-transparent bg-slate-50 px-3 py-1.5 text-sm hover:border-slate-200 focus:border-brand focus:bg-white focus:ring-1 focus:ring-brand/30 transition-all outline-none disabled:opacity-50 disabled:bg-slate-100 disabled:text-slate-500"
                     disabled={isViewOnly || selectedWorkflow !== 'STANDARD'}
                     value={stage.label ?? ''}
                     placeholder="Stage Label"
@@ -249,9 +332,9 @@ export default function WorkflowConfig() {
                     }}
                   />
                 </td>
-                <td className="px-4 py-3">
+                <td className="px-4 py-3 text-center">
                   <select
-                    className="w-full rounded-md border border-transparent bg-slate-50 px-3 py-1.5 text-sm hover:border-slate-200 focus:border-brand focus:bg-white focus:ring-1 focus:ring-brand/30 transition-all outline-none disabled:opacity-50"
+                    className="w-full rounded-lg border border-transparent bg-slate-50 px-3 py-1.5 text-sm hover:border-slate-200 focus:border-brand focus:bg-white focus:ring-1 focus:ring-brand/30 transition-all outline-none disabled:opacity-50"
                     disabled={isViewOnly}
                     value={stage.route_role ?? 'HRBP_HR'}
                     onChange={(e) => {
@@ -269,10 +352,10 @@ export default function WorkflowConfig() {
                     <option value="IT_ADMIN">IT Admin</option>
                   </select>
                 </td>
-                <td className="px-4 py-3">
-                  <div className="flex items-center gap-2">
+                <td className="px-4 py-3 text-center">
+                  <div className="flex items-center justify-center gap-2">
                     <input
-                      className="w-20 text-center rounded-md border border-transparent bg-slate-50 px-3 py-1.5 text-sm hover:border-slate-200 focus:border-brand focus:bg-white focus:ring-1 focus:ring-brand/30 transition-all outline-none disabled:opacity-50 disabled:bg-slate-100 disabled:text-slate-500"
+                      className="w-20 text-center rounded-lg border border-transparent bg-slate-50 px-3 py-1.5 text-sm hover:border-slate-200 focus:border-brand focus:bg-white focus:ring-1 focus:ring-brand/30 transition-all outline-none disabled:opacity-50 disabled:bg-slate-100 disabled:text-slate-500"
                       type="number"
                       min="1"
                       disabled={isViewOnly || selectedWorkflow !== 'STANDARD'}
@@ -293,9 +376,9 @@ export default function WorkflowConfig() {
                   </div>
                 </td>
                 {!isViewOnly ? (
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-1">
-                      <div className="flex flex-col bg-slate-50 rounded border border-slate-200 overflow-hidden shadow-[0_1px_2px_0_rgba(0,0,0,0.05)]">
+                  <td className="px-4 py-3 text-center">
+                    <div className="flex items-center justify-center gap-1">
+                      <div className="flex flex-col bg-slate-50 rounded-lg border border-slate-200 overflow-hidden shadow-[0_1px_2px_0_rgba(0,0,0,0.05)]">
                         <button
                           type="button"
                           className="p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700 disabled:opacity-30 transition-colors"
@@ -312,7 +395,7 @@ export default function WorkflowConfig() {
                         <button
                           type="button"
                           className="p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700 disabled:opacity-30 transition-colors"
-                          disabled={idx === stages.length - 1}
+                          disabled={idx === currentStages.length - 1}
                           onClick={() => {
                             const n = [...currentStages];
                             [n[idx], n[idx + 1]] = [n[idx + 1], n[idx]];
@@ -324,7 +407,7 @@ export default function WorkflowConfig() {
                       </div>
                       <button
                         type="button"
-                        className="ml-2 p-1.5 rounded-md text-slate-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-30 transition-colors"
+                        className="ml-2 p-1.5 rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-30 transition-colors"
                         disabled={currentStages.length <= 1}
                         title="Remove stage"
                         onClick={() => updateCurrentStages(currentStages.filter((_, i) => i !== idx))}
@@ -339,13 +422,30 @@ export default function WorkflowConfig() {
             })()}
           </tbody>
         </table>
-        {!isViewOnly && (selectedWorkflow === 'STANDARD' ? stages.length < 6 : (exceptionChains[selectedWorkflow]?.length || 0) < 6) ? (
+        {!isViewOnly && (() => {
+          const isCategoryOverride = selectedWorkflow === 'STANDARD' && selectedCategory !== 'DEFAULT';
+          const activeStages = isCategoryOverride
+            ? categoryOverrides[selectedCategory]?.stages?.length
+              ? categoryOverrides[selectedCategory].stages
+              : stages
+            : selectedWorkflow === 'STANDARD'
+              ? stages
+              : exceptionChains[selectedWorkflow] || [];
+          return activeStages.length < 6;
+        })() ? (
           <button
             type="button"
             className="btn-secondary mt-3"
             onClick={() => {
-              if (selectedWorkflow === 'STANDARD') {
-                setStages([...stages, { label: 'New Stage', route_role: 'HRBP_HR', sla_hours: 48 }]);
+              const isCategoryOverride = selectedWorkflow === 'STANDARD' && selectedCategory !== 'DEFAULT';
+              const newStage = { label: 'New Stage', route_role: 'HRBP_HR', sla_hours: 48 };
+              if (isCategoryOverride) {
+                const base = categoryOverrides[selectedCategory]?.stages?.length
+                  ? categoryOverrides[selectedCategory].stages
+                  : stages;
+                setCategoryOverrides((prev) => ({ ...prev, [selectedCategory]: { stages: [...base, newStage] } }));
+              } else if (selectedWorkflow === 'STANDARD') {
+                setStages([...stages, newStage]);
               } else {
                 setExceptionChains({
                   ...exceptionChains,
@@ -359,7 +459,7 @@ export default function WorkflowConfig() {
         ) : null}
       </section>
 
-      <section className="panel mt-4 rounded p-6">
+      <section className="panel mt-4 p-6">
         <div className="mb-5">
           <h2 className="text-[15px] font-bold text-ink">Claim Submission Rules</h2>
           <p className="mt-1 text-xs text-slate-500">Configure global deadlines and auto-approval thresholds.</p>
