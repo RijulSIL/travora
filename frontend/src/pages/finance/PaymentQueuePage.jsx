@@ -10,6 +10,7 @@ import { useSetPageTitle } from '../../context/PageTitleContext';
 import useBodyScrollLock from '../../hooks/useBodyScrollLock';
 import { usePagination } from '../../hooks/usePagination';
 import { reimbursementApi } from '../../services/reimbursementApi';
+import { selectResolvedRole, useAuthStore } from '../../store/authStore';
 
 const money = (v) =>
   Number(v || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -22,12 +23,17 @@ function slaClass(bucket) {
 
 export default function PaymentQueuePage() {
   useSetPageTitle('Payment Queue');
+  const role = useAuthStore(selectResolvedRole);
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [active, setActive] = useState(null);
   const [utr, setUtr] = useState('');
   const [tdsDeduction, setTdsDeduction] = useState('0.00');
+  // Outstanding advance is a Finance-only figure (see advances_api.py) — never fetched for
+  // any other role that can land on this shared payment queue.
+  const [outstandingAdvance, setOutstandingAdvance] = useState(0);
+  const [advanceDeducted, setAdvanceDeducted] = useState('0.00');
   const [saving, setSaving] = useState(false);
   const [payError, setPayError] = useState('');
   const [reviewClaimId, setReviewClaimId] = useState(null);
@@ -50,19 +56,53 @@ export default function PaymentQueuePage() {
     load();
   }, []);
 
-  const openModal = (row) => {
+  const openModal = async (row) => {
     setActive(row);
     setUtr('');
     setPayError('');
     setTdsDeduction('0.00');
+    setOutstandingAdvance(0);
+    setAdvanceDeducted('0.00');
+    if (role === 'FINANCE' && row.employee_user_id) {
+      try {
+        const res = await reimbursementApi.outstandingAdvanceFor(row.employee_user_id);
+        setOutstandingAdvance(Number(res.data?.outstanding_advance || 0));
+      } catch {
+        // Non-fatal — Finance can still record the payment without netting an advance.
+        setOutstandingAdvance(0);
+      }
+    }
   };
 
   const { page, setPage, totalPages, pageItems, startIndex, pageSize, total } = usePagination(rows);
   const approvedAmount = useMemo(() => Number(active?.net_payable || 0), [active]);
   useBodyScrollLock(Boolean(active));
   const deductionAmount = Number(tdsDeduction || 0);
-  const totalDue = approvedAmount - deductionAmount;
+  const advanceAmount = Number(advanceDeducted || 0);
+  const totalDue = approvedAmount - deductionAmount - advanceAmount;
   const deductionInvalid = deductionAmount < 0 || deductionAmount > approvedAmount;
+  const advanceInvalid =
+    advanceAmount < 0 || advanceAmount > outstandingAdvance || deductionAmount + advanceAmount > approvedAmount;
+  // The advance can't cover the whole claim — clicking "Deduct from Advance" only ever applies
+  // what's actually available, and whatever's left is simply paid out via UTR as normal.
+  const advanceFallsShort = outstandingAdvance > 0 && outstandingAdvance < approvedAmount - deductionAmount;
+
+  const applyAdvanceDeduction = () => {
+    const applied = Math.max(Math.min(outstandingAdvance, approvedAmount - deductionAmount), 0);
+    setAdvanceDeducted(applied.toFixed(2));
+  };
+  const removeAdvanceDeduction = () => setAdvanceDeducted('0.00');
+
+  // TDS is edited after the advance is applied just as often as before — rather than leaving
+  // a now-too-large advance sitting there as an unfixable validation error, shrink it to fit
+  // whenever the two would otherwise together exceed the approved amount.
+  useEffect(() => {
+    if (advanceAmount > 0 && deductionAmount + advanceAmount > approvedAmount) {
+      const refitted = Math.max(Math.min(outstandingAdvance, approvedAmount - deductionAmount), 0);
+      setAdvanceDeducted(refitted.toFixed(2));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deductionAmount]);
 
   const submitPayment = async () => {
     if (!active) return;
@@ -76,6 +116,7 @@ export default function PaymentQueuePage() {
         utr_reference: utr,
         amount: totalDue,
         tds_deduction: deductionAmount,
+        advance_deducted: advanceAmount,
       });
       setActive(null);
       await load();
@@ -227,23 +268,75 @@ export default function PaymentQueuePage() {
                         onChange={(e) => setTdsDeduction(e.target.value)}
                       />
                     </div>
+                    {role === 'FINANCE' && outstandingAdvance > 0 ? (
+                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="font-semibold text-slate-600">Outstanding Advance</span>
+                          <span className="font-mono font-bold text-slate-800">₹{money(outstandingAdvance)}</span>
+                        </div>
+                        {advanceAmount > 0 ? (
+                          <>
+                            <div className="mt-2 flex items-center gap-2">
+                              <input
+                                className="field w-full"
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                max={Math.min(outstandingAdvance, approvedAmount)}
+                                value={advanceDeducted}
+                                onChange={(e) => setAdvanceDeducted(e.target.value)}
+                              />
+                              <button
+                                type="button"
+                                className="whitespace-nowrap text-xs font-semibold text-red-600 hover:underline"
+                                onClick={removeAdvanceDeduction}
+                              >
+                                Remove
+                              </button>
+                            </div>
+                            {advanceFallsShort ? (
+                              <p className="mt-1.5 text-[11px] text-slate-500">
+                                The advance doesn&apos;t fully cover this claim — the remaining ₹{money(totalDue)} is
+                                paid via UTR as usual.
+                              </p>
+                            ) : null}
+                          </>
+                        ) : (
+                          <button type="button" className="btn-secondary mt-2 w-full text-xs" onClick={applyAdvanceDeduction}>
+                            Deduct from Advance
+                          </button>
+                        )}
+                      </div>
+                    ) : null}
                     <div className="rounded-lg border border-brand/20 bg-brand/5 px-3.5 py-2.5">
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-semibold text-brand/70">Total Due</span>
                         <span className="font-mono text-base font-bold text-brand">₹{money(totalDue)}</span>
                       </div>
-                      <p className="mt-0.5 text-[11px] text-slate-500">Approved amount minus TDS &amp; other deductions.</p>
+                      <p className="mt-0.5 text-[11px] text-slate-500">
+                        Approved amount minus TDS &amp; other deductions{outstandingAdvance > 0 ? ' and advance deducted' : ''}.
+                      </p>
                     </div>
                   </div>
                   {deductionInvalid ? (
                     <p className="mt-2 text-xs text-amber-700">TDS &amp; other deductions must be between ₹0.00 and the approved amount.</p>
+                  ) : null}
+                  {advanceInvalid ? (
+                    <p className="mt-2 text-xs text-amber-700">
+                      Advance deducted must be between ₹0.00 and ₹{money(outstandingAdvance)}, and can&apos;t push the total
+                      withheld past the approved amount.
+                    </p>
                   ) : null}
                   {payError ? <p className="mt-2 text-xs text-red-700">{payError}</p> : null}
                   <div className="mt-4 flex justify-end gap-2.5">
                     <button className="btn-secondary" onClick={() => setActive(null)} disabled={saving}>
                       Cancel
                     </button>
-                    <button className="btn-primary" onClick={submitPayment} disabled={saving || !utr.trim() || deductionInvalid}>
+                    <button
+                      className="btn-primary"
+                      onClick={submitPayment}
+                      disabled={saving || !utr.trim() || deductionInvalid || advanceInvalid}
+                    >
                       {saving ? 'Processing...' : 'Record Payment & Post to ERP'}
                     </button>
                   </div>

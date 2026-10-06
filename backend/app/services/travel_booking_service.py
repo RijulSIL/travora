@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
@@ -8,6 +8,7 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.timezone import now_ist
 from app.models.auth import User
 from app.models.claim_workflow import ExceptionApproval, ExceptionRequest, ExceptionRequestStatus
 from app.models.employee import Employee
@@ -65,7 +66,7 @@ def _normalize_level(level: str | None) -> str:
 
 
 def _now() -> datetime:
-    return datetime.now(UTC).replace(tzinfo=None)
+    return now_ist()
 
 
 async def _get_user_impact_level_code(user_id: int, db: AsyncSession) -> str:
@@ -112,6 +113,19 @@ async def _get_configured_train_classes(user_id: int, db: AsyncSession) -> set[s
 async def _has_completed_exception_chain(user_id: int, exception_type: str, db: AsyncSession) -> bool:
     import json
 
+    from app.services.workflow_service import _resolve_exception_chain, get_workflow_config, is_exception_enabled
+
+    cfg = await get_workflow_config(db)
+    if not is_exception_enabled(cfg, exception_type):
+        # Admin has switched this exception type off in the Approval Matrix. Every caller of
+        # this function treats "chain completed" as "nothing to block on" — AIR_TRAVEL_UNLOCK,
+        # FLIGHT_ADVANCE_BOOKING_OVERRIDE, TRAIN_ADVANCE_BOOKING_OVERRIDE,
+        # TRAVEL_REQUEST_LEAD_TIME_OVERRIDE, FLIGHT_COST_DELTA and TRAIN_TATKAL all resolve here
+        # whether the check runs at travel-request creation or at actual flight/train search —
+        # so disabling a type here is enough to stop it being flagged everywhere at once,
+        # without having to special-case every call site individually.
+        return True
+
     q = select(ExceptionRequest).where(
         and_(
             ExceptionRequest.requested_by_user_id == user_id,
@@ -123,10 +137,7 @@ async def _has_completed_exception_chain(user_id: int, exception_type: str, db: 
     if not candidates:
         return False
 
-    from app.services.workflow_service import EXCEPTION_APPROVAL_CHAINS, get_workflow_config
-
-    cfg = await get_workflow_config(db)
-    required_roles = set(cfg.get("exception_chains", EXCEPTION_APPROVAL_CHAINS).get(exception_type, ["HRBP_HR"]))
+    required_roles = set(_resolve_exception_chain(cfg, exception_type))
     for row in candidates:
         approvals = (
             await db.execute(

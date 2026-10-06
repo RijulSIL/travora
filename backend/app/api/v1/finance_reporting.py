@@ -140,7 +140,7 @@ async def list_erp_ledger(
     status: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
     _claims: dict = Depends(require_permission("view_reports")),
-) -> list[ERPLedgerEntryOut]:
+) -> list[dict]:
     return await list_erp_ledger_entries(
         from_date=from_date,
         to_date=to_date,

@@ -1,6 +1,5 @@
 """Aggregate /me payload: profile, queue badges, and policy hints."""
 
-from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -11,25 +10,13 @@ from app.models.claim_workflow import ExceptionApproval, ExceptionRequest, Excep
 from app.models.employee import Employee
 from app.models.expense_category import CompanyProfile
 from app.models.policy import CityGroupType, ExpenseLimit, ImpactLevel, PolicyStatus, PolicyVersion
-from app.models.reimbursement import ClaimDraft, ClaimStatus
-from app.schemas.me import MeOut
+from app.schemas.me import ApproverScopeOut, MeOut
 from app.services.claim_submission_rules import parse_auto_approve_threshold
-from app.services.workflow_service import get_workflow_config, list_pending_approvals
+from app.services.workflow_service import get_approver_scope, get_workflow_config, list_pending_approvals
 
 
 def _fmt_inr(value: Decimal) -> str:
     return f"{value.quantize(Decimal('0.01'))}"
-
-
-def _days_since_oldest(created_dates: list[datetime | None]) -> int:
-    valid = [d for d in created_dates if d is not None]
-    if not valid:
-        return 0
-    oldest = min(valid)
-    if oldest.tzinfo:
-        oldest = oldest.astimezone(UTC).replace(tzinfo=None)
-    delta = datetime.utcnow() - oldest
-    return max(0, delta.days)
 
 
 async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
@@ -38,6 +25,13 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
         raise ValueError("User not found")
 
     emp = await db.get(Employee, user.employee_id) if user.employee_id else None
+    reporting_manager_name: str | None = None
+    if emp and emp.reporting_manager_id:
+        mgr_user = (
+            await db.execute(select(User).where(User.employee_id == emp.reporting_manager_id))
+        ).scalars().first()
+        reporting_manager_name = mgr_user.full_name if mgr_user else None
+
     impact: ImpactLevel | None = None
     if emp and emp.impact_level_id:
         impact = await db.get(ImpactLevel, emp.impact_level_id)
@@ -71,12 +65,14 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
 
     pending_rows = await list_pending_approvals(user_id, db)
     pending_claims_count = len(pending_rows)
-    pending_travel_requests_count = 0
 
-    if user.role == Role.REPORTING_MANAGER or Role.REPORTING_MANAGER in delegated_roles:
-        from app.services.travel_request_service import list_pending_travel_requests_for_manager
-        travel_reqs = await list_pending_travel_requests_for_manager(user_id, db)
-        pending_travel_requests_count = len(travel_reqs)
+    # Stage-aware, not role-gated here — the normal-flow approval chain is admin-configurable
+    # and can route a stage to any role (HRBP, Finance, CEO, ...), not just Reporting Manager,
+    # so this must be checked for every user the same way pending_claims_count already is above,
+    # rather than pre-filtering by role and silently returning 0 for a valid approver.
+    from app.services.travel_request_service import list_pending_travel_requests_for_approver
+    travel_reqs = await list_pending_travel_requests_for_approver(user_id, db)
+    pending_travel_requests_count = len(travel_reqs)
 
     pending_count = pending_claims_count + pending_travel_requests_count
 
@@ -89,23 +85,6 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
     if (user.role == Role.FINANCE or Role.FINANCE in delegated_roles) and pending_rows:
         total = sum(Decimal(str(row.get("amount", "0") or "0")) for row in pending_rows)
         pq_total_str = _fmt_inr(total.quantize(Decimal("0.01")))
-
-    # Outstanding advances: advance_received on user's claims until paid.
-    adv_q = (
-        await db.execute(
-            select(ClaimDraft).where(
-                ClaimDraft.employee_user_id == user_id,
-                ClaimDraft.advance_received > 0,
-                ClaimDraft.status != ClaimStatus.PAID,
-            )
-        )
-    ).scalars().all()
-    adv_sum = (
-        sum((c.advance_received or Decimal(0)) for c in adv_q)
-        if adv_q
-        else Decimal("0")
-    )
-    advance_days = _days_since_oldest([c.created_at for c in adv_q]) if adv_q else 0
 
     from app.services.workflow_service import _can_user_act_on_exception
     all_pending_exc = (
@@ -142,6 +121,25 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
 
     is_acting_delegate = bool(delegated_roles)
 
+    # Union of the user's own role and every role they're currently delegate-covering — a
+    # delegate should see nav/page content for whatever the role(s) they're covering are
+    # actually wired into, same as the nav injection already does for DELEGATABLE_NAV_BY_ROLE.
+    own_scope = await get_approver_scope(user.role, db)
+    scope_categories = set(own_scope["claim_categories"])
+    scope_travel_request = own_scope["travel_request"]
+    scope_exceptions = set(own_scope["exceptions"])
+    for delegated_role in delegated_roles:
+        d_scope = await get_approver_scope(delegated_role, db)
+        scope_categories |= set(d_scope["claim_categories"])
+        scope_travel_request = scope_travel_request or d_scope["travel_request"]
+        scope_exceptions |= set(d_scope["exceptions"])
+    approver_scope = ApproverScopeOut(
+        claims=bool(scope_categories),
+        claim_categories=sorted(scope_categories),
+        travel_request=scope_travel_request,
+        exceptions=sorted(scope_exceptions),
+    )
+
     return MeOut(
         user_id=user.id,
         email=user.email,
@@ -153,15 +151,13 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
         department=emp.department if emp else None,
         office_location=emp.office_location if emp else None,
         reporting_manager_id=emp.reporting_manager_id if emp else None,
+        reporting_manager_name=reporting_manager_name,
         pending_approvals_count=pending_count,
         pending_claims_count=pending_claims_count,
         pending_travel_requests_count=pending_travel_requests_count,
-        outstanding_advance_amount=_fmt_inr(adv_sum),
-        outstanding_advance_days=advance_days,
         hotel_cap_group_a=hotel_cap_group_a,
         payment_queue_total_inr=pq_total_str,
         exception_requests_pending_count=int(exc_pending),
-        advance_deductions_flagged_count=0,
         travel_desk_queue_count=travel_desk_queue_count,
         company_office_locations=company_office_locations,
         workflow_submission_deadline_mode=deadline_mode,
@@ -172,4 +168,5 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
         can_create_delegation=can_create_delegation,
         auto_approve_threshold=auto_approve_threshold_str,
         org_auto_approve_ceiling=org_auto_approve_ceiling_str,
+        approver_scope=approver_scope,
     )

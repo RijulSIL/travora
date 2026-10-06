@@ -46,6 +46,10 @@ class TravelRequest(Base):
     notes: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default=TravelRequestStatus.PENDING.value, index=True)
     rejection_reason: Mapped[str | None] = mapped_column(Text)
+    # Which TravelRequestApprovalStage.stage_number is currently active — mirrors
+    # ClaimDraft.current_approval_stage. None once the request leaves PENDING (approved/
+    # rejected/cancelled) or while it's gated behind an exception (same as claims).
+    current_approval_stage: Mapped[int | None] = mapped_column(Integer)
     requested_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
@@ -98,3 +102,26 @@ class TravelRequestTicket(Base):
     external_booking_source: Mapped[str | None] = mapped_column(String(128))
     notes_for_employee: Mapped[str | None] = mapped_column(Text)
     uploaded_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
+
+
+class TravelRequestApprovalStage(Base):
+    """Mirrors ClaimApprovalStage exactly — one row per configured stage, advanced in order by
+    workflow_service.approve_travel_request_stage/reject_travel_request_stage. Reuses
+    ClaimApprovalStageStatus's values (PENDING/APPROVED/SENT_BACK/REJECTED) plus the same
+    "NOT_STARTED" sentinel claims use for stages that haven't become active yet — no new status
+    enum needed since the meaning is identical."""
+
+    __tablename__ = "travel_request_approval_stages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    travel_request_id: Mapped[int] = mapped_column(
+        ForeignKey("travel_requests.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    stage_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    stage_label: Mapped[str] = mapped_column(String(128), nullable=False)
+    required_role: Mapped[str | None] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="NOT_STARTED")
+    sla_deadline_at: Mapped[datetime | None] = mapped_column(DateTime)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
+    decided_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    comment: Mapped[str | None] = mapped_column(Text)

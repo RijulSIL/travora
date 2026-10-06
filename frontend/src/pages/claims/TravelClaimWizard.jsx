@@ -1,5 +1,5 @@
 import { Check } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
@@ -99,19 +99,11 @@ export default function TravelClaimWizard() {
       if (!cancelled) {
         if (tripOutcome.status === 'fulfilled') {
           const allTrips = tripOutcome.value.data || [];
+          // Filling from the URL-linked trip(s) is handled by the selectedTripIds resync
+          // effect below (selectedTripIds is already seeded from tripIdsFromUrl), which
+          // re-runs as soon as `trips` updates here — no separate fill needed, and doing it
+          // here too with blank-only gating would just reintroduce the stale-value bug.
           setTrips(allTrips);
-          if (tripIdsFromUrl.length > 0 && !effectiveEditId) {
-            const firstTrip = allTrips.find(t => tripIdsFromUrl.includes(t.id));
-            if (firstTrip) {
-              setForm(prev => ({
-                ...prev,
-                from_city: prev.from_city || firstTrip.from_city || '',
-                destination_city: prev.destination_city || firstTrip.to_city || '',
-                departure_date: prev.departure_date || isoDate(firstTrip.travel_date),
-                trip_purpose: prev.trip_purpose || firstTrip.travel_purpose || firstTrip.purpose || '',
-              }));
-            }
-          }
         } else {
           setTrips([]);
         }
@@ -219,51 +211,106 @@ export default function TravelClaimWizard() {
 
   const sentBackHint = claim?.status === 'SENT_BACK' ? 'Invoice missing — add hotel invoice.' : '';
 
-  useEffect(() => {
-    // Fills only fields that are still blank (see the per-field checks below), so this is
-    // safe to run for an existing claim too — it never overwrites something already saved.
-    if (selectedTripIds.length === 0 || trips.length === 0) return;
-
-    const firstTrip = trips.find(t => selectedTripIds.includes(t.id));
-    if (firstTrip) {
-      setForm(prev => {
-        const next = { ...prev };
-        let changed = false;
-
-        if (!next.from_city && firstTrip.from_city) {
-          next.from_city = firstTrip.from_city;
-          changed = true;
-        }
-        if (!next.destination_city && firstTrip.to_city) {
-          next.destination_city = firstTrip.to_city;
-          changed = true;
-        }
-        if (!next.departure_date && firstTrip.travel_date) {
-          next.departure_date = isoDate(firstTrip.travel_date);
-          changed = true;
-        }
-        if (!next.return_date && firstTrip.return_date) {
-          next.return_date = isoDate(firstTrip.return_date);
-          changed = true;
-        }
-        if (!next.trip_purpose && (firstTrip.travel_purpose || firstTrip.purpose)) {
-          next.trip_purpose = firstTrip.travel_purpose || firstTrip.purpose;
-          changed = true;
-        }
-
-        if (!next.office_location && next.from_city) {
-          const match = officeLocations.find(loc =>
-            loc.toLowerCase() === next.from_city.toLowerCase()
-          );
-          if (match) {
-            next.office_location = match;
-            changed = true;
-          }
-        }
-
-        return changed ? next : prev;
-      });
+  // A multi-city trip is booked as several separate TravelTrip rows (one per ticket/leg),
+  // linked only by a shared travel_request_id — group them back into one selectable unit so
+  // picking "the trip" links every leg together, instead of hunting down each ticket one by
+  // one. A group only shows at all once at least one of its legs actually has an issued
+  // ticket (desk_ticket_id set) — an entirely unticketed trip isn't ready to claim against yet.
+  const tripGroups = useMemo(() => {
+    const groups = new Map();
+    for (const trip of trips) {
+      const key = trip.travel_request_id ?? `solo-${trip.id}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(trip);
     }
+    return Array.from(groups.entries())
+      .map(([key, legs]) => {
+        const sortedLegs = [...legs].sort((a, b) => new Date(a.travel_date) - new Date(b.travel_date));
+        return {
+          key,
+          legs: sortedLegs,
+          tripIds: sortedLegs.map((leg) => leg.id),
+          hasIssuedTicket: sortedLegs.some((leg) => leg.desk_ticket_id != null),
+          // The request's actual trip_type (ONE_WAY/ROUND_TRIP/MULTI_CITY) — leg count alone
+          // can't tell a round trip (2 legs, same pair of cities) apart from a genuine
+          // multi-city itinerary (2+ legs through different cities).
+          tripType: sortedLegs[0]?.trip_type ?? (sortedLegs.length > 1 ? 'MULTI_CITY' : 'ONE_WAY'),
+        };
+      })
+      .filter((group) => group.hasIssuedTicket);
+  }, [trips]);
+
+  // Tracks which exact set of trip legs the Trip/Destination/Date fields were last derived
+  // from — compared against on every run so a *change* in selection always resyncs those
+  // fields to match it. A plain "only fill if still blank" check (the previous approach)
+  // sounds safe, but it means any wrong value that ever lands in these fields — a stale
+  // autosaved draft, a prior bug, anything — permanently blocks them from ever being
+  // corrected, since they no longer look "empty" to that check.
+  const lastTripSelectionKey = useRef(null);
+
+  useEffect(() => {
+    if (selectedTripIds.length === 0 || trips.length === 0) {
+      lastTripSelectionKey.current = null;
+      return;
+    }
+
+    // `trips` comes back newest-date-first (see list_trips_for_merged_employee_scope) — sort
+    // the actually-selected legs by date so the earliest one (the outbound leg) is always what
+    // fills From/Destination/Departure, not whichever leg happened to load first.
+    const selectedLegs = trips
+      .filter((t) => selectedTripIds.includes(t.id))
+      .sort((a, b) => new Date(a.travel_date) - new Date(b.travel_date));
+    const firstTrip = selectedLegs[0];
+    const lastTrip = selectedLegs[selectedLegs.length - 1];
+    if (!firstTrip) return;
+
+    const selectionKey = selectedLegs.map((t) => t.id).join(',');
+    if (lastTripSelectionKey.current === selectionKey) return;
+    lastTripSelectionKey.current = selectionKey;
+
+    const departureValue = isoDate(firstTrip.travel_date);
+    // `return_date` lives on the parent travel request (same value on every leg), but a
+    // multi-city request may never set one — fall back to the latest selected leg's own date
+    // (the final leg home) in that case.
+    const returnValue = isoDate(firstTrip.return_date || lastTrip.travel_date);
+
+    setForm(prev => {
+      const next = { ...prev };
+      let changed = false;
+
+      if (firstTrip.from_city && next.from_city !== firstTrip.from_city) {
+        next.from_city = firstTrip.from_city;
+        changed = true;
+      }
+      if (firstTrip.to_city && next.destination_city !== firstTrip.to_city) {
+        next.destination_city = firstTrip.to_city;
+        changed = true;
+      }
+      if (departureValue && next.departure_date !== departureValue) {
+        next.departure_date = departureValue;
+        changed = true;
+      }
+      if (returnValue && next.return_date !== returnValue) {
+        next.return_date = returnValue;
+        changed = true;
+      }
+      if (!next.trip_purpose && (firstTrip.travel_purpose || firstTrip.purpose)) {
+        next.trip_purpose = firstTrip.travel_purpose || firstTrip.purpose;
+        changed = true;
+      }
+
+      if (!next.office_location && next.from_city) {
+        const match = officeLocations.find(loc =>
+          loc.toLowerCase() === next.from_city.toLowerCase()
+        );
+        if (match) {
+          next.office_location = match;
+          changed = true;
+        }
+      }
+
+      return changed ? next : prev;
+    });
   }, [selectedTripIds, trips, officeLocations]);
 
   const onChange = (key, value) => {
@@ -537,10 +584,14 @@ export default function TravelClaimWizard() {
           validationErrors={validationErrors}
           onNext={goStep2}
           onResolveCityGroup={resolveDestinationCity}
-          trips={trips}
+          tripGroups={tripGroups}
           selectedTripIds={selectedTripIds}
-          onToggleTrip={(tripId, checked) =>
-            setSelectedTripIds((prev) => (checked ? [...new Set([...prev, tripId])] : prev.filter((item) => item !== tripId)))
+          onToggleTripGroup={(tripIds, checked) =>
+            setSelectedTripIds((prev) =>
+              checked
+                ? [...new Set([...prev, ...tripIds])]
+                : prev.filter((item) => !tripIds.includes(item)),
+            )
           }
           onPreviewTicket={previewTicket}
         />

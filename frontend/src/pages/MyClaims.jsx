@@ -1,10 +1,11 @@
-import { AlertTriangle, ArrowRight, FileText, Plus, Wallet } from 'lucide-react';
+import { AlertTriangle, ArrowRight, FileText, Plus, Trash2, Wallet } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
 import ClaimApprovalStepper from '../components/claims/ClaimApprovalStepper';
 import ClaimStatusBadge from '../components/ui/ClaimStatusBadge';
 import ReimbursementCategoryBadge from '../components/ui/ReimbursementCategoryBadge';
+import ConfirmDialog from '../components/ui/ConfirmDialog';
 import EmptyState from '../components/ui/EmptyState';
 import Skeleton from '../components/ui/Skeleton';
 import { useSetPageTitle } from '../context/PageTitleContext';
@@ -19,6 +20,9 @@ export default function MyClaims() {
   const [chains, setChains] = useState({});
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -56,6 +60,21 @@ export default function MyClaims() {
   }, []);
 
   const sentBackClaims = claims.filter((claim) => claim.status === 'SENT_BACK');
+
+  const confirmDeleteDraft = async () => {
+    if (!deleteTarget || deleting) return;
+    setDeleting(true);
+    setDeleteError('');
+    try {
+      await reimbursementApi.deleteClaim(deleteTarget.id);
+      setClaims((current) => current.filter((item) => item.id !== deleteTarget.id));
+      setDeleteTarget(null);
+    } catch (err) {
+      setDeleteError(err?.response?.data?.detail || 'Could not delete this draft.');
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   return (
     <div>
@@ -96,6 +115,11 @@ export default function MyClaims() {
         {error ? (
           <div className="panel rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
             {error}
+          </div>
+        ) : null}
+        {deleteError ? (
+          <div className="mb-4 flex items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">
+            <AlertTriangle size={15} className="flex-none" /> {deleteError}
           </div>
         ) : null}
 
@@ -172,16 +196,29 @@ export default function MyClaims() {
                 ) : null}
               </div>
               {claim.status === 'DRAFT' ? (
-                <Link
-                  className="flex items-center justify-between gap-1 border-t border-slate-100 bg-slate-50/60 px-5 py-2.5 text-sm font-semibold text-brand transition-colors hover:bg-slate-50"
-                  to={claimEditPath(claim)}
-                >
-                  <span className="inline-flex items-center gap-1.5">
-                    <FileText size={14} />
-                    Edit Draft
-                  </span>
-                  <ArrowRight className="h-3.5 w-3.5" />
-                </Link>
+                <div className="flex items-stretch border-t border-slate-100 bg-slate-50/60">
+                  <Link
+                    className="flex flex-1 items-center justify-between gap-1 px-5 py-2.5 text-sm font-semibold text-brand transition-colors hover:bg-slate-50"
+                    to={claimEditPath(claim)}
+                  >
+                    <span className="inline-flex items-center gap-1.5">
+                      <FileText size={14} />
+                      Edit Draft
+                    </span>
+                    <ArrowRight className="h-3.5 w-3.5" />
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDeleteError('');
+                      setDeleteTarget(claim);
+                    }}
+                    className="flex items-center gap-1.5 border-l border-slate-100 px-4 text-sm font-semibold text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600"
+                    aria-label={`Delete draft ${claim.claim_reference || `Claim #${claim.id}`}`}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
               ) : (
                 <Link
                   className="flex items-center justify-between gap-1 border-t border-slate-100 bg-slate-50/60 px-5 py-2.5 text-sm font-semibold text-brand transition-colors hover:bg-slate-50"
@@ -197,6 +234,20 @@ export default function MyClaims() {
             </div>
           );
         })}
+
+        <ConfirmDialog
+          open={Boolean(deleteTarget)}
+          title="Delete this draft claim?"
+          description={
+            deleteTarget
+              ? `"${deleteTarget.claim_reference || `Claim #${deleteTarget.id}`}" will be permanently removed, along with any pending exception request on it. Its invoices and trips will become available to attach to a different claim. This can't be undone.`
+              : ''
+          }
+          confirmLabel={deleting ? 'Deleting…' : 'Delete'}
+          confirmVariant="danger"
+          onConfirm={confirmDeleteDraft}
+          onCancel={() => setDeleteTarget(null)}
+        />
     </div>
   );
 }

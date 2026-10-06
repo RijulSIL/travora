@@ -24,6 +24,7 @@ export const reimbursementApi = {
   travelDeskAll: (params) => api.get('travel-requests/desk/all', { params }),
   travelApprove: (id) => api.post(`travel-requests/${id}/approve`, {}),
   travelReject: (id, payload) => api.post(`travel-requests/${id}/reject`, payload),
+  travelRequestApprovalChain: (id) => api.get(`travel-requests/${id}/approval-chain`),
   travelUploadTicket: (id, formData) =>
     api.post(`travel-requests/${id}/upload-ticket`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
@@ -45,9 +46,11 @@ export const reimbursementApi = {
   paymentProofFileBlob: (invoiceId) =>
     api.get(`invoices/${invoiceId}/payment-proof-file`, { responseType: 'blob' }),
   updateInvoiceFields: (invoiceId, payload) => api.put(`invoices/${invoiceId}/fields`, payload),
+  releaseInvoiceFromDraft: (invoiceId) => api.delete(`invoices/${invoiceId}/claim-link`),
   deleteInvoice: (invoiceId) => api.delete(`invoices/${invoiceId}`),
   validateGstin: (gstin) => api.post('invoices/validate-gstin', { gstin }),
   saveClaimDraft: (payload) => api.post('claims/draft', payload),
+  deleteClaim: (claimId) => api.delete(`claims/${claimId}`),
   policyCheck: (claimId) => api.get(`claims/${claimId}/policy-check`),
   submitClaim: (claimId) => api.post(`claims/${claimId}/submit`),
   claims: (params) => api.get('claims', { params }),
@@ -71,6 +74,12 @@ export const reimbursementApi = {
     api.get('finance/gstr2b/export', { params: { ...params, format: 'csv' }, responseType: 'blob' }),
   erpPost: (payload) => api.post('finance/erp/post', payload),
   erpLedger: (params) => api.get('finance/erp-ledger', { params }),
+  grantAdvance: (payload) => api.post('advances/grant', payload),
+  updateAdvance: (advanceId, payload) => api.put(`advances/${advanceId}`, payload),
+  listAdvances: (params) => api.get('advances', { params }),
+  listArchivedAdvances: () => api.get('advances/archived'),
+  outstandingAdvanceFor: (employeeUserId) => api.get(`advances/outstanding/${employeeUserId}`),
+  settleAdvance: (employeeUserId, payload) => api.post(`advances/settle/${employeeUserId}`, payload),
   reportRun: (reportType, params) => api.get(`reports/${reportType}`, { params }),
   reportExportCsv: (reportType, params) =>
     api.get(`reports/${reportType}/export`, { params: { ...params, format: 'csv' }, responseType: 'blob' }),

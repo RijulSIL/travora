@@ -3,6 +3,19 @@ from decimal import Decimal
 from pydantic import BaseModel, Field
 
 
+class ApproverScopeOut(BaseModel):
+    """Which parts of the live Approval Matrix this user's role (plus anything they're
+    currently delegate-covering) is actually wired into — the frontend uses this to show nav
+    items / page content only where the role currently has something to do, instead of a
+    hardcoded per-role nav list that silently goes stale whenever an admin reconfigures
+    routing (see workflow_service.get_approver_scope)."""
+
+    claims: bool = False
+    claim_categories: list[str] = Field(default_factory=list)
+    travel_request: bool = False
+    exceptions: list[str] = Field(default_factory=list)
+
+
 class MeOut(BaseModel):
     """Current user profile enriched for shell and dashboards."""
 
@@ -16,17 +29,15 @@ class MeOut(BaseModel):
     department: str | None = None
     office_location: str | None = None
     reporting_manager_id: str | None = None
+    reporting_manager_name: str | None = None
     pending_approvals_count: int = 0
     # Split for REPORTING_MANAGER (and acting delegates) whose "Pending Approvals" covers
     # both claims and travel requests — lets the UI show where the pending count comes from.
     pending_claims_count: int = 0
     pending_travel_requests_count: int = 0
-    outstanding_advance_amount: str = Field(default="0.00")
-    outstanding_advance_days: int = 0
     hotel_cap_group_a: str | None = None
     payment_queue_total_inr: str | None = None
     exception_requests_pending_count: int = 0
-    advance_deductions_flagged_count: int = 0
     # Only populated for HRBP_HR: requests awaiting ticketing (APPROVED or PARTIALLY_BOOKED).
     travel_desk_queue_count: int = 0
     # From company profile (allowed for all authenticated users — no bank / GSTIN payload).
@@ -50,6 +61,7 @@ class MeOut(BaseModel):
     # (null = disabled, always require manual review) and the org-wide ceiling it is capped at.
     auto_approve_threshold: str | None = None
     org_auto_approve_ceiling: str | None = None
+    approver_scope: ApproverScopeOut = Field(default_factory=ApproverScopeOut)
 
 
 class AutoApproveThresholdIn(BaseModel):

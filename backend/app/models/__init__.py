@@ -1,7 +1,6 @@
 from app.models.auth import RefreshToken, Role, User
 from app.models.budget import BudgetConfig, DepartmentBudget, ManagerBudget
 from app.models.claim_workflow import (
-    AdvanceApprovalStage,
     AdvanceRequest,
     ClaimApprovalStage,
     ExceptionApproval,
@@ -52,10 +51,9 @@ from app.models.travel_booking import (
     TravelTrip,
     TripStatus,
 )
-from app.models.travel_request import TravelRequest, TravelRequestTicket
+from app.models.travel_request import TravelRequest, TravelRequestApprovalStage, TravelRequestTicket
 
 __all__ = [
-    "AdvanceApprovalStage",
     "AdvanceRequest",
     "AirEligibility",
     "AirClass",

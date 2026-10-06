@@ -84,6 +84,7 @@ class TravelExceptionSummaryOut(BaseModel):
     exception_type: str
     exception_types: list[str] = Field(default_factory=list)
     status: str
+    description: str | None = None
     decision_comment: str | None = None
     approvals: list[TravelExceptionApprovalOut] = Field(default_factory=list)
 

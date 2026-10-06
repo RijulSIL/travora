@@ -19,6 +19,7 @@ import { usePagination } from '../../hooks/usePagination';
 import useToast from '../../hooks/useToast';
 import { reimbursementApi } from '../../services/reimbursementApi';
 import { claimNewPath } from '../../utils/claimRoutes';
+import { formatCurrency } from '../../utils/formatters';
 import { required } from '../../utils/validators';
 import useBodyScrollLock from '../../hooks/useBodyScrollLock';
 
@@ -93,6 +94,14 @@ export default function TravelRequestsPage() {
   const [preview, setPreview] = useState({ open: false, blob: null, name: '', type: '', title: '' });
   const [confirmCancelId, setConfirmCancelId] = useState(null);
   const [expandedIds, setExpandedIds] = useState(() => new Set());
+  // Only one row's ticket picker is ever open at a time — id of that request, or null.
+  // Rendered through a portal (see below) so it isn't clipped by the table's own
+  // overflow-hidden/overflow-x-auto wrappers, so position is tracked separately in viewport
+  // coordinates rather than relying on CSS `absolute` against an ancestor.
+  const [openTicketMenuId, setOpenTicketMenuId] = useState(null);
+  const [ticketMenuPos, setTicketMenuPos] = useState(null);
+  const ticketMenuTriggerRef = useRef(null);
+  const ticketMenuPanelRef = useRef(null);
 
   function toggleExpand(id) {
     setExpandedIds((prev) => {
@@ -102,6 +111,32 @@ export default function TravelRequestsPage() {
       return next;
     });
   }
+
+  function openTicketMenu(requestId, buttonEl) {
+    const rect = buttonEl.getBoundingClientRect();
+    setTicketMenuPos({ top: rect.bottom + 6, right: window.innerWidth - rect.right });
+    setOpenTicketMenuId(requestId);
+  }
+
+  // Close the open ticket picker on outside click (mirrors AppNavbar's user-menu dropdown) —
+  // checked against both the trigger button and the portal panel, since the panel is no longer
+  // a DOM descendant of the trigger once it's rendered into document.body. Also closes on
+  // scroll, since a fixed-position panel would otherwise visually detach from its button.
+  useEffect(() => {
+    if (openTicketMenuId === null) return;
+    const handleClick = (e) => {
+      if (ticketMenuTriggerRef.current?.contains(e.target)) return;
+      if (ticketMenuPanelRef.current?.contains(e.target)) return;
+      setOpenTicketMenuId(null);
+    };
+    const handleScroll = () => setOpenTicketMenuId(null);
+    document.addEventListener('mousedown', handleClick);
+    window.addEventListener('scroll', handleScroll, true);
+    return () => {
+      document.removeEventListener('mousedown', handleClick);
+      window.removeEventListener('scroll', handleScroll, true);
+    };
+  }, [openTicketMenuId]);
 
   useEffect(() => {
     reimbursementApi
@@ -234,11 +269,12 @@ export default function TravelRequestsPage() {
       const d = err.response?.data;
       const detailStr = typeof d?.detail === 'string' ? d.detail : err.message || 'Save failed';
 
-      if (
-        detailStr.includes('7-day') ||
-        detailStr.includes('locked for your level') ||
-        detailStr.includes('not allowed for your impact level')
-      ) {
+      // 403 (AIR_TRAVEL_UNLOCK) and 409 (every other policy block raised by
+      // _determine_blocking_exceptions — advance-booking windows, lead time, ...) both mean this
+      // submission can go through the exception-request flow instead of failing outright; a
+      // plain 422 is a genuine hard-validation error with no override path.
+      const status = err.response?.status;
+      if (status === 403 || status === 409) {
         setPolicyError(detailStr);
       } else {
         showToast(detailStr, 'error');
@@ -434,6 +470,8 @@ export default function TravelRequestsPage() {
                   requestsPagination.pageItems.map(({ request }, index) => {
                     const statusDetails = getStatusDetails(request.status);
                     const isExpanded = expandedIds.has(request.id);
+                    const ticketedSegments = (request.segments || []).filter((s) => s.ticket);
+                    const isTicketMenuOpen = openTicketMenuId === request.id;
 
                     return (
                       <Fragment key={request.id}>
@@ -509,16 +547,53 @@ export default function TravelRequestsPage() {
                           </td>
                           <td className="whitespace-nowrap px-5 py-3 text-center">
                             <div className="flex justify-center gap-2">
-                              {(request.segments || []).filter((s) => s.ticket).map((seg) => (
+                              {ticketedSegments.length === 1 ? (
                                 <button
-                                  key={seg.seq}
                                   type="button"
                                   className="inline-flex h-7 items-center justify-center rounded-lg border border-slate-200 hover:bg-slate-50 text-[10px] font-bold text-slate-700 px-3 transition-all"
-                                  onClick={() => viewTicket(seg.ticket, `Ticket · ${seg.label}`)}
+                                  onClick={() => viewTicket(ticketedSegments[0].ticket, `Ticket · ${ticketedSegments[0].label}`)}
                                 >
-                                  {(request.segments || []).length > 1 ? `View Ticket (${seg.label})` : 'View Ticket'}
+                                  View Ticket
                                 </button>
-                              ))}
+                              ) : ticketedSegments.length > 1 ? (
+                                <div ref={isTicketMenuOpen ? ticketMenuTriggerRef : null}>
+                                  <button
+                                    type="button"
+                                    className="inline-flex h-7 items-center justify-center gap-1 rounded-lg border border-slate-200 hover:bg-slate-50 text-[10px] font-bold text-slate-700 px-3 transition-all"
+                                    onClick={(e) =>
+                                      isTicketMenuOpen ? setOpenTicketMenuId(null) : openTicketMenu(request.id, e.currentTarget)
+                                    }
+                                    aria-expanded={isTicketMenuOpen}
+                                  >
+                                    View Tickets
+                                    <ChevronDown size={11} className={`text-slate-400 transition-transform ${isTicketMenuOpen ? 'rotate-180' : ''}`} />
+                                  </button>
+                                  {isTicketMenuOpen && ticketMenuPos
+                                    ? createPortal(
+                                        <div
+                                          ref={ticketMenuPanelRef}
+                                          style={{ position: 'fixed', top: ticketMenuPos.top, right: ticketMenuPos.right }}
+                                          className="z-[100] w-56 rounded-lg border border-slate-200 bg-white py-1.5 text-left shadow-lg"
+                                        >
+                                          {ticketedSegments.map((seg) => (
+                                            <button
+                                              key={seg.seq}
+                                              type="button"
+                                              className="block w-full px-3 py-2 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+                                              onClick={() => {
+                                                setOpenTicketMenuId(null);
+                                                viewTicket(seg.ticket, `Ticket · ${seg.label}`);
+                                              }}
+                                            >
+                                              {seg.label}
+                                            </button>
+                                          ))}
+                                        </div>,
+                                        document.body,
+                                      )
+                                    : null}
+                                </div>
+                              ) : null}
                               {request.status === 'PENDING' || request.status === 'PENDING_EXCEPTION' ? (
                                 <button
                                   type="button"
@@ -534,7 +609,100 @@ export default function TravelRequestsPage() {
                         {isExpanded ? (
                           <tr className="bg-slate-50/60">
                             <td colSpan={7} className="px-5 py-4 border-b border-slate-150">
-                              <TravelRequestProgress request={request} />
+                              <div className="panel flex w-full flex-col gap-6 rounded-xl border border-slate-200 bg-white p-5 shadow-sm lg:flex-row lg:items-start">
+                                <div className="lg:max-w-md lg:shrink-0">
+                                  <TravelRequestProgress request={request} />
+                                </div>
+                                <div className="flex w-full flex-wrap gap-4 lg:w-auto">
+                                  <div className="w-full shrink-0 rounded-lg bg-slate-50 p-4 sm:w-64">
+                                    <div className="mb-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                      Trip Details
+                                    </div>
+                                    {request.purpose || request.preferred_class || request.notes || request.exception?.description || request.exception?.decision_comment || (request.trip_type === 'ROUND_TRIP' && request.return_date) ? (
+                                      <dl className="space-y-2.5 text-[11px]">
+                                        {request.purpose ? (
+                                          <div>
+                                            <dt className="font-semibold text-slate-400">Purpose</dt>
+                                            <dd className="mt-0.5 font-medium text-slate-700">{request.purpose}</dd>
+                                          </div>
+                                        ) : null}
+                                        {request.preferred_class ? (
+                                          <div>
+                                            <dt className="font-semibold text-slate-400">Preferred Class</dt>
+                                            <dd className="mt-0.5 font-medium text-slate-700">{request.preferred_class}</dd>
+                                          </div>
+                                        ) : null}
+                                        {request.trip_type === 'ROUND_TRIP' && request.return_date ? (
+                                          <div>
+                                            <dt className="font-semibold text-slate-400">Return Date</dt>
+                                            <dd className="mt-0.5 font-medium text-slate-700">{request.return_date}</dd>
+                                          </div>
+                                        ) : null}
+                                        {request.notes ? (
+                                          <div>
+                                            <dt className="font-semibold text-slate-400">Notes</dt>
+                                            <dd className="mt-0.5 font-medium text-slate-700 whitespace-pre-wrap">{request.notes}</dd>
+                                          </div>
+                                        ) : null}
+                                        {request.exception?.description ? (
+                                          <div>
+                                            <dt className="font-semibold text-slate-400">Exception Justification</dt>
+                                            <dd className="mt-0.5 font-medium text-slate-700 whitespace-pre-wrap">{request.exception.description}</dd>
+                                          </div>
+                                        ) : null}
+                                        {request.exception?.decision_comment ? (
+                                          <div>
+                                            <dt className="font-semibold text-slate-400">Decision Comment</dt>
+                                            <dd className="mt-0.5 font-medium text-slate-700 whitespace-pre-wrap">{request.exception.decision_comment}</dd>
+                                          </div>
+                                        ) : null}
+                                      </dl>
+                                    ) : (
+                                      <p className="text-[11px] italic text-slate-400">No additional details provided.</p>
+                                    )}
+                                  </div>
+                                  {(request.segments || []).length ? (
+                                    <div className="w-full shrink-0 rounded-lg bg-slate-50 p-4 sm:w-64">
+                                      <div className="mb-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                        Itinerary
+                                      </div>
+                                      <dl className="space-y-2.5 text-[11px]">
+                                        {request.segments.map((seg) => (
+                                          <div key={seg.seq}>
+                                            <dt className="flex items-center gap-1.5 font-semibold text-slate-400">
+                                              <ModeIcon mode={seg.mode || request.travel_mode} className="text-slate-400" />
+                                              {seg.label}
+                                            </dt>
+                                            <dd className="mt-0.5 font-medium text-slate-700">{seg.travel_date}</dd>
+                                          </div>
+                                        ))}
+                                      </dl>
+                                    </div>
+                                  ) : null}
+                                  {ticketedSegments.length ? (
+                                    <div className="w-full shrink-0 rounded-lg bg-slate-50 p-4 sm:w-64">
+                                      <div className="mb-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                                        Ticket Details
+                                      </div>
+                                      <dl className="space-y-3 text-[11px]">
+                                        {ticketedSegments.map((seg) => (
+                                          <div key={seg.seq}>
+                                            <dt className="font-semibold text-slate-400">{seg.label}</dt>
+                                            <dd className="mt-0.5 space-y-0.5 font-medium text-slate-700">
+                                              {seg.ticket.pnr_or_booking_ref ? <div>PNR: {seg.ticket.pnr_or_booking_ref}</div> : null}
+                                              {seg.ticket.ticket_amount != null ? <div>{formatCurrency(seg.ticket.ticket_amount)}</div> : null}
+                                              {seg.ticket.ticket_travel_class ? <div>{seg.ticket.ticket_travel_class}</div> : null}
+                                              {!seg.ticket.pnr_or_booking_ref && seg.ticket.ticket_amount == null && !seg.ticket.ticket_travel_class ? (
+                                                <span className="italic text-slate-400">{seg.ticket.original_filename}</span>
+                                              ) : null}
+                                            </dd>
+                                          </div>
+                                        ))}
+                                      </dl>
+                                    </div>
+                                  ) : null}
+                                </div>
+                              </div>
                             </td>
                           </tr>
                         ) : null}

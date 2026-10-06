@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { Check, Clock, Calendar, Plane, FileText, ArrowRight, Eye, X } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, Legend
+  Cell, Legend
 } from 'recharts';
 
 import ClaimReviewModal from '../../components/claims/ClaimReviewModal';
@@ -20,8 +20,6 @@ function slaClass(bucket) {
   return 'sla-ok';
 }
 
-const COLORS = ['#10b981', '#f59e0b', '#3b82f6', '#8b5cf6'];
-
 export default function ManagerDashboard() {
   useSetPageTitle('Home');
   const profile = useAuthStore((s) => s.profile);
@@ -32,7 +30,6 @@ export default function ManagerDashboard() {
   
   // Analytics state
   const [teamSpendData, setTeamSpendData] = useState([]);
-  const [spendCategoryData, setSpendCategoryData] = useState([]);
   const [budgetsEnabled, setBudgetsEnabled] = useState(false);
   const [teamMonthlyBudget, setTeamMonthlyBudget] = useState(null);
   const [reviewClaimId, setReviewClaimId] = useState(null);
@@ -59,7 +56,6 @@ export default function ManagerDashboard() {
       const analyticsRes = await reimbursementApi.managerAnalytics();
       if (analyticsRes.data) {
         setTeamSpendData(analyticsRes.data.spend_by_month || []);
-        setSpendCategoryData(analyticsRes.data.spend_by_category || []);
         setBudgetsEnabled(Boolean(analyticsRes.data.budgets_enabled));
         setTeamMonthlyBudget(analyticsRes.data.team_monthly_budget ?? null);
       }
@@ -146,8 +142,8 @@ export default function ManagerDashboard() {
       </div>
 
       {/* Interactive Analytics */}
-      <section className={`grid grid-cols-1 gap-6 ${budgetsEnabled ? 'md:grid-cols-2' : ''}`}>
-        {budgetsEnabled ? (
+      {budgetsEnabled ? (
+        <section className="grid grid-cols-1 gap-6">
           <div className="panel overflow-hidden p-5 flex flex-col h-80">
             <h3 className="text-[15px] font-bold text-ink mb-4">Team Spend vs. Budget</h3>
             {teamMonthlyBudget == null ? (
@@ -186,37 +182,8 @@ export default function ManagerDashboard() {
               )}
             </div>
           </div>
-        ) : null}
-        <div className="panel overflow-hidden p-5 flex flex-col h-80">
-          <h3 className="text-[15px] font-bold text-ink mb-4">Spend by Category (YTD)</h3>
-          <div className="flex-1 min-h-0">
-            {spendCategoryData.length ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={spendCategoryData}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={60}
-                    outerRadius={80}
-                    paddingAngle={5}
-                    dataKey="value"
-                    animationDuration={1000}
-                  >
-                    {spendCategoryData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip formatter={(value) => `₹${value.toLocaleString()}`} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
-                  <Legend iconType="circle" layout="vertical" verticalAlign="middle" align="right" wrapperStyle={{ fontSize: '12px' }} />
-                </PieChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="flex h-full items-center justify-center text-sm text-slate-400">No category spend data yet.</div>
-            )}
-          </div>
-        </div>
-      </section>
+        </section>
+      ) : null}
 
       {/* Pending Claims table */}
       <section className="panel overflow-hidden">

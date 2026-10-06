@@ -31,6 +31,7 @@ class InvoiceLineItemOut(BaseModel):
     cgst: Decimal
     sgst: Decimal
     igst: Decimal
+    other_tax: Decimal = Decimal("0")
     total_amount: Decimal
     category_id: int | None = None
     category_name: str | None = None
@@ -111,7 +112,23 @@ class ClaimDraftIn(BaseModel):
     office_location: str | None = None
     from_city: str | None = None
     destination_city: str | None = None
-    advance_received: Decimal = Decimal("0")
+
+
+class ClaimExpenseLineItemOut(BaseModel):
+    description: str
+    amount: Decimal
+
+
+class ClaimExpenseInvoiceOut(BaseModel):
+    invoice_id: int
+    vendor_name: str | None = None
+    original_filename: str = ""
+    place_of_supply: str | None = None
+    amount: Decimal
+    # The specific line(s) on this invoice that fall under the expense category this entry is
+    # nested under — lets the exception modal point out exactly which charge to look for on the
+    # invoice preview, since there's no bounding-box data to highlight it directly on the image.
+    line_items: list[ClaimExpenseLineItemOut] = Field(default_factory=list)
 
 
 class ClaimExpenseOut(BaseModel):
@@ -121,9 +138,19 @@ class ClaimExpenseOut(BaseModel):
     expense_category_id: int | None = None
     category_name: str
     amount: Decimal
+    taxable_value: Decimal = Decimal("0")
     cap_amount: Decimal | None = None
     policy_status: str
     exception_requested: bool
+    # Which invoice(s) this category's total was aggregated from — see
+    # reimbursement_service._claim_invoice_breakdown.
+    invoice_breakdown: list[ClaimExpenseInvoiceOut] = Field(default_factory=list)
+    # Which exception type requesting an exception on this expense should use (None if
+    # policy_status is OK) — computed once server-side (see
+    # reimbursement_service._dedicated_exception_type) and read directly by
+    # ExceptionRequestModal.jsx, instead of the frontend re-deriving its own guess from
+    # category_name (that duplication was the root cause of a past routing bug).
+    exception_type: str | None = None
 
 
 class ClaimDraftOut(BaseModel):

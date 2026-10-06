@@ -3,6 +3,7 @@ import { lazy, Suspense } from 'react';
 import { Navigate, Outlet, Route, Routes } from 'react-router-dom';
 
 import AppLayout from './components/layout/AppLayout';
+import ApprovalScopeGuard from './components/ApprovalScopeGuard';
 import ProtectedRoute from './components/ProtectedRoute';
 import RoleGuard from './components/RoleGuard';
 import PageLoader from './components/ui/PageLoader';
@@ -19,6 +20,7 @@ const Home = lazy(() => import('./pages/Home'));
 const FinanceGstPage = lazy(() => import('./pages/finance/FinanceGstPage'));
 const ErpLedgerPage = lazy(() => import('./pages/finance/ErpLedgerPage'));
 const PaymentQueuePage = lazy(() => import('./pages/finance/PaymentQueuePage'));
+const AdvancesPage = lazy(() => import('./pages/finance/AdvancesPage'));
 const ReportsPage = lazy(() => import('./pages/reports/ReportsPage'));
 const InvoiceReview = lazy(() => import('./pages/InvoiceReview'));
 const InvoiceUpload = lazy(() => import('./pages/InvoiceUpload'));
@@ -99,7 +101,9 @@ export default function App() {
                 />
               }
             >
-              <Route path="claims/pending" element={<PendingApprovals />} />
+              <Route element={<ApprovalScopeGuard area="pending-approvals" />}>
+                <Route path="claims/pending" element={<PendingApprovals />} />
+              </Route>
             </Route>
 
             <Route path="claims/:claimId/review" element={<ClaimReview />} />
@@ -181,7 +185,9 @@ export default function App() {
                 <RoleGuard anyOf={['approve_stage_2', 'approve_stage_4', 'configure_policy', 'approve_exception']} />
               }
             >
-              <Route path="hr/exceptions" element={<ExceptionRequestsPage />} />
+              <Route element={<ApprovalScopeGuard area="exceptions" />}>
+                <Route path="hr/exceptions" element={<ExceptionRequestsPage />} />
+              </Route>
             </Route>
             <Route element={<RoleGuard roles={['HRBP_HR', 'HRBP', 'GROUP_HEAD_HR']} />}>
               <Route path="compliance" element={<ComplianceDashboard />} />
@@ -197,6 +203,11 @@ export default function App() {
               <Route path="reports" element={<ReportsPage />} />
               <Route path="finance/reports" element={<Navigate to="/reports" replace />} />
               <Route path="finance/erp-ledger" element={<ErpLedgerPage />} />
+            </Route>
+            {/* Advances are Finance-only, deliberately stricter than the other finance/
+                routes above (no view_reports fallback, no delegation) — see advances_api.py. */}
+            <Route element={<RoleGuard roles={['FINANCE']} />}>
+              <Route path="finance/advances" element={<AdvancesPage />} />
             </Route>
           </Route>
         </Route>

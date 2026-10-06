@@ -7,19 +7,8 @@ import MobileBottomNav from './MobileBottomNav';
 import AppSidebar from './AppSidebar';
 import { selectResolvedRole, useAuthStore } from '../../store/authStore';
 
-const SIDEBAR_COLLAPSED_KEY = 'travora.sidebarCollapsed';
-
-function loadCollapsed() {
-  try {
-    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1';
-  } catch {
-    return false;
-  }
-}
-
 export default function AppLayout() {
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [collapsed, setCollapsed] = useState(loadCollapsed);
   const role = useAuthStore(selectResolvedRole);
 
   useEffect(() => {
@@ -29,24 +18,11 @@ export default function AppLayout() {
     };
   }, [mobileOpen]);
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0');
-    } catch {
-      /* private browsing / blocked storage — collapse state just won't persist */
-    }
-  }, [collapsed]);
-
   return (
     <PageTitleProvider>
       <div className="flex min-h-screen" style={{ background: '#f8f9fb' }}>
-        {/* Desktop collapsible rail; also renders the mobile off-canvas sheet */}
-        <AppSidebar
-          mobileOpen={mobileOpen}
-          onClose={() => setMobileOpen(false)}
-          collapsed={collapsed}
-          onToggleCollapsed={() => setCollapsed((v) => !v)}
-        />
+        {/* Desktop rail; also renders the mobile off-canvas sheet */}
+        <AppSidebar mobileOpen={mobileOpen} onClose={() => setMobileOpen(false)} />
 
         <div className="flex min-w-0 flex-1 flex-col">
           <AppNavbar onOpenSidebar={() => setMobileOpen(true)} />

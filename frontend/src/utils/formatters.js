@@ -36,19 +36,25 @@ export const ROLE_LABELS = {
 export const formatRole = (role) => ROLE_LABELS[role] || (role || '').replace(/_/g, ' ');
 
 export const EXCEPTION_TYPE_LABELS = {
-  AIR_TRAVEL_UNLOCK: 'Air Travel Unlock',
+  // These are the only exception types ever actually raised against a travel request
+  // rather than a claim.
+  AIR_TRAVEL_UNLOCK: 'Air Travel Unlock (Travel Request)',
   AIR_TRAVEL_L5_L6: 'Air Travel (Level 5A–6D)',
   TRAIN_TATKAL: 'Tatkal Train Booking',
-  FLIGHT_ADVANCE_BOOKING_OVERRIDE: 'Flight Advance Booking Override',
+  FLIGHT_ADVANCE_BOOKING_OVERRIDE: 'Flight Advance Booking Override (Travel Request)',
+  TRAIN_ADVANCE_BOOKING_OVERRIDE: 'Train Advance Booking Override (Travel Request)',
+  TRAVEL_REQUEST_LEAD_TIME_OVERRIDE: 'Travel Request Lead Time Override (Travel Request)',
   FLIGHT_COST_DELTA: 'Flight Cost Delta',
   ROOM_RENT_DEVIATION: 'Room Rent Deviation',
-  'HOTEL/ACCOMMODATION_DEVIATION': 'Hotel / Accommodation Deviation',
-  HOTEL_DEVIATION: 'Hotel Deviation',
-  ACCOMMODATION_DEVIATION: 'Accommodation Deviation',
+  FOOD_DEVIATION: 'Food & Meals Deviation',
+  INCIDENTAL_DEVIATION: 'Incidental Expenses Deviation',
   HIRED_TAXI_UNAUTHORIZED: 'Hired Taxi (Unauthorized)',
   MODE_DEVIATION: 'Mode of Travel Deviation',
   DAY_VISIT_EXTERNAL_MEETING: 'Day Visit External Meeting',
-  POLICY_EXCEPTION_GENERAL: 'Policy Exception (General)',
+  // Catch-all for any expense category with no dedicated exception rule — see
+  // workflow_service._chain_for_type on the backend, which routes every generic
+  // f"{category}_DEVIATION" type through this same chain.
+  POLICY_EXCEPTION_GENERAL: 'Other Category Deviation',
 };
 
 export const formatExceptionType = (type) =>
@@ -73,16 +79,18 @@ export const EXCEPTION_TYPE_DESCRIPTIONS = {
     'The train ticket is being booked via Tatkal (premium/emergency booking) instead of standard advance booking.',
   FLIGHT_ADVANCE_BOOKING_OVERRIDE:
     'The flight is being booked with fewer than the minimum required advance-notice days.',
+  TRAIN_ADVANCE_BOOKING_OVERRIDE:
+    'The train departure falls within the minimum required advance-notice window.',
+  TRAVEL_REQUEST_LEAD_TIME_OVERRIDE:
+    'This travel request is being submitted with fewer than the minimum required advance-notice working days.',
   FLIGHT_COST_DELTA:
     'The selected flight fare exceeds the policy-permitted amount for this route/class.',
   ROOM_RENT_DEVIATION:
     "The hotel room rent exceeds the policy cap for this employee's level/city.",
-  'HOTEL/ACCOMMODATION_DEVIATION':
-    "The hotel/accommodation cost exceeds the policy cap for this employee's level/city.",
-  HOTEL_DEVIATION:
-    "The hotel cost exceeds the policy cap for this employee's level/city.",
-  ACCOMMODATION_DEVIATION:
-    "The accommodation cost exceeds the policy cap for this employee's level/city.",
+  FOOD_DEVIATION:
+    "Food & Meals spend exceeds the policy cap for this employee's level/city.",
+  INCIDENTAL_DEVIATION:
+    "Incidental expenses exceed the policy cap for this employee's level/city.",
   HIRED_TAXI_UNAUTHORIZED:
     'A hired taxi is being used without the prior authorization normally required for this mode of travel.',
   MODE_DEVIATION:
@@ -90,7 +98,7 @@ export const EXCEPTION_TYPE_DESCRIPTIONS = {
   DAY_VISIT_EXTERNAL_MEETING:
     'Expense is being claimed for a day visit / external meeting outside standard travel policy parameters.',
   POLICY_EXCEPTION_GENERAL:
-    'A general policy exception not covered by a specific automated rule.',
+    'An expense category with no dedicated policy rule exceeded its cap — this is the default approval route for any such deviation.',
 };
 
 export const describeExceptionType = (type) =>

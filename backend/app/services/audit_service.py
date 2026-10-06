@@ -1,10 +1,10 @@
 import hashlib
 import json
-from datetime import UTC, datetime
 
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timezone import now_ist
 from app.models.employee import AuditLog
 
 
@@ -21,7 +21,7 @@ async def log_event(
     result = await db.execute(select(AuditLog).order_by(desc(AuditLog.id)).limit(1))
     previous = result.scalar_one_or_none()
     previous_hash = previous.event_hash if previous else None
-    event_time = datetime.now(UTC).replace(tzinfo=None)
+    event_time = now_ist()
     payload = {
         "entity_type": entity_type,
         "entity_id": entity_id,

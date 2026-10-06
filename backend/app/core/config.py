@@ -39,9 +39,15 @@ class Settings(BaseSettings):
     travel_ticket_storage_dir: str = "storage/travel_tickets"
     travel_request_min_lead_working_days: int = 2
     flight_advance_booking_min_days: int = 7
+    train_advance_booking_min_days: int = 2
     # Optional GSTN live validation.
     gstn_public_api_base: str | None = None
     gstn_http_timeout_seconds: float = 8.0
+
+    # Live FX rate lookup for foreign-currency invoices (replaces asking Gemini to guess a
+    # rate from "general knowledge"). Free, no API key required; set to empty to disable.
+    fx_rate_api_base: str | None = "https://open.er-api.com/v6/latest"
+    fx_http_timeout_seconds: float = 6.0
 
     # Optional: Gemini Developer API for invoice extraction (see invoice upload pipeline).
     gemini_api_key: str | None = Field(

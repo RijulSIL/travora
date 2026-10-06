@@ -77,6 +77,10 @@ export default function ClaimReviewModal({ claimId, onClose }) {
   const [rejectReason, setRejectReason] = useState('');
   const [utr, setUtr] = useState('');
   const [tdsDeduction, setTdsDeduction] = useState('0.00');
+  // Outstanding advance is a Finance-only figure (see advances_api.py) — never fetched for
+  // any other role that can review/act on this claim.
+  const [outstandingAdvance, setOutstandingAdvance] = useState(0);
+  const [advanceDeducted, setAdvanceDeducted] = useState('0.00');
   const [payableAmount, setPayableAmount] = useState('');
   const [timeline, setTimeline] = useState([]);
   const [activeTab, setActiveTab] = useState('summary');
@@ -106,6 +110,16 @@ export default function ClaimReviewModal({ claimId, onClose }) {
           setPayableAmount(String(authoritative));
         }
         setTdsDeduction('0.00');
+        setAdvanceDeducted('0.00');
+        setOutstandingAdvance(0);
+        if (role === 'FINANCE' && c.data?.status === 'READY_FOR_PAYMENT' && c.data?.employee_user_id) {
+          try {
+            const adv = await reimbursementApi.outstandingAdvanceFor(c.data.employee_user_id);
+            if (!cancelled) setOutstandingAdvance(Number(adv.data?.outstanding_advance || 0));
+          } catch {
+            // Non-fatal — Finance can still record the payment without netting an advance.
+          }
+        }
       } catch (error) {
         if (!cancelled) {
           setClaim(false);
@@ -142,14 +156,38 @@ export default function ClaimReviewModal({ claimId, onClose }) {
   const readyForPayment = claim?.status === 'READY_FOR_PAYMENT';
   const payMax = Number(payableAmount || 0);
   const deductionAmount = Number(tdsDeduction || 0);
-  const totalDue = payMax - deductionAmount;
+  const advanceAmount = Number(advanceDeducted || 0);
+  const totalDue = payMax - deductionAmount - advanceAmount;
   const deductionInvalid = deductionAmount < 0 || deductionAmount > payMax;
+  const advanceInvalid =
+    advanceAmount < 0 || advanceAmount > outstandingAdvance || deductionAmount + advanceAmount > payMax;
+  // The advance can't cover the whole claim — "Deduct from Advance" only ever applies what's
+  // actually available, and whatever's left is simply paid out via UTR as normal.
+  const advanceFallsShort = outstandingAdvance > 0 && outstandingAdvance < payMax - deductionAmount;
+
+  const applyAdvanceDeduction = () => {
+    const applied = Math.max(Math.min(outstandingAdvance, payMax - deductionAmount), 0);
+    setAdvanceDeducted(applied.toFixed(2));
+  };
+  const removeAdvanceDeduction = () => setAdvanceDeducted('0.00');
+
+  // TDS is edited after the advance is applied just as often as before — rather than leaving
+  // a now-too-large advance sitting there as an unfixable validation error, shrink it to fit
+  // whenever the two would otherwise together exceed the approved amount.
+  useEffect(() => {
+    if (advanceAmount > 0 && deductionAmount + advanceAmount > payMax) {
+      const refitted = Math.max(Math.min(outstandingAdvance, payMax - deductionAmount), 0);
+      setAdvanceDeducted(refitted.toFixed(2));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deductionAmount]);
 
   const { run: pay, loading: paying } = useAsyncAction(async () => {
     await reimbursementApi.recordClaimPayment(claimId, {
       utr_reference: utr,
       amount: totalDue,
       tds_deduction: deductionAmount,
+      advance_deducted: advanceAmount,
     });
     showToast('Payment recorded', 'success');
     onClose();
@@ -232,7 +270,8 @@ export default function ClaimReviewModal({ claimId, onClose }) {
                   {(() => {
                     const gst = claim.compliance_report?.gst_summary || {};
                     const baseAmount = Number(gst.taxable_value ?? gst.total_taxable_value ?? 0);
-                    const totalTax = Number(gst.cgst || 0) + Number(gst.sgst || 0) + Number(gst.igst || 0);
+                    const totalTax =
+                      Number(gst.cgst || 0) + Number(gst.sgst || 0) + Number(gst.igst || 0) + Number(gst.other_tax || 0);
                     const totalPayable = baseAmount + totalTax;
                     return (
                       <>
@@ -582,19 +621,67 @@ export default function ClaimReviewModal({ claimId, onClose }) {
                           onChange={(e) => setTdsDeduction(e.target.value)}
                         />
                       </label>
+                      {role === 'FINANCE' && outstandingAdvance > 0 ? (
+                        <div className="mt-2.5 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="font-semibold text-slate-600">Outstanding Advance</span>
+                            <span className="font-mono font-bold text-slate-800">₹{money(outstandingAdvance)}</span>
+                          </div>
+                          {advanceAmount > 0 ? (
+                            <>
+                              <div className="mt-2 flex items-center gap-2">
+                                <input
+                                  className="field w-full"
+                                  type="number"
+                                  step="0.01"
+                                  min="0"
+                                  max={Math.min(outstandingAdvance, payMax)}
+                                  value={advanceDeducted}
+                                  onChange={(e) => setAdvanceDeducted(e.target.value)}
+                                />
+                                <button
+                                  type="button"
+                                  className="whitespace-nowrap text-xs font-semibold text-red-600 hover:underline"
+                                  onClick={removeAdvanceDeduction}
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                              {advanceFallsShort ? (
+                                <p className="mt-1.5 text-[11px] text-slate-500">
+                                  The advance doesn&apos;t fully cover this claim — the remaining ₹{money(totalDue)} is
+                                  paid via UTR as usual.
+                                </p>
+                              ) : null}
+                            </>
+                          ) : (
+                            <button type="button" className="btn-secondary mt-2 w-full text-xs" onClick={applyAdvanceDeduction}>
+                              Deduct from Advance
+                            </button>
+                          )}
+                        </div>
+                      ) : null}
                       <div className="mt-3 rounded-lg border border-brand/20 bg-brand/5 px-3.5 py-2.5">
                         <div className="flex items-center justify-between">
                           <span className="text-xs font-semibold text-brand/70">Total Due</span>
                           <span className="font-mono text-base font-bold text-brand">₹{money(totalDue)}</span>
                         </div>
-                        <p className="mt-0.5 text-[11px] text-slate-500">Approved amount minus TDS &amp; other deductions.</p>
+                        <p className="mt-0.5 text-[11px] text-slate-500">
+                          Approved amount minus TDS &amp; other deductions{outstandingAdvance > 0 ? ' and advance deducted' : ''}.
+                        </p>
                       </div>
                       {deductionInvalid ? (
                         <p className="mt-2 text-xs text-amber-700">TDS &amp; other deductions must be between ₹0.00 and the approved amount.</p>
                       ) : null}
+                      {advanceInvalid ? (
+                        <p className="mt-2 text-xs text-amber-700">
+                          Advance deducted must be between ₹0.00 and ₹{money(outstandingAdvance)}, and can&apos;t push
+                          the total withheld past the approved amount.
+                        </p>
+                      ) : null}
                       <button
                         type="button"
-                        disabled={paying || !utr.trim() || deductionInvalid}
+                        disabled={paying || !utr.trim() || deductionInvalid || advanceInvalid}
                         className="btn-primary mt-3 inline-flex w-full items-center justify-center gap-1.5"
                         onClick={() => pay().catch(onActionError)}
                       >

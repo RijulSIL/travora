@@ -1,10 +1,119 @@
-import { Plane, Train, Bus, FileText, ArrowRight, MapPin, Calendar, Eye } from 'lucide-react';
+import { Plane, Train, Bus, FileText, ArrowRight, ArrowLeftRight, MapPin, Calendar, Eye, RefreshCw, Route } from 'lucide-react';
 
-function ModeIcon({ mode, className }) {
-  if (mode === 'FLIGHT') return <Plane className={className} size={18} />;
-  if (mode === 'TRAIN') return <Train className={className} size={18} />;
-  if (mode === 'BUS') return <Bus className={className} size={18} />;
-  return <FileText className={className} size={18} />;
+import { formatDate } from '../../utils/formatters';
+
+function ModeIcon({ mode, className, size = 18 }) {
+  if (mode === 'FLIGHT') return <Plane className={className} size={size} />;
+  if (mode === 'TRAIN') return <Train className={className} size={size} />;
+  if (mode === 'BUS') return <Bus className={className} size={size} />;
+  return <FileText className={className} size={size} />;
+}
+
+const ACCENT = {
+  ROUND_TRIP: { border: 'border-l-indigo-400', badgeBg: 'bg-indigo-50', badgeText: 'text-indigo-600', badgeRing: 'ring-indigo-100' },
+  MULTI_CITY: { border: 'border-l-violet-400', badgeBg: 'bg-violet-50', badgeText: 'text-violet-600', badgeRing: 'ring-violet-100' },
+  ONE_WAY: { border: 'border-l-slate-300', badgeBg: 'bg-slate-100', badgeText: 'text-slate-500', badgeRing: 'ring-slate-100' },
+};
+
+function TicketButton({ onClick }) {
+  return (
+    <button
+      type="button"
+      className="inline-flex flex-none items-center gap-1 rounded-md border border-brand/20 bg-brand/5 px-2 py-1 text-[10px] font-bold text-brand hover:bg-brand/10 transition-colors"
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+    >
+      <Eye size={11} /> Ticket
+    </button>
+  );
+}
+
+/** A single trip card — one-way trips get a flat single-row layout (nothing to summarize),
+ * while a round trip or multi-city trip gets a headline (overall route + date span) with its
+ * individual legs/tickets listed compactly underneath, instead of repeating the full route on
+ * every single leg row (redundant for a round trip, since leg 2 is just leg 1 reversed). */
+function TripCard({ group, isSelected, onPreviewTicket }) {
+  const legs = group.legs;
+  const isGrouped = legs.length > 1;
+  const accent = ACCENT[group.tripType] || ACCENT.ONE_WAY;
+
+  if (!isGrouped) {
+    const leg = legs[0];
+    return (
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg shadow-sm transition-colors ${
+            isSelected ? 'bg-brand text-white' : 'bg-white text-slate-500 border border-slate-100'
+          }`}>
+            <ModeIcon mode={leg.mode} />
+          </div>
+          <div>
+            <div className="flex items-center gap-1.5 text-sm font-bold text-slate-800">
+              <span>{leg.from_city}</span>
+              <ArrowRight size={12} className="text-slate-400" />
+              <span>{leg.to_city}</span>
+            </div>
+            <div className="mt-0.5 text-[11px] font-medium text-slate-500">
+              {formatDate(leg.travel_date)} · {leg.travel_class}
+            </div>
+          </div>
+        </div>
+        {leg.desk_ticket_id ? <TicketButton onClick={() => onPreviewTicket(leg)} /> : null}
+      </div>
+    );
+  }
+
+  const isRoundTrip = group.tripType === 'ROUND_TRIP';
+  const dateRange =
+    legs[0].travel_date === legs[legs.length - 1].travel_date
+      ? formatDate(legs[0].travel_date)
+      : `${formatDate(legs[0].travel_date)} – ${formatDate(legs[legs.length - 1].travel_date)}`;
+
+  return (
+    <div>
+      <span
+        className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide ring-1 ring-inset ${accent.badgeBg} ${accent.badgeText} ${accent.badgeRing}`}
+      >
+        {isRoundTrip ? <RefreshCw size={10} /> : <Route size={10} />}
+        {isRoundTrip ? 'Round Trip' : `Multi-city · ${legs.length} legs`}
+      </span>
+
+      <div className="mt-2 flex items-center gap-1.5 text-sm font-bold text-slate-800">
+        {isRoundTrip ? (
+          <>
+            <span>{legs[0].from_city}</span>
+            <ArrowLeftRight size={12} className="shrink-0 text-slate-400" />
+            <span>{legs[0].to_city}</span>
+          </>
+        ) : (
+          legs.map((leg, i) => (
+            <span key={leg.id} className="flex items-center gap-1.5">
+              {i > 0 ? <ArrowRight size={12} className="shrink-0 text-slate-400" /> : null}
+              <span>{i === 0 ? leg.from_city : leg.to_city}</span>
+            </span>
+          ))
+        )}
+      </div>
+      <div className="mt-0.5 text-[11px] font-medium text-slate-500">{dateRange}</div>
+
+      <div className="mt-3 space-y-1.5 border-t border-slate-100 pt-2.5">
+        {legs.map((leg, i) => (
+          <div key={leg.id} className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-[11px] text-slate-600">
+              <ModeIcon mode={leg.mode} size={13} className="shrink-0 text-slate-400" />
+              <span className="font-semibold text-slate-700">
+                {isRoundTrip ? (i === 0 ? 'Onward' : 'Return') : `${leg.from_city} → ${leg.to_city}`}
+              </span>
+              <span className="text-slate-400">· {formatDate(leg.travel_date)} · {leg.travel_class}</span>
+            </div>
+            {leg.desk_ticket_id ? <TicketButton onClick={() => onPreviewTicket(leg)} /> : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 export default function ClaimWizardStepTripInfo({
@@ -16,9 +125,9 @@ export default function ClaimWizardStepTripInfo({
   validationErrors,
   onNext,
   onResolveCityGroup,
-  trips = [],
+  tripGroups = [],
   selectedTripIds = [],
-  onToggleTrip,
+  onToggleTripGroup,
   onPreviewTicket,
 }) {
   const getError = (name) => validationErrors?.[name];
@@ -26,7 +135,7 @@ export default function ClaimWizardStepTripInfo({
   return (
     <div className="space-y-6">
       {/* Quick Start Booking Linker Card */}
-      {trips.length > 0 && (
+      {tripGroups.length > 0 && (
         <div className="panel rounded-xl p-5 shadow-sm border border-slate-200 bg-white">
           <h2 className="text-sm font-bold text-slate-800 flex items-center gap-2">
             <span>Quick Start</span>
@@ -35,63 +144,35 @@ export default function ClaimWizardStepTripInfo({
             </span>
           </h2>
           <p className="mt-1 text-xs text-slate-500">
-            Select a trip from your Travel Desk to automatically pre-fill dates, cities, and travel purposes.
+            Select a trip from your Travel Desk to automatically pre-fill dates, cities, and travel purposes —
+            a multi-city trip&apos;s legs link together as one.
           </p>
           <div className="mt-4 grid gap-3.5 sm:grid-cols-2">
-            {trips.map((trip) => {
-              const isSelected = selectedTripIds.includes(trip.id);
+            {tripGroups.map((group) => {
+              const isSelected = group.tripIds.every((id) => selectedTripIds.includes(id));
+              const accent = ACCENT[group.tripType] || ACCENT.ONE_WAY;
               return (
                 <div
-                  key={trip.id}
-                  className={`relative cursor-pointer rounded-xl border-2 p-4 transition-all duration-200 hover:shadow-md ${
-                    isSelected 
-                      ? 'border-brand bg-brand/5 shadow-sm ring-1 ring-brand/10' 
-                      : 'border-slate-100 bg-slate-50/30 hover:border-slate-200 hover:bg-slate-50/70'
+                  key={group.key}
+                  className={`relative cursor-pointer rounded-xl border border-l-4 p-4 transition-all duration-200 hover:shadow-md ${
+                    isSelected
+                      ? 'border-brand bg-brand/5 shadow-sm ring-1 ring-brand/10'
+                      : `border-slate-200 ${accent.border} bg-white hover:bg-slate-50/70`
                   }`}
-                  onClick={() => onToggleTrip(trip.id, !isSelected)}
+                  onClick={() => onToggleTripGroup(group.tripIds, !isSelected)}
                 >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className={`flex h-9 w-9 items-center justify-center rounded-lg shadow-sm transition-colors ${
-                        isSelected ? 'bg-brand text-white' : 'bg-white text-slate-500 border border-slate-100'
-                      }`}>
-                        <ModeIcon mode={trip.mode} />
-                      </div>
-                      <div>
-                        <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                          <span>{trip.from_city}</span>
-                          <ArrowRight size={10} className="text-slate-400" />
-                          <span>{trip.to_city}</span>
-                        </div>
-                        <div className="text-[10px] font-medium text-slate-500 mt-0.5">
-                          {trip.travel_date} · {trip.travel_class}
-                        </div>
-                      </div>
-                    </div>
-                    {trip.desk_ticket_id && (
-                      <button
-                        type="button"
-                        className="inline-flex items-center gap-1 text-[10px] font-bold text-brand hover:underline p-1"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onPreviewTicket(trip);
-                        }}
-                      >
-                        <Eye size={11} /> Ticket
-                      </button>
-                    )}
-                  </div>
                   {isSelected && (
-                    <div className="absolute right-2 top-2 text-brand">
-                      <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
+                    <div className="absolute right-3 top-3 flex h-5 w-5 items-center justify-center rounded-full bg-brand text-white">
+                      <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 20 20">
                         <path
                           fillRule="evenodd"
-                          d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
+                          d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 111.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
                           clipRule="evenodd"
                         />
                       </svg>
                     </div>
                   )}
+                  <TripCard group={group} isSelected={isSelected} onPreviewTicket={onPreviewTicket} />
                 </div>
               );
             })}

@@ -23,6 +23,7 @@ const FIELD_LABELS = {
   cgst: 'CGST',
   sgst: 'SGST',
   igst: 'IGST',
+  other_tax: 'Other Taxes (non-GST, e.g. foreign VAT/sales tax)',
   is_tatkal: 'Is Tatkal Ticket?',
   expense_category: 'Expense Category (what this is for)',
 };
@@ -42,6 +43,7 @@ const MONEY_FIELD_KEYS = new Set([
   'cgst',
   'sgst',
   'igst',
+  'other_tax',
 ]);
 
 function confidenceTone(confidence) {
@@ -159,9 +161,12 @@ export default function InvoiceReview() {
     formData.append('file', file);
     reimbursementApi
       .uploadPaymentProof(invoiceId, formData)
-      .then(() => {
+      .then((res) => {
         showToast('Payment proof uploaded', 'success');
-        return load();
+        // Merge in just the (lightweight) updated invoice fields — no fields/line_items in
+        // this response — rather than calling load(), which re-fetches the full extraction
+        // bundle and resets every in-progress edit/confirmation back to its last-saved state.
+        setInvoice((current) => (current ? { ...current, ...res.data } : current));
       })
       .catch((err) => {
         setProofError(err?.response?.data?.detail || 'Could not upload payment proof.');

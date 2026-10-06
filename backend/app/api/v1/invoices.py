@@ -25,6 +25,7 @@ from app.services.reimbursement_service import (
     get_invoice_claim_link,
     get_invoice_extraction,
     get_invoice_for_view,
+    release_invoice_from_draft,
     store_invoice_upload,
     store_payment_proof,
     update_invoice_fields,
@@ -381,6 +382,29 @@ async def remove_invoice(
     db: AsyncSession = Depends(get_db),
 ) -> None:
     await delete_invoice(invoice_id, int(claims["sub"]), db)
+
+
+@router.delete(
+    "/{invoice_id}/claim-link",
+    response_model=InvoiceOut,
+    dependencies=[Depends(require_permission("submit_claim"))],
+)
+async def remove_invoice_from_draft(
+    invoice_id: int,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    invoice = await release_invoice_from_draft(invoice_id, int(claims["sub"]), db)
+    claim_id, claim_reference, claim_status = await get_invoice_claim_link(invoice_id, db)
+    invoice_dict = InvoiceOut.model_validate(invoice).model_dump()
+    invoice_dict["total_amount"] = None
+    invoice_dict["linked_claim_id"] = claim_id
+    invoice_dict["linked_claim_reference"] = claim_reference
+    invoice_dict["linked_claim_status"] = claim_status.value if claim_status else None
+    invoice_dict["is_archived"] = claim_status in INVOICE_LOCKING_CLAIM_STATUSES
+    invoice_dict["is_locked"] = claim_status in INVOICE_LOCKING_CLAIM_STATUSES
+    invoice_dict["can_delete"] = claim_status is None or claim_status == ClaimStatus.REJECTED
+    return invoice_dict
 
 
 @router.post(

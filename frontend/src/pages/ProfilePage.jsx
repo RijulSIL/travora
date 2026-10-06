@@ -254,6 +254,20 @@ export default function ProfilePage() {
                 </span>
               )}
             </div>
+            <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
+              <div>
+                <dt className="text-xs font-semibold uppercase tracking-wide text-slate-400">Employee ID</dt>
+                <dd className="mt-0.5 text-slate-700">{profile?.employee_id || '—'}</dd>
+              </div>
+              <div>
+                <dt className="text-xs font-semibold uppercase tracking-wide text-slate-400">Department</dt>
+                <dd className="mt-0.5 text-slate-700">{profile?.department || '—'}</dd>
+              </div>
+              <div>
+                <dt className="text-xs font-semibold uppercase tracking-wide text-slate-400">Reporting Manager</dt>
+                <dd className="mt-0.5 text-slate-700">{profile?.reporting_manager_name || '—'}</dd>
+              </div>
+            </dl>
           </div>
         </div>
       </div>

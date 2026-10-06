@@ -1,6 +1,5 @@
 import logging
 from collections.abc import Callable
-from datetime import datetime
 
 from fastapi import Depends, HTTPException, Request, status
 from jose import JWTError, jwt
@@ -9,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.timezone import now_ist
 from app.models.auth import Delegation, Role, User
 
 logger = logging.getLogger(__name__)
@@ -108,7 +108,7 @@ async def _active_delegator_roles(user_id: int, db: AsyncSession) -> set[Role]:
     if not await is_delegation_enabled(db):
         return set()
 
-    now = datetime.utcnow()
+    now = now_ist()
     delegator_ids = (
         await db.execute(
             select(Delegation.delegator_id).where(
@@ -131,6 +131,37 @@ async def get_delegated_permissions(user_id: int, db: AsyncSession) -> set[str]:
     for role in delegator_roles:
         allowed |= DELEGATABLE_PERMISSIONS.get(role, set())
     return allowed
+
+
+async def is_direct_report(*, manager_user_id: int, target_user_id: int, db: AsyncSession) -> bool:
+    """True iff `target_user_id` is literally one of `manager_user_id`'s direct reports
+    (Employee.reporting_manager_id == the manager's own employee_id).
+
+    This is the one check that decides whether a REPORTING_MANAGER — the only role with no
+    blanket "view_reports"/"process_payments" permission — may view a specific employee's data
+    cross-user. It existed inline, independently, in two different call sites
+    (claims.py's /claims/team, workflow_service.assert_user_can_view_claim_workflow) while two
+    others (claims.py's employee_claims, exceptions_api.py's get_exception) granted
+    REPORTING_MANAGER blanket cross-user access with no check at all — an IDOR. Centralizing it
+    here means there's exactly one place left to get this right.
+
+    Does not consider delegation: a manager temporarily covering someone's *approvals* already
+    goes through its own delegation-aware check (_user_matches_required_role /
+    _active_delegator_ids) at the point of action, which is a different question from "is this
+    literally my report" and shouldn't be conflated with it here.
+    """
+    if manager_user_id == target_user_id:
+        return True
+    from app.models.employee import Employee
+
+    manager = await db.get(User, manager_user_id)
+    if manager is None or not manager.employee_id:
+        return False
+    target = await db.get(User, target_user_id)
+    if target is None or not target.employee_id:
+        return False
+    target_employee = await db.get(Employee, target.employee_id)
+    return target_employee is not None and target_employee.reporting_manager_id == manager.employee_id
 
 
 def decode_bearer_token(request: Request) -> dict:

@@ -127,6 +127,11 @@ class InvoiceLineItem(Base):
     cgst: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     sgst: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     igst: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)
+    # Non-Indian-GST tax (VAT, sales tax, service tax, etc.) on a foreign invoice — kept
+    # separate from cgst/sgst/igst so it never counts toward Input Tax Credit eligibility or
+    # the Finance GST Dashboard's GST total (it isn't Indian GST and was never charged by a
+    # GST-registered vendor), while still counting toward the invoice's own grand total.
+    other_tax: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     total_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     category_id: Mapped[int | None] = mapped_column(ForeignKey("expense_categories.id"), index=True)
     category_name: Mapped[str | None] = mapped_column(String(128))
@@ -215,6 +220,9 @@ class ClaimExpense(Base):
     expense_category_id: Mapped[int | None] = mapped_column(ForeignKey("expense_categories.id"))
     category_name: Mapped[str] = mapped_column(String(128), nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    # Pre-tax portion of `amount` — lets the review UI break "Total Base Amount" down by
+    # category instead of only showing tax-inclusive totals per category.
+    taxable_value: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     cap_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     policy_status: Mapped[str] = mapped_column(String(32), nullable=False, default="OK")
     exception_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

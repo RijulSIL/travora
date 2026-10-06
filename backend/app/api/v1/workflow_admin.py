@@ -29,5 +29,5 @@ async def put_config(
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    cfg = await save_workflow_config(payload.config, int(claims["sub"]), db)
-    return {"config": cfg}
+    cfg, reassigned = await save_workflow_config(payload.config, int(claims["sub"]), db)
+    return {"config": cfg, "reassigned": reassigned}

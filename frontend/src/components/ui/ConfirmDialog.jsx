@@ -1,3 +1,5 @@
+import { createPortal } from 'react-dom';
+
 import useBodyScrollLock from '../../hooks/useBodyScrollLock';
 
 export default function ConfirmDialog({
@@ -13,8 +15,12 @@ export default function ConfirmDialog({
 
   if (!open) return null;
 
-  return (
-    <div className="fixed inset-0 z-[90] grid place-items-center bg-slate-900/40 p-4">
+  // Portaled to <body> rather than rendered in place — a caller whose own tree sits under an
+  // ancestor with a transform/filter (common for page-enter animations) would otherwise turn
+  // `fixed inset-0` into "fixed relative to that ancestor" instead of the true viewport,
+  // leaving a sliver of the page's own background exposed above the dialog's overlay.
+  return createPortal(
+    <div className="fixed inset-0 z-[95] grid place-items-center bg-slate-900/40 p-4">
       <div className="panel w-full max-w-md p-5">
         <h3 className="text-base font-semibold text-ink">{title}</h3>
         <p className="mt-2 text-sm text-slate-600">{description}</p>
@@ -29,6 +35,7 @@ export default function ConfirmDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

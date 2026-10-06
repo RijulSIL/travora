@@ -1,4 +1,6 @@
 import { CheckCircle2, Circle, Clock, XCircle } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { reimbursementApi } from '../../services/reimbursementApi';
 
 const ROLE_LABELS = {
   REPORTING_MANAGER: 'Reporting Manager',
@@ -35,7 +37,7 @@ const STATE_STYLES = {
   pending: { Icon: Circle, iconCls: 'text-slate-300 bg-slate-50 border-slate-200' },
 };
 
-function buildApprovalSteps(request) {
+function buildApprovalSteps(request, chain) {
   const steps = [];
 
   steps.push({
@@ -47,18 +49,32 @@ function buildApprovalSteps(request) {
 
   const exc = request.exception;
   if (exc) {
+    // request.exception (TravelExceptionSummaryOut) has no approver names — only
+    // chain.exception_stages does (acted_by_name / pending_approver_names). Match the two up
+    // by required_role, scoped to this exception_request_id since chain.exception_stages
+    // covers every exception ever raised on this travel request, not just the current one.
+    const excStageByRole = new Map(
+      (chain?.exception_stages || [])
+        .filter((s) => s.exception_request_id === exc.id)
+        .map((s) => [s.required_role, s]),
+    );
     exc.approvals.forEach((a) => {
+      const named = excStageByRole.get(a.required_role);
       let state = 'pending';
       let stateLabel = 'Queued';
       if (a.status === 'APPROVED') {
         state = 'done';
-        stateLabel = formatDateTime(a.acted_at) ? `Approved ${formatDateTime(a.acted_at)}` : 'Approved';
+        const who = named?.acted_by_name ? `by ${named.acted_by_name}` : '';
+        const when = formatDateTime(a.acted_at);
+        stateLabel = who || when ? `Approved ${[who, when].filter(Boolean).join(' · ')}` : 'Approved';
       } else if (a.status === 'REJECTED') {
         state = 'rejected';
-        stateLabel = 'Rejected';
+        stateLabel = named?.acted_by_name ? `Rejected by ${named.acted_by_name}` : 'Rejected';
       } else if (a.status === 'PENDING') {
         state = 'current';
-        stateLabel = 'Awaiting decision';
+        stateLabel = named?.pending_approver_names?.length
+          ? `Awaiting ${named.pending_approver_names.join(', ')}`
+          : 'Awaiting decision';
       }
       steps.push({
         key: `exc-${a.required_role}`,
@@ -72,33 +88,80 @@ function buildApprovalSteps(request) {
 
   const status = request.status;
   const rejectedDuringException = status === 'REJECTED' && exc && exc.status === 'REJECTED';
+  const realStages = chain?.stages || [];
 
-  let managerState = 'pending';
-  let managerLabel = 'Not yet reached';
-  if (status === 'PENDING') {
-    managerState = 'current';
-    managerLabel = 'Awaiting decision';
-  } else if (status === 'APPROVED' || status === 'PARTIALLY_BOOKED' || status === 'BOOKED') {
-    managerState = 'done';
-    managerLabel = 'Approved';
-  } else if (status === 'REJECTED') {
-    managerState = rejectedDuringException ? 'pending' : 'rejected';
-    managerLabel = rejectedDuringException ? 'Not required' : 'Rejected';
-  } else if (status === 'CANCELLED') {
-    managerState = 'cancelled';
-    managerLabel = 'Cancelled';
-  } else if (status === 'PENDING_EXCEPTION') {
-    managerState = 'pending';
-    managerLabel = 'Waiting on exception review';
+  if (status === 'CANCELLED') {
+    steps.push({ key: 'manager', label: 'Approval', state: 'cancelled', stateLabel: 'Cancelled' });
+  } else if (rejectedDuringException) {
+    steps.push({ key: 'manager', label: 'Approval', state: 'pending', stateLabel: 'Not required' });
+  } else if (realStages.length) {
+    // Real, admin-configured stage(s) — could be more than one (Manager -> HRBP -> ...), unlike
+    // the single hardcoded "Reporting manager approval" step this used to always show.
+    realStages.forEach((s) => {
+      let state = 'pending';
+      let stateLabel = s.pending_approver_names?.length
+        ? `Will route to ${s.pending_approver_names.join(', ')}`
+        : 'Not yet reached';
+      if (s.status === 'APPROVED') {
+        state = 'done';
+        const who = s.decided_by_name ? `by ${s.decided_by_name}` : '';
+        const when = formatDateTime(s.decided_at);
+        stateLabel = who || when ? `Approved ${[who, when].filter(Boolean).join(' · ')}` : 'Approved';
+      } else if (s.status === 'REJECTED') {
+        state = 'rejected';
+        stateLabel = s.decided_by_name ? `Rejected by ${s.decided_by_name}` : 'Rejected';
+      } else if (s.status === 'PENDING') {
+        state = 'current';
+        stateLabel = s.pending_approver_names?.length
+          ? `Awaiting ${s.pending_approver_names.join(', ')}`
+          : 'Awaiting decision';
+      }
+      steps.push({
+        key: `stage-${s.stage_number}`,
+        label: s.label,
+        state,
+        stateLabel,
+        detail: s.comment || null,
+      });
+    });
+  } else if (status === 'PENDING_EXCEPTION' && chain?.upcoming_stages?.length) {
+    // No real stage rows yet (see init_travel_request_approval_chain) — preview what's coming
+    // once every exception clears.
+    chain.upcoming_stages.forEach((s) => {
+      steps.push({
+        key: `upcoming-${s.stage_number}`,
+        label: s.label,
+        state: 'pending',
+        stateLabel: s.pending_approver_names?.length
+          ? `Will route to ${s.pending_approver_names.join(', ')}`
+          : 'Waiting on exception review',
+      });
+    });
+  } else {
+    // Chain hasn't loaded yet (or failed to) — fall back to a single generic step rather than
+    // showing nothing.
+    let managerState = 'pending';
+    let managerLabel = 'Not yet reached';
+    if (status === 'PENDING') {
+      managerState = 'current';
+      managerLabel = 'Awaiting decision';
+    } else if (status === 'APPROVED' || status === 'PARTIALLY_BOOKED' || status === 'BOOKED') {
+      managerState = 'done';
+      managerLabel = 'Approved';
+    } else if (status === 'REJECTED') {
+      managerState = 'rejected';
+      managerLabel = 'Rejected';
+    } else if (status === 'PENDING_EXCEPTION') {
+      managerLabel = 'Waiting on exception review';
+    }
+    steps.push({
+      key: 'manager',
+      label: 'Approval',
+      state: managerState,
+      stateLabel: managerLabel,
+      detail: status === 'REJECTED' ? request.rejection_reason : null,
+    });
   }
-
-  steps.push({
-    key: 'manager',
-    label: 'Reporting manager approval',
-    state: managerState,
-    stateLabel: managerLabel,
-    detail: status === 'REJECTED' && !rejectedDuringException ? request.rejection_reason : null,
-  });
 
   let deskState = 'pending';
   let deskLabel = 'Not yet reached';
@@ -126,7 +189,26 @@ function buildApprovalSteps(request) {
 }
 
 export default function TravelRequestProgress({ request }) {
-  const steps = buildApprovalSteps(request);
+  const [chain, setChain] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setChain(null);
+    if (!request?.id) return undefined;
+    reimbursementApi
+      .travelRequestApprovalChain(request.id)
+      .then((res) => {
+        if (!cancelled) setChain(res.data);
+      })
+      .catch(() => {
+        // Falls back to the single generic step inside buildApprovalSteps — not fatal.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [request?.id]);
+
+  const steps = buildApprovalSteps(request, chain);
 
   return (
     <div className="flex flex-col gap-3 px-2 py-1">
@@ -145,13 +227,19 @@ export default function TravelRequestProgress({ request }) {
         return (
           <div key={step.key} className="flex items-start gap-3">
             <div className="flex flex-col items-center">
+              {/* size=14, not 13: the badge is h-6/w-6 (24px), and (24-13)/2 = 5.5px can't be
+                  split evenly, so browsers round it asymmetrically — a real, measurable ~1px
+                  off-center icon. 14 divides evenly (5px each side). */}
               <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border ${iconCls}`}>
-                <Icon size={13} />
+                <Icon size={14} />
               </span>
               {!isLast ? <span className="mt-1 h-full min-h-[14px] w-px flex-1 bg-slate-200" /> : null}
             </div>
             <div className="min-w-0 pb-3">
-              <div className="flex flex-wrap items-baseline gap-x-2">
+              {/* leading-6 matches the icon circle's own h-6 (24px) exactly, so the first line
+                  of text and the icon share the same line-box height and end up centered on
+                  the same axis under the row's items-start — no guessed offset needed. */}
+              <div className="flex flex-wrap items-baseline gap-x-2 leading-6">
                 <span className="text-[11px] font-bold text-slate-700">{step.label}</span>
                 <span className="text-[10px] font-medium text-slate-400">{step.stateLabel}</span>
               </div>

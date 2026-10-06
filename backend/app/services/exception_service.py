@@ -6,15 +6,17 @@ from app.models.claim_workflow import ExceptionRequest, ExceptionRequestStatus
 from app.models.employee import Employee
 from app.models.policy import AirEligibility, ImpactLevel
 from app.models.reimbursement import ClaimDraft, ClaimExpense
+from app.services.workflow_service import get_workflow_config, is_exception_enabled
 
 
 async def detect_claim_exceptions(claim: ClaimDraft, expenses: list[ClaimExpense], db: AsyncSession) -> list[dict]:
     exceptions = []
-    
+    cfg = await get_workflow_config(db)
+
     # 1. Room Rent Deviation
     for exp in expenses:
         if "hotel" in exp.category_name.lower() or "accommodation" in exp.category_name.lower():
-            if exp.policy_status in ("HARD_BLOCK", "SOFT_FLAG"):
+            if exp.policy_status in ("HARD_BLOCK", "SOFT_FLAG") and is_exception_enabled(cfg, "ROOM_RENT_DEVIATION"):
                 exceptions.append({
                     "type": "ROOM_RENT_DEVIATION",
                     "description": f"Hotel expense of {exp.amount} exceeds policy cap of {exp.cap_amount}."
@@ -22,7 +24,11 @@ async def detect_claim_exceptions(claim: ClaimDraft, expenses: list[ClaimExpense
 
     # 1b. Day Visit External Meeting Expenses exceeding policy cap
     for exp in expenses:
-        if "day" in exp.category_name.lower() and exp.policy_status in ("HARD_BLOCK", "SOFT_FLAG"):
+        if (
+            "day" in exp.category_name.lower()
+            and exp.policy_status in ("HARD_BLOCK", "SOFT_FLAG")
+            and is_exception_enabled(cfg, "DAY_VISIT_EXTERNAL_MEETING")
+        ):
             exceptions.append({
                 "type": "DAY_VISIT_EXTERNAL_MEETING",
                 "description": f"Day visit expense of {exp.amount} exceeds policy cap of {exp.cap_amount}."
@@ -37,17 +43,25 @@ async def detect_claim_exceptions(claim: ClaimDraft, expenses: list[ClaimExpense
             if impact:
                 # Check for air travel in expenses or linked trips
                 has_air = any("air" in exp.category_name.lower() or "flight" in exp.category_name.lower() for exp in expenses)
-                if has_air and impact.air_eligibility in (AirEligibility.NO, AirEligibility.CONDITIONAL):
+                if (
+                    has_air
+                    and impact.air_eligibility in (AirEligibility.NO, AirEligibility.CONDITIONAL)
+                    and is_exception_enabled(cfg, "AIR_TRAVEL_L5_L6")
+                ):
                     exceptions.append({
                         "type": "AIR_TRAVEL_L5_L6",
                         "description": f"Air travel claimed by employee at {impact.level_code} level ({impact.air_eligibility.value})."
                     })
-                
+
                 # 3. Hired Taxi for Level 4+ (not eligible for hired taxi)
                 # Local conveyance mode check
                 # PRD says Hired Taxi for Level 4+ is an exception
                 has_hired_taxi = any("hired taxi" in exp.category_name.lower() or "taxi" in exp.category_name.lower() for exp in expenses)
-                if has_hired_taxi and impact.level_code.startswith(("L4", "L5", "L6")):
+                if (
+                    has_hired_taxi
+                    and impact.level_code.startswith(("L4", "L5", "L6"))
+                    and is_exception_enabled(cfg, "HIRED_TAXI_UNAUTHORIZED")
+                ):
                     # Check if 'Hired Taxi' is in local_conveyance_modes
                     modes = impact.local_conveyance_modes or []
                     if "Hired Taxi" not in modes:
@@ -57,22 +71,23 @@ async def detect_claim_exceptions(claim: ClaimDraft, expenses: list[ClaimExpense
                         })
 
     # 4. Tatkal Train Booking
-    from app.models.reimbursement import ClaimInvoice, InvoiceField
-    
-    tatkal_query = select(InvoiceField).join(
-        ClaimInvoice, ClaimInvoice.invoice_id == InvoiceField.invoice_id
-    ).where(
-        ClaimInvoice.claim_id == claim.id,
-        InvoiceField.field_key == "is_tatkal",
-        InvoiceField.final_value == "true"
-    )
-    tatkal_fields = (await db.execute(tatkal_query)).scalars().all()
-    
-    if len(tatkal_fields) > 0:
-        exceptions.append({
-            "type": "TRAIN_TATKAL",
-            "description": "Tatkal train booking explicitly flagged on invoice. Requires Function Head approval."
-        })
+    if is_exception_enabled(cfg, "TRAIN_TATKAL"):
+        from app.models.reimbursement import ClaimInvoice, InvoiceField
+
+        tatkal_query = select(InvoiceField).join(
+            ClaimInvoice, ClaimInvoice.invoice_id == InvoiceField.invoice_id
+        ).where(
+            ClaimInvoice.claim_id == claim.id,
+            InvoiceField.field_key == "is_tatkal",
+            InvoiceField.final_value == "true"
+        )
+        tatkal_fields = (await db.execute(tatkal_query)).scalars().all()
+
+        if len(tatkal_fields) > 0:
+            exceptions.append({
+                "type": "TRAIN_TATKAL",
+                "description": "Tatkal train booking explicitly flagged on invoice. Requires Function Head approval."
+            })
 
     return exceptions
 
@@ -83,14 +98,17 @@ async def trigger_exceptions_if_needed(claim: ClaimDraft, expenses: list[ClaimEx
         return False
         
     for edef in exception_defs:
-        # Check if already exists for this claim
+        # Check if already exists for this claim. No DB constraint enforces one row per
+        # (claim, type) — a duplicate can and did occur here (two exception requests of the
+        # same type submitted close together) — so this must tolerate more than one match
+        # rather than crash the whole submission on scalar_one_or_none().
         existing = await db.execute(
             select(ExceptionRequest).where(
                 ExceptionRequest.claim_id == claim.id,
                 ExceptionRequest.exception_type == edef["type"]
             )
         )
-        if existing.scalar_one_or_none():
+        if existing.scalars().first():
             continue
             
         req = ExceptionRequest(

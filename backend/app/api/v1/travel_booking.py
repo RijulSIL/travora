@@ -176,18 +176,26 @@ async def my_trips(
 
     trips = await list_trips(int(claims["sub"]), db)
     desk_ids = await desk_ticket_ids_for_trips(trips, db)
-    
-    # Fetch return dates from travel requests
+
+    # Fetch return dates and trip type from travel requests
     req_ids = [t.travel_request_id for t in trips if t.travel_request_id]
     return_dates = {}
+    trip_types = {}
     if req_ids:
-        res = await db.execute(select(TravelRequest.id, TravelRequest.return_date).where(TravelRequest.id.in_(req_ids)))
-        return_dates = {row.id: row.return_date for row in res.all()}
+        res = await db.execute(
+            select(TravelRequest.id, TravelRequest.return_date, TravelRequest.trip_type).where(
+                TravelRequest.id.in_(req_ids)
+            )
+        )
+        for row in res.all():
+            return_dates[row.id] = row.return_date
+            trip_types[row.id] = row.trip_type
 
     return [
         TripOut.model_validate(t).model_copy(update={
             "desk_ticket_id": desk_ids.get(t.id),
-            "return_date": return_dates.get(t.travel_request_id) if t.travel_request_id else None
+            "return_date": return_dates.get(t.travel_request_id) if t.travel_request_id else None,
+            "trip_type": trip_types.get(t.travel_request_id) if t.travel_request_id else None,
         })
         for t in trips
     ]

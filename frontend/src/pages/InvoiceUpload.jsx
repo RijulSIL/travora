@@ -6,11 +6,13 @@ import {
   FileImage,
   FileText,
   ReceiptIndianRupee,
+  Search,
   Trash2,
   UploadCloud,
+  X,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 
 import ConfirmDialog from '../components/ui/ConfirmDialog';
 import EmptyState from '../components/ui/EmptyState';
@@ -56,6 +58,7 @@ function isRealInvoiceId(id) {
 
 export default function InvoiceUpload() {
   useSetPageTitle('Upload Invoices');
+  const navigate = useNavigate();
   const [invoices, setInvoices] = useState([]);
   const [message, setMessage] = useState('');
   const [dragActive, setDragActive] = useState(false);
@@ -64,6 +67,11 @@ export default function InvoiceUpload() {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState('');
+  const [search, setSearch] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('');
+  const [draftTypePrompt, setDraftTypePrompt] = useState(false);
+  const [releasingId, setReleasingId] = useState(null);
+  const [releaseError, setReleaseError] = useState('');
 
   useEffect(() => {
     (async () => {
@@ -82,7 +90,22 @@ export default function InvoiceUpload() {
   const activeInvoices = invoices.filter((invoice) => !invoice.is_archived);
   const archivedInvoices = invoices.filter((invoice) => invoice.is_archived);
 
-  const { run, loading, error } = useAsyncAction(async (files, category) => {
+  // Search/category filters only affect what's displayed in the grid below — the upload
+  // capacity, progress bar, and "Create reimbursement draft" link still operate on every
+  // active invoice regardless of the current filter, since those aren't a "view" concern.
+  const searchQuery = search.trim().toLowerCase();
+  const filteredInvoices = activeInvoices.filter((invoice) => {
+    if (categoryFilter && invoice.reimbursement_category !== categoryFilter) return false;
+    if (searchQuery && !(invoice.original_filename || '').toLowerCase().includes(searchQuery)) return false;
+    return true;
+  });
+  const hasActiveFilters = Boolean(search || categoryFilter);
+  const clearFilters = () => {
+    setSearch('');
+    setCategoryFilter('');
+  };
+
+  const { run, error } = useAsyncAction(async (files, category) => {
     const selected = Array.from(files).slice(0, MAX_INVOICES - activeInvoices.length);
     if (selected.length === 0) return;
 
@@ -146,14 +169,31 @@ export default function InvoiceUpload() {
   const draftEligibleInvoices = invoices.filter(
     (invoice) => !String(invoice.id).startsWith('temp-') && !invoice.is_archived,
   );
-  const invoiceIds = draftEligibleInvoices.map((invoice) => invoice.id).join(',');
-  // The General Reimbursement wizard's invoice picker takes both General- and
-  // Reallocation-tagged invoices (see GeneralReimbursementWizard.jsx's visibleInvoices) — only
-  // send the draft link there if every invoice about to be attached is one of those two;
-  // otherwise default to the Travel flow, same as clicking "New Claim" directly.
-  const draftIsAllGeneral =
-    draftEligibleInvoices.length > 0 &&
-    draftEligibleInvoices.every((invoice) => invoice.reimbursement_category === 'GENERAL' || invoice.reimbursement_category === 'REALLOCATION');
+  // Each wizard's invoice picker only ever shows invoices of its own type (Travel wizard:
+  // TRAVEL only; General wizard: GENERAL + REALLOCATION) — pre-selecting a mix used to smuggle
+  // invalid invoice ids into whichever wizard got picked, invisible in the UI until submission
+  // failed with a confusing error. Grouping by type here and asking when more than one type is
+  // present means only ever one, correct type's invoices get sent to a given wizard.
+  const draftCategoryGroups = UPLOAD_CATEGORIES.map((option) => ({
+    ...option,
+    invoices: draftEligibleInvoices.filter((invoice) => invoice.reimbursement_category === option.value),
+  })).filter((group) => group.invoices.length > 0);
+
+  const goToDraft = (category) => {
+    const group = draftCategoryGroups.find((g) => g.value === category);
+    const ids = (group?.invoices || []).map((invoice) => invoice.id).join(',');
+    setDraftTypePrompt(false);
+    navigate(`${claimNewPath(category)}?invoiceIds=${ids}`);
+  };
+
+  const startCreateDraft = () => {
+    if (draftCategoryGroups.length === 0) return;
+    if (draftCategoryGroups.length === 1) {
+      goToDraft(draftCategoryGroups[0].value);
+      return;
+    }
+    setDraftTypePrompt(true);
+  };
 
   const atCapacity = activeInvoices.length >= MAX_INVOICES;
   const progressPct = Math.min(100, Math.round((activeInvoices.length / MAX_INVOICES) * 100));
@@ -169,7 +209,7 @@ export default function InvoiceUpload() {
   const handleDrop = (event) => {
     event.preventDefault();
     setDragActive(false);
-    if (isMobile || loading || atCapacity) return;
+    if (isMobile || atCapacity) return;
     if (event.dataTransfer?.files?.length) handleFilesSelected(event.dataTransfer.files);
   };
 
@@ -184,6 +224,8 @@ export default function InvoiceUpload() {
     const isError = invoice.status === 'ERROR';
     const Icon = fileIcon(invoice);
     const StatusIcon = statusIcon(invoice.status);
+    const isInDraft = invoice.linked_claim_status === 'DRAFT';
+    const isReleasing = releasingId === invoice.id;
 
     return (
       <article
@@ -224,6 +266,11 @@ export default function InvoiceUpload() {
               {invoice.status === 'UPLOADING' ? 'Uploading & analysing…' : invoice.status.replaceAll('_', ' ')}
             </span>
             {!isUploading ? <ReimbursementCategoryBadge category={invoice.reimbursement_category} /> : null}
+            {isInDraft ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-700">
+                In use — {invoice.linked_claim_reference || 'a draft'}
+              </span>
+            ) : null}
           </div>
           {isUploading ? (
             <span className="select-none text-sm font-semibold text-slate-300">Review</span>
@@ -232,24 +279,50 @@ export default function InvoiceUpload() {
               <Link className="text-sm font-semibold text-brand hover:underline" to={`/invoices/${invoice.id}/review`}>
                 Review
               </Link>
-              {isRealInvoiceId(invoice.id) && (
+              {isInDraft ? (
                 <button
                   type="button"
-                  onClick={() => {
-                    setDeleteError('');
-                    setDeleteTarget(invoice);
-                  }}
-                  className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600"
-                  aria-label={`Delete ${invoice.original_filename}`}
+                  onClick={() => releaseFromDraft(invoice)}
+                  disabled={isReleasing}
+                  className="ml-1 text-xs font-semibold text-amber-700 hover:underline disabled:opacity-50"
                 >
-                  <Trash2 size={15} />
+                  {isReleasing ? 'Removing…' : 'Remove from draft'}
                 </button>
+              ) : (
+                isRealInvoiceId(invoice.id) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDeleteError('');
+                      setDeleteTarget(invoice);
+                    }}
+                    className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                    aria-label={`Delete ${invoice.original_filename}`}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                )
               )}
             </div>
           )}
         </div>
       </article>
     );
+  };
+
+  const releaseFromDraft = async (invoice) => {
+    setReleaseError('');
+    setReleasingId(invoice.id);
+    try {
+      const res = await reimbursementApi.releaseInvoiceFromDraft(invoice.id);
+      // Merge the (lightweight) updated invoice in place — no fields/line_items here, and
+      // no need to reload the whole list just to clear this one invoice's claim link.
+      setInvoices((current) => current.map((item) => (item.id === invoice.id ? { ...item, ...res.data } : item)));
+    } catch (err) {
+      setReleaseError(err?.response?.data?.detail || 'Could not remove this invoice from its draft claim.');
+    } finally {
+      setReleasingId(null);
+    }
   };
 
   const confirmDelete = async () => {
@@ -297,7 +370,7 @@ export default function InvoiceUpload() {
         <div
           onDragEnter={(event) => {
             event.preventDefault();
-            if (!isMobile && !loading && !atCapacity) setDragActive(true);
+            if (!isMobile && !atCapacity) setDragActive(true);
           }}
           onDragOver={(event) => event.preventDefault()}
           onDragLeave={(event) => {
@@ -338,7 +411,7 @@ export default function InvoiceUpload() {
                   capture="environment"
                   type="file"
                   accept="image/*"
-                  disabled={loading || atCapacity}
+                  disabled={atCapacity}
                   onChange={(event) => handleFilesSelected(event.target.files)}
                 />
               </label>
@@ -349,7 +422,7 @@ export default function InvoiceUpload() {
                   multiple
                   type="file"
                   accept=".jpg,.jpeg,.png,.heic,.pdf"
-                  disabled={loading || atCapacity}
+                  disabled={atCapacity}
                   onChange={(event) => handleFilesSelected(event.target.files)}
                 />
               </label>
@@ -362,7 +435,7 @@ export default function InvoiceUpload() {
                 multiple
                 type="file"
                 accept=".jpg,.jpeg,.png,.heic,.pdf"
-                disabled={loading || atCapacity}
+                disabled={atCapacity}
                 onChange={(event) => handleFilesSelected(event.target.files)}
               />
             </label>
@@ -381,13 +454,10 @@ export default function InvoiceUpload() {
               <span className="font-semibold text-ink">{activeInvoices.length}</span> of {MAX_INVOICES} invoices uploaded
             </span>
           </div>
-          {invoiceIds ? (
-            <Link
-              className="btn-primary"
-              to={`${claimNewPath(draftIsAllGeneral ? 'GENERAL' : 'TRAVEL')}?invoiceIds=${invoiceIds}`}
-            >
+          {draftCategoryGroups.length > 0 ? (
+            <button type="button" className="btn-primary" onClick={startCreateDraft}>
               Create reimbursement draft
-            </Link>
+            </button>
           ) : null}
         </div>
 
@@ -402,6 +472,52 @@ export default function InvoiceUpload() {
         {deleteError ? (
           <div className="mt-3 flex items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">
             <AlertCircle size={15} className="flex-none" /> {deleteError}
+          </div>
+        ) : null}
+        {releaseError ? (
+          <div className="mt-3 flex items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">
+            <AlertCircle size={15} className="flex-none" /> {releaseError}
+          </div>
+        ) : null}
+
+        {activeInvoices.length > 0 ? (
+          <div className="mt-4 flex flex-col gap-2.5 sm:flex-row sm:items-center">
+            <div className="relative flex-1 sm:max-w-xs">
+              <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                className="field w-full !pl-9 !pr-8"
+                placeholder="Search by invoice name…"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+              {search ? (
+                <button
+                  type="button"
+                  onClick={() => setSearch('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-slate-400 hover:text-slate-600"
+                  aria-label="Clear search"
+                >
+                  <X size={14} />
+                </button>
+              ) : null}
+            </div>
+            <select
+              className="field sm:w-52"
+              value={categoryFilter}
+              onChange={(event) => setCategoryFilter(event.target.value)}
+            >
+              <option value="">All invoice types</option>
+              {UPLOAD_CATEGORIES.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            {hasActiveFilters ? (
+              <button type="button" className="btn-secondary sm:flex-none" onClick={clearFilters}>
+                Clear filters
+              </button>
+            ) : null}
           </div>
         ) : null}
 
@@ -424,9 +540,20 @@ export default function InvoiceUpload() {
               View Archived Invoices
             </Link>
           </div>
+        ) : filteredInvoices.length === 0 ? (
+          <div className="mt-6 flex flex-col items-center gap-4">
+            <EmptyState
+              icon={Search}
+              title="No invoices match your filters"
+              description="Try a different name or invoice type, or clear the filters to see everything again."
+            />
+            <button type="button" className="btn-secondary" onClick={clearFilters}>
+              Clear filters
+            </button>
+          </div>
         ) : (
           <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {activeInvoices.map((invoice) => renderInvoiceCard(invoice))}
+            {filteredInvoices.map((invoice) => renderInvoiceCard(invoice))}
           </div>
         )}
 
@@ -450,6 +577,13 @@ export default function InvoiceUpload() {
           onSelectCategory={setPendingCategory}
           onConfirm={confirmUpload}
           onCancel={() => setPendingFiles(null)}
+        />
+
+        <CreateDraftTypeModal
+          open={draftTypePrompt}
+          groups={draftCategoryGroups}
+          onSelect={goToDraft}
+          onCancel={() => setDraftTypePrompt(false)}
         />
       </section>
   );
@@ -490,6 +624,41 @@ function UploadCategoryModal({ files, category, onSelectCategory, onConfirm, onC
           <button type="button" className="btn-primary" onClick={onConfirm}>
             Upload {files.length} file{files.length > 1 ? 's' : ''}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CreateDraftTypeModal({ open, groups, onSelect, onCancel }) {
+  useBodyScrollLock(open);
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-[90] grid place-items-center bg-slate-900/40 p-4">
+      <div className="panel w-full max-w-lg p-5">
+        <h3 className="text-base font-semibold text-ink">Which invoices do you want to use?</h3>
+        <p className="mt-1 text-sm text-slate-500">
+          You have more than one type of invoice uploaded — pick which one this claim is for.
+        </p>
+        <div className="mt-4 grid gap-2 sm:grid-cols-3">
+          {groups.map((group) => (
+            <button
+              key={group.value}
+              type="button"
+              onClick={() => onSelect(group.value)}
+              className="rounded-lg border-2 border-slate-150 bg-slate-50/50 p-2.5 text-left transition-all duration-150 hover:border-brand hover:bg-brand/5"
+            >
+              <div className="text-xs font-bold text-slate-800">{group.label}</div>
+              <div className="text-[10px] text-slate-500">
+                {group.invoices.length} invoice{group.invoices.length > 1 ? 's' : ''}
+              </div>
+            </button>
+          ))}
+        </div>
+        <div className="mt-5 flex justify-end">
+          <button type="button" className="btn-secondary" onClick={onCancel}>Cancel</button>
         </div>
       </div>
     </div>

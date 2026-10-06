@@ -25,6 +25,7 @@ class PaymentBody(BaseModel):
     utr_reference: str = Field(..., min_length=1)
     amount: Decimal = Field(..., ge=Decimal("0"))
     tds_deduction: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
+    advance_deducted: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
 
 
 class ExceptionRequestIn(BaseModel):
@@ -58,9 +59,28 @@ class ExceptionDecisionBody(BaseModel):
     comment: str | None = None
 
 
-class AdvanceRequestIn(BaseModel):
+class AdvanceGrantIn(BaseModel):
+    # Finance identifies the employee by their employee ID or email — there's no employee
+    # picker/search UI, so this is resolved to a user server-side (see create_advance_grant).
+    employee_identifier: str = Field(..., min_length=1)
     amount: Decimal = Field(..., gt=Decimal("0"))
     purpose: str | None = None
+    # False (the default) makes an already-active advance for this employee come back as a 409
+    # instead of silently creating a second grant — the frontend re-submits with this set once
+    # Finance confirms they want to top up the existing one rather than start a new one.
+    confirm_merge: bool = False
+
+
+class AdvanceUpdateIn(BaseModel):
+    # The employee an advance was granted to is deliberately not editable here — correcting
+    # that means it went to the wrong person, which is a delete-and-regrant, not an edit.
+    amount: Decimal = Field(..., gt=Decimal("0"))
+    purpose: str | None = None
+
+
+class AdvanceSettleIn(BaseModel):
+    amount: Decimal = Field(..., gt=Decimal("0"))
+    note: str | None = None
 
 
 class AdvanceRequestOut(BaseModel):
@@ -71,11 +91,17 @@ class AdvanceRequestOut(BaseModel):
     amount: Decimal
     purpose: str | None
     status: str
+    created_by_user_id: int | None = None
     created_at: datetime
 
 
 class WorkflowConfigOut(BaseModel):
     config: dict
+    # Populated only by PUT (a save) — how many already in-flight claim/travel-request stages
+    # and exception approvals were just reassigned to a newly-configured role because they were
+    # sitting at a stage/position whose route_role changed. See
+    # workflow_service._migrate_inflight_approvals.
+    reassigned: dict[str, int] = Field(default_factory=dict)
 
 
 class WorkflowConfigUpdate(BaseModel):

@@ -4,7 +4,7 @@ import logging
 import re
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.timezone import now_ist
 from app.models.auth import User
 from app.models.employee import Employee
 from app.models.expense_category import ExpenseCategory
@@ -36,7 +37,6 @@ from app.models.reimbursement import (
 )
 from app.models.travel_booking import TravelMode, TravelTrip
 from app.schemas.reimbursement import ClaimDraftIn, InvoiceFieldsUpdateRequest
-from app.services.advance_service import get_outstanding_advance
 from app.services.budget_alert_service import check_and_notify_budget_threshold
 from app.services.claim_submission_rules import validate_claim_submission
 from app.services.exception_service import trigger_exceptions_if_needed
@@ -52,6 +52,7 @@ from app.services.workflow_service import (
     assert_user_can_view_claim_workflow,
     get_workflow_config,
     init_claim_approval_chain,
+    is_exception_enabled,
 )
 
 logger = logging.getLogger(__name__)
@@ -105,7 +106,7 @@ async def get_invoice_claim_link(
 
 
 def _now() -> datetime:
-    return datetime.now(UTC).replace(tzinfo=None)
+    return now_ist()
 
 
 def user_may_attach_trip_to_claim(trip: TravelTrip, user: User) -> bool:
@@ -191,6 +192,40 @@ async def _fetch_gstin_live(gstin: str) -> dict[str, Any] | None:
     else:
         valid = legal is not None
     return {"valid": valid, "legal_name": legal, "raw": body}
+
+
+async def _fetch_fx_rate_to_inr(currency: str) -> Decimal | None:
+    """Look up a real, current published exchange rate to convert a foreign-currency
+    invoice total to INR — replaces asking Gemini to guess a rate from "general knowledge,"
+    which is frequently stale or simply wrong since the model has no live market data.
+    Returns None on any failure (unsupported currency, network error, bad response) so the
+    caller can fall back to Gemini's own estimate rather than risk a confidently-wrong
+    number with no signal that it's unreliable."""
+    base = settings.fx_rate_api_base
+    token = currency.strip().upper()
+    if not base or not token or token in _INR_CURRENCY_TOKENS:
+        return None
+    url = f"{base.rstrip('/')}/{token}"
+    try:
+        async with httpx.AsyncClient(timeout=settings.fx_http_timeout_seconds) as client:
+            response = await client.get(url)
+    except (httpx.HTTPError, OSError):
+        return None
+    if response.status_code != 200:
+        return None
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    if not isinstance(body, dict) or body.get("result") != "success":
+        return None
+    rate = (body.get("rates") or {}).get("INR")
+    if rate is None:
+        return None
+    try:
+        return Decimal(str(rate))
+    except Exception:
+        return None
 
 
 async def validate_gstin(gstin: str, db: AsyncSession) -> GstinValidationResult:
@@ -414,7 +449,17 @@ def _infer_category(filename: str) -> tuple[str, str]:
     # this matches against, so a real content-based classification wins over the filename
     # whenever Gemini provided one.
     normalized = re.sub(r"[_-]+", " ", filename.lower())
-    if any(_has_token(normalized, token) for token in ("hotel", "accommodation", "stay", "room")):
+    if any(_has_token(normalized, token) for token in ("hotel", "accommodation", "stay")):
+        return ("Hotel/Accommodation", "hotel")
+    # Bare "room" is a genuine hotel signal on its own (room-type + night-count is standard
+    # Indian hotel-bill phrasing, e.g. "Executive Room — 2 nights", "Room Rent") — but it
+    # false-positives on any other kind of room a bill happens to mention (observed: a
+    # coworking space's "Meeting room — 2 hours" booking filed as a hotel stay). Exclude the
+    # specific non-hotel room types rather than dropping "room" altogether, which would also
+    # lose genuine hotel lines that never spell out "hotel"/"accommodation"/"stay".
+    if _has_token(normalized, "room") and not any(
+        _has_token(normalized, excl) for excl in ("meeting", "conference", "server", "board", "waiting", "class")
+    ):
         return ("Hotel/Accommodation", "hotel")
     if any(_has_token(normalized, token) for token in ("meal", "food", "dinner", "lunch", "breakfast")):
         return ("Food & Meals", "food")
@@ -539,6 +584,7 @@ async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSe
         "cgst",
         "sgst",
         "igst",
+        "other_tax",
         "is_tatkal",
         "expense_category",
     ]
@@ -549,6 +595,11 @@ async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSe
     # content-based hint for both the synthetic single-line fallback and each real line item,
     # taking precedence over the filename-only heuristic _infer_category otherwise falls back to.
     top_category_hint = extracted["expense_category"][0]
+    # The vendor name is often the single clearest categorization signal there is (e.g. "Osaka
+    # Business Hotel KK" is unambiguously a hotel stay even when Gemini's line-item description
+    # and category_hint are generic, like a bare "Room Charge" or "Service Fee") — both
+    # _infer_category call sites below need it, not just the blacklist check further down.
+    vendor_lower = (extracted.get("vendor_name", ("",))[0] or "").lower()
     pos_value, pos_forced_confidence = _normalize_place_of_supply(
         extracted["place_of_supply"][0], extracted["supplier_gstin"][0]
     )
@@ -569,30 +620,38 @@ async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSe
         # fabrication below must not run for it (it would otherwise invent CGST/SGST that
         # was never on the invoice). Flag it instead of silently treating the total as INR.
         invoice.extraction_error = (
-            f"Non-INR currency detected ({currency_value} {original_foreign_total}) — Gemini's "
-            "INR conversion below is an estimate only and must be checked and confirmed before "
-            "this invoice can be used on a claim."
+            f"Non-INR currency detected ({currency_value} {original_foreign_total}) — the INR "
+            "conversion below must be checked and confirmed before this invoice can be used on "
+            "a claim."
         )
-        # Gemini's best-effort INR conversion (see the extraction prompt) — always forced to a
-        # low confidence regardless of what Gemini reports, so the existing "confidence < 90
-        # must be explicitly confirmed" rule in update_invoice_fields makes a human recheck
-        # this number before the invoice can be marked REVIEWED. Only ever added for a
-        # non-INR invoice, so it never affects the review gate for a normal INR invoice.
-        est_value, est_confidence = _parsed_field(raw_fields.get("grand_total_inr_estimate"))
-        forced_confidence = min(est_confidence, Decimal("40.00")) if est_value.strip() else Decimal("0.00")
+        # Prefer a real, currently-published exchange rate over Gemini's own guess (which was
+        # only ever "best general knowledge," not a live rate, and was frequently off by a
+        # meaningful margin). A live rate is trustworthy enough to only need a one-click
+        # confirm (yellow tier, >=60) rather than forcing the reviewer to manually retype the
+        # number before it can be confirmed (orange tier, <60 — see update_invoice_fields /
+        # InvoiceReview.jsx's confirmOrangeCorrection, which requires an actual edit).
+        live_rate = await _fetch_fx_rate_to_inr(currency_value)
+        if live_rate is not None and original_foreign_total > 0:
+            converted_value = str((original_foreign_total * live_rate).quantize(Decimal("0.01")))
+            forced_confidence = Decimal("75.00")
+        else:
+            # Live lookup unavailable (unsupported currency, network error, zero total) —
+            # fall back to Gemini's estimate, still capped low so a human must correct/confirm
+            # it manually rather than trust an unverified guess.
+            est_value, est_confidence = _parsed_field(raw_fields.get("grand_total_inr_estimate"))
+            converted_value = est_value if est_value.strip() else str(original_foreign_total)
+            forced_confidence = min(est_confidence, Decimal("40.00")) if est_value.strip() else Decimal("0.00")
         db.add(
             InvoiceField(
                 invoice_id=invoice.id,
                 field_key="grand_total_inr_estimate",
-                original_value=est_value or None,
+                original_value=converted_value or None,
                 final_value=None,
                 confidence=forced_confidence,
             )
         )
         # Downstream math (line-item synthesis, claim totals, policy caps) needs an actual
-        # INR number to work with — use Gemini's estimate when it gave one, otherwise fall
-        # back to the raw foreign figure as a last resort (still flagged above for review).
-        converted_value = est_value if est_value.strip() else str(original_foreign_total)
+        # INR number to work with.
         converted_grand_total = (converted_value, forced_confidence)
 
     travel_date = date.today()
@@ -610,7 +669,7 @@ async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSe
         # synthetic single-line fallback below already builds its numbers from the already-
         # converted total, so this branch only ever applies to genuine itemized extractions).
         scale = _parsed_money(converted_grand_total[0]) / original_foreign_total
-        money_keys = ("unit_price", "taxable_value", "cgst", "sgst", "igst", "total_amount")
+        money_keys = ("unit_price", "taxable_value", "cgst", "sgst", "igst", "other_tax", "total_amount")
         line_raw = [
             {
                 **raw,
@@ -618,10 +677,54 @@ async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSe
             }
             for raw in line_raw
         ]
-        # The top-level total_taxable_value/cgst/sgst/igst fields (shown/edited in the review
-        # UI, separate from the per-line-item rows) must reflect the same converted INR
-        # figures too — sum the now-converted line items rather than leaving those fields at
-        # whatever Gemini originally read off the document in its original currency.
+        # Gemini is asked not to put tax into cgst/sgst/igst on a non-INR invoice (see
+        # EXTRACTION_PROMPT's other_tax rule), but it doesn't always follow that instruction —
+        # a document with a generic "Tax"/"VAT" line can still get bucketed into igst out of
+        # habit. Since GST literally cannot apply to a foreign vendor invoice, enforce this as
+        # a hard server-side invariant rather than trust the model: reclassify any cgst/sgst/
+        # igst Gemini reported here into other_tax. This must never be skipped — cgst/sgst/igst
+        # feed Input Tax Credit eligibility, and crediting ITC on tax that was never Indian GST
+        # is a real compliance error, not just a display nuance.
+        for raw in line_raw:
+            misclassified = (
+                _parsed_money(raw.get("cgst")) + _parsed_money(raw.get("sgst")) + _parsed_money(raw.get("igst"))
+            )
+            if misclassified > 0:
+                raw["other_tax"] = str((_parsed_money(raw.get("other_tax")) + misclassified).quantize(Decimal("0.01")))
+                raw["cgst"] = "0.00"
+                raw["sgst"] = "0.00"
+                raw["igst"] = "0.00"
+        # Gemini's itemized read frequently doesn't sum to the grand total it separately read
+        # off the same document — a tax/fee/service-charge line it failed to itemize (e.g. a
+        # foreign "Sales Tax" line, which isn't Indian GST and so has nowhere else to go) is
+        # the usual cause. Rather than let that amount silently vanish from the line-item
+        # breakdown, surface it as its own visible "other tax" line so a reviewer can see it
+        # was there — kept out of taxable_value/cgst/sgst/igst so it never counts toward Input
+        # Tax Credit eligibility (it was never Indian GST).
+        line_items_total = sum((_parsed_money(r.get("total_amount")) for r in line_raw), Decimal("0.00"))
+        gap = (_parsed_money(converted_grand_total[0]) - line_items_total).quantize(Decimal("0.01"))
+        if gap > Decimal("0.01"):
+            line_raw.append(
+                {
+                    "description": "Other taxes (not itemized on the document)",
+                    "quantity": "1.00",
+                    "unit": "EA",
+                    "unit_price": "0.00",
+                    "taxable_value": "0.00",
+                    "tax_rate": "0.00",
+                    "cgst": "0.00",
+                    "sgst": "0.00",
+                    "igst": "0.00",
+                    "other_tax": str(gap),
+                    "total_amount": str(gap),
+                    "category_hint": line_raw[0].get("category_hint", "incidental") if line_raw else "incidental",
+                }
+            )
+        # The top-level total_taxable_value/cgst/sgst/igst/other_tax fields (shown/edited in
+        # the review UI, separate from the per-line-item rows) must reflect the same converted
+        # INR figures too — sum the now-converted line items (including the reconciliation
+        # line above, if any) rather than leaving those fields at whatever Gemini originally
+        # read off the document in its original currency.
         extracted["total_taxable_value"] = (
             str(sum((_parsed_money(r.get("taxable_value")) for r in line_raw), Decimal("0.00"))),
             converted_grand_total[1],
@@ -635,21 +738,38 @@ async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSe
         extracted["igst"] = (
             str(sum((_parsed_money(r.get("igst")) for r in line_raw), Decimal("0.00"))), converted_grand_total[1]
         )
+        extracted["other_tax"] = (
+            str(sum((_parsed_money(r.get("other_tax")) for r in line_raw), Decimal("0.00"))), converted_grand_total[1]
+        )
     if not line_raw:
         total = _parsed_money(converted_grand_total[0])
         taxable = _parsed_money(extracted.get("total_taxable_value", ("0",))[0])
-        if taxable <= 0 and total > 0:
-            # The 18% GST back-calculation only makes sense for an INR invoice — for a
-            # foreign one, treat the whole total as taxable with no fabricated tax split.
-            taxable = total if is_foreign_currency else (total / Decimal("1.18")).quantize(Decimal("0.01"))
-        tax = (total - taxable).quantize(Decimal("0.01")) if total > 0 else Decimal("0.00")
         cgst = _parsed_money(extracted.get("cgst", ("0",))[0])
         sgst = _parsed_money(extracted.get("sgst", ("0",))[0])
         igst = _parsed_money(extracted.get("igst", ("0",))[0])
+        # Gemini's own top-level read of a non-Indian-GST tax (e.g. a foreign "Sales Tax"
+        # line) even without full itemization — never fabricated for an INR invoice.
+        other_tax = _parsed_money(extracted.get("other_tax", ("0",))[0]) if is_foreign_currency else Decimal("0.00")
+        if is_foreign_currency and (cgst > 0 or sgst > 0 or igst > 0):
+            # Same hard invariant as the real-line-items branch above: GST cannot apply to a
+            # foreign invoice, so anything Gemini put in cgst/sgst/igst here (despite the
+            # prompt instruction) is reclassified into other_tax rather than left to inflate
+            # Input Tax Credit eligibility. Done before computing taxable below so the two
+            # stay arithmetically consistent (taxable + cgst + sgst + igst + other_tax = total).
+            other_tax = (other_tax + cgst + sgst + igst).quantize(Decimal("0.01"))
+            cgst = sgst = igst = Decimal("0.00")
+        if taxable <= 0 and total > 0:
+            # The 18% GST back-calculation only makes sense for an INR invoice — for a
+            # foreign one, treat the total minus any separately-identified non-GST tax as
+            # taxable, with no fabricated Indian GST split.
+            taxable = (
+                (total - other_tax) if is_foreign_currency else (total / Decimal("1.18")).quantize(Decimal("0.01"))
+            )
+        tax = (total - taxable - other_tax).quantize(Decimal("0.01")) if total > 0 else Decimal("0.00")
         if not is_foreign_currency and cgst == 0 and sgst == 0 and igst == 0 and tax > 0:
             cgst = (tax / 2).quantize(Decimal("0.01"))
             sgst = (tax - cgst).quantize(Decimal("0.01"))
-        cat_name, cat_frag = _infer_category(f"{top_category_hint} {invoice.original_filename}")
+        cat_name, cat_frag = _infer_category(f"{top_category_hint} {vendor_lower} {invoice.original_filename}")
         line_raw = [
             {
                 "description": cat_name,
@@ -661,20 +781,34 @@ async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSe
                 "cgst": str(cgst),
                 "sgst": str(sgst),
                 "igst": str(igst),
+                "other_tax": str(other_tax),
                 "total_amount": str(total) if total > 0 else str(taxable),
                 "category_hint": cat_frag,
             }
         ]
         if is_foreign_currency:
-            # Same reasoning as the scaled real-line-items branch above: the top-level
-            # fields shown in the review UI must match what the (synthetic) line item
-            # actually uses — all in converted INR, not whatever Gemini read in the
-            # original currency (which for total_taxable_value/cgst/sgst/igst is usually
-            # nothing at all, since a foreign receipt has no Indian GST breakdown).
-            extracted["total_taxable_value"] = (str(taxable), converted_grand_total[1])
             extracted["cgst"] = (str(cgst), converted_grand_total[1])
             extracted["sgst"] = (str(sgst), converted_grand_total[1])
             extracted["igst"] = (str(igst), converted_grand_total[1])
+            extracted["other_tax"] = (str(other_tax), converted_grand_total[1])
+
+    if is_foreign_currency:
+        # GST doesn't apply to a foreign invoice — the full converted total, minus whatever
+        # non-GST "other tax" was identified, is always the taxable value, by definition. Pin
+        # it here (after both the real-line-items and synthetic branches above) so "Grand
+        # Total" and "Total Taxable Value" always reconcile in the review UI, even when
+        # Gemini's itemized read doesn't sum to the total it separately reported for the
+        # document (a real extraction inconsistency — a missed line, discount, or rounding on
+        # the source invoice) — the line-item-summed total_taxable_value the real-items
+        # branch above computes would otherwise drift.
+        cgst_amt = _parsed_money(extracted.get("cgst", ("0",))[0])
+        sgst_amt = _parsed_money(extracted.get("sgst", ("0",))[0])
+        igst_amt = _parsed_money(extracted.get("igst", ("0",))[0])
+        other_tax_amt = _parsed_money(extracted.get("other_tax", ("0",))[0])
+        taxable_amt = (
+            _parsed_money(converted_grand_total[0]) - cgst_amt - sgst_amt - igst_amt - other_tax_amt
+        ).quantize(Decimal("0.01"))
+        extracted["total_taxable_value"] = (str(taxable_amt), converted_grand_total[1])
 
     for _key, (value, confidence) in extracted.items():
         db.add(
@@ -687,7 +821,6 @@ async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSe
             )
         )
 
-    vendor_lower = (extracted.get("vendor_name", ("",))[0] or "").lower()
     filename_lower = invoice.original_filename.lower()
     for raw in line_raw:
         description = str(raw.get("description") or "Line item").strip()[:255] or "Line item"
@@ -701,19 +834,22 @@ async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSe
         cgst = _parsed_money(raw.get("cgst"))
         sgst = _parsed_money(raw.get("sgst"))
         igst = _parsed_money(raw.get("igst"))
+        other_tax = _parsed_money(raw.get("other_tax"))
         total_amt = _parsed_money(raw.get("total_amount"))
         hint = str(raw.get("category_hint") or "").lower()
-        cat_name, cat_frag = _infer_category(f"{hint} {top_category_hint} {description} {filename_lower}")
+        cat_name, cat_frag = _infer_category(
+            f"{hint} {top_category_hint} {vendor_lower} {description} {filename_lower}"
+        )
         category = await _find_category(cat_frag, db, travel_date=travel_date)
         # total_amount must always equal taxable_value + tax by definition — Gemini
         # sometimes reports a line item's own total_amount inconsistently with its own
         # taxable/cgst/sgst/igst fields (observed: taxable=99, cgst=sgst=8.91 each, but
         # total_amount also reported as 99 instead of 116.82 — silently undercounting the
-        # claim by the tax amount). Whenever a taxable value was extracted, the components-
-        # derived total is arithmetically guaranteed correct and takes precedence; the raw
-        # total_amount is only trusted as a last resort when no taxable value exists at all.
-        if taxable > 0:
-            total_amt = (taxable + cgst + sgst + igst).quantize(Decimal("0.01"))
+        # claim by the tax amount). Whenever a taxable value or other_tax was extracted, the
+        # components-derived total is arithmetically guaranteed correct and takes precedence;
+        # the raw total_amount is only trusted as a last resort when neither exists.
+        if taxable > 0 or other_tax > 0:
+            total_amt = (taxable + cgst + sgst + igst + other_tax).quantize(Decimal("0.01"))
         bl_text = f"{description} {vendor_lower} {filename_lower}"
         impact_level_id = await _get_impact_level_id_for_user(invoice.uploader_user_id, db)
         configured_hit = False
@@ -734,6 +870,7 @@ async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSe
                 cgst=cgst,
                 sgst=sgst,
                 igst=igst,
+                other_tax=other_tax,
                 total_amount=total_amt if total_amt > 0 else taxable,
                 category_id=category.id if category else None,
                 category_name=category.name if category else cat_name,
@@ -827,6 +964,8 @@ async def run_mock_extraction(invoice: Invoice, db: AsyncSession) -> None:
         "cgst": (str((tax / 2).quantize(Decimal("0.01"))), FABRICATED_CONFIDENCE),
         "sgst": (str((tax / 2).quantize(Decimal("0.01"))), FABRICATED_CONFIDENCE),
         "igst": ("0.00", FABRICATED_CONFIDENCE),
+        # Mock extraction is always a plain domestic INR invoice — genuinely 0, not a guess.
+        "other_tax": ("0.00", Decimal("99.00")),
         "is_tatkal": ("false", BOOLEAN_FIELD_CONFIDENCE),
         "expense_category": (category_name, FABRICATED_CONFIDENCE),
     }
@@ -1032,6 +1171,33 @@ async def update_invoice_fields(
     return invoice
 
 
+async def release_invoice_from_draft(invoice_id: int, user_id: int, db: AsyncSession) -> Invoice:
+    """Unlink an invoice from its current claim — but only while that claim is still a
+    DRAFT. A submitted (or further along) claim is never touched here; that's what
+    INVOICE_LOCKING_CLAIM_STATUSES / delete_invoice's own check already guards. This exists
+    because an invoice attached to an untouched draft otherwise has no way back into the
+    "unlinked" pool a new claim's invoice picker draws from, short of reopening that exact
+    draft, unchecking it, and saving — see the invoice picker's `unlinked` filter."""
+    invoice = _ensure_invoice_owner(await db.get(Invoice, invoice_id), user_id)
+    claim_id, claim_reference, claim_status = await get_invoice_claim_link(invoice_id, db)
+    if claim_id is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This invoice isn't attached to any claim.")
+    if claim_status != ClaimStatus.DRAFT:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"This invoice can only be removed from a claim that's still a draft — "
+                f"{claim_reference or f'claim #{claim_id}'} is {claim_status.value.replace('_', ' ').title()}."
+            ),
+        )
+    await db.execute(
+        delete(ClaimInvoice).where(ClaimInvoice.claim_id == claim_id, ClaimInvoice.invoice_id == invoice_id)
+    )
+    await db.commit()
+    await db.refresh(invoice)
+    return invoice
+
+
 async def delete_invoice(invoice_id: int, user_id: int, db: AsyncSession) -> None:
     invoice = _ensure_invoice_owner(await db.get(Invoice, invoice_id), user_id)
 
@@ -1114,6 +1280,30 @@ def _category_limit_field(category_name: str) -> str | None:
     return None
 
 
+def _dedicated_exception_type(category_name: str) -> str | None:
+    """The one dedicated exception type a category has its own approval chain for, derived
+    purely from the category name — the single place this mapping is computed. Both
+    _build_claim_expenses (below) and ClaimExpenseOut.exception_type (read back by
+    ExceptionRequestModal.jsx, which no longer re-derives its own guess) use this, so the
+    frontend and backend can no longer disagree on which type an exception request should use.
+    None means there's no dedicated chain — callers fall back to a generic f"{category}_DEVIATION".
+    """
+    normalized = (category_name or "").lower()
+    if "hotel" in normalized or "accommodation" in normalized or "stay" in normalized:
+        return "ROOM_RENT_DEVIATION"
+    if "food" in normalized or "meal" in normalized:
+        return "FOOD_DEVIATION"
+    if "incidental" in normalized:
+        return "INCIDENTAL_DEVIATION"
+    if "train" in normalized:
+        return "TRAIN_TATKAL"
+    if "air" in normalized or "flight" in normalized:
+        return "AIR_TRAVEL_L5_L6"
+    if "taxi" in normalized or "conveyance" in normalized:
+        return "HIRED_TAXI_UNAUTHORIZED"
+    return None
+
+
 async def _is_twin_sharing_active(claim: ClaimDraft, db: AsyncSession) -> bool:
     if not claim.destination_city or not claim.departure_date or not claim.return_date:
         return False
@@ -1155,16 +1345,103 @@ async def _is_twin_sharing_active(claim: ClaimDraft, db: AsyncSession) -> bool:
     return False
 
 
+# Mirrors the state-code table Gemini is instructed to use for place_of_supply (see
+# invoice_gemini_extraction.EXTRACTION_PROMPT) — lets the policy-check screen show a readable
+# state name instead of the raw 2-digit GST code.
+_GST_STATE_NAMES = {
+    "01": "Jammu & Kashmir", "02": "Himachal Pradesh", "03": "Punjab", "04": "Chandigarh",
+    "05": "Uttarakhand", "06": "Haryana", "07": "Delhi", "08": "Rajasthan", "09": "Uttar Pradesh",
+    "10": "Bihar", "11": "Sikkim", "12": "Arunachal Pradesh", "13": "Nagaland", "14": "Manipur",
+    "15": "Mizoram", "16": "Tripura", "17": "Meghalaya", "18": "Assam", "19": "West Bengal",
+    "20": "Jharkhand", "21": "Odisha", "22": "Chhattisgarh", "23": "Madhya Pradesh", "24": "Gujarat",
+    "25": "Daman & Diu", "26": "Dadra & Nagar Haveli", "27": "Maharashtra", "29": "Karnataka",
+    "30": "Goa", "31": "Lakshadweep", "32": "Kerala", "33": "Tamil Nadu", "34": "Puducherry",
+    "35": "Andaman & Nicobar Islands", "36": "Telangana", "37": "Andhra Pradesh", "38": "Ladakh",
+    "97": "Other Territory",
+}
+
+
+async def _claim_invoice_breakdown(invoice_ids: list[int], db: AsyncSession) -> dict[str, list[dict]]:
+    """Per-category list of the invoices (vendor + place) behind a ClaimExpense's total.
+
+    ClaimExpense rows are aggregated across every invoice sharing a category (see
+    _build_claim_expenses below), so the policy-check screen needs this separately to show an
+    employee which actual invoice/vendor/place a flagged category's amount came from.
+    """
+    if not invoice_ids:
+        return {}
+
+    line_items = (
+        await db.execute(
+            select(InvoiceLineItem).where(
+                InvoiceLineItem.invoice_id.in_(invoice_ids),
+                InvoiceLineItem.is_blacklisted.is_(False),
+            )
+        )
+    ).scalars().all()
+    if not line_items:
+        return {}
+
+    invoices = (await db.execute(select(Invoice).where(Invoice.id.in_(invoice_ids)))).scalars().all()
+    filenames = {inv.id: inv.original_filename for inv in invoices}
+
+    fields = (
+        await db.execute(
+            select(InvoiceField).where(
+                InvoiceField.invoice_id.in_(invoice_ids),
+                InvoiceField.field_key.in_(["vendor_name", "place_of_supply"]),
+            )
+        )
+    ).scalars().all()
+    vendor_names: dict[int, str] = {}
+    places: dict[int, str] = {}
+    for field in fields:
+        value = (field.final_value or field.original_value or "").strip()
+        if not value:
+            continue
+        if field.field_key == "vendor_name":
+            vendor_names[field.invoice_id] = value
+        elif field.field_key == "place_of_supply":
+            places[field.invoice_id] = _GST_STATE_NAMES.get(value, value)
+
+    totals: dict[tuple[str, int], Decimal] = defaultdict(lambda: Decimal("0.00"))
+    line_item_rows: dict[tuple[str, int], list[dict]] = defaultdict(list)
+    for item in line_items:
+        category = item.category_name or "Uncategorised"
+        key = (category, item.invoice_id)
+        totals[key] += item.total_amount
+        line_item_rows[key].append({"description": item.description, "amount": item.total_amount})
+
+    breakdown: dict[str, list[dict]] = defaultdict(list)
+    for (category, invoice_id), amount in totals.items():
+        breakdown[category].append(
+            {
+                "invoice_id": invoice_id,
+                "vendor_name": vendor_names.get(invoice_id),
+                "original_filename": filenames.get(invoice_id, ""),
+                "place_of_supply": places.get(invoice_id),
+                "amount": amount,
+                "line_items": line_item_rows[(category, invoice_id)],
+            }
+        )
+    return breakdown
+
+
 async def _build_claim_expenses(
     claim: ClaimDraft, invoice_ids: list[int], db: AsyncSession
 ) -> tuple[list[ClaimExpense], dict]:
     grouped: dict[tuple[int | None, str], Decimal] = defaultdict(lambda: Decimal("0.00"))
+    grouped_taxable: dict[tuple[int | None, str], Decimal] = defaultdict(lambda: Decimal("0.00"))
     gst_summary = {
         "taxable_value": Decimal("0.00"),
         "total_taxable_value": Decimal("0.00"),
         "cgst": Decimal("0.00"),
         "sgst": Decimal("0.00"),
         "igst": Decimal("0.00"),
+        # Non-Indian-GST tax (foreign VAT/sales tax etc.) — kept separate from cgst/sgst/igst
+        # below and deliberately excluded from itc_eligible_amount: it was never Indian GST
+        # charged by a GST-registered vendor, so it can never be claimed as Input Tax Credit.
+        "other_tax": Decimal("0.00"),
         "grand_total": Decimal("0.00"),
         "itc_eligible_amount": Decimal("0.00"),
     }
@@ -1177,9 +1454,12 @@ async def _build_claim_expenses(
         gst_summary["cgst"] += item.cgst
         gst_summary["sgst"] += item.sgst
         gst_summary["igst"] += item.igst
+        gst_summary["other_tax"] += item.other_tax
         gst_summary["grand_total"] += item.total_amount
         if not item.is_blacklisted:
-            grouped[(item.category_id, item.category_name or "Uncategorised")] += item.total_amount
+            key = (item.category_id, item.category_name or "Uncategorised")
+            grouped[key] += item.total_amount
+            grouped_taxable[key] += item.taxable_value
             gst_summary["itc_eligible_amount"] += item.cgst + item.sgst + item.igst
 
     # Fetch user, employee and impact level for air/taxi eligibility checks
@@ -1213,12 +1493,23 @@ async def _build_claim_expenses(
 
     limit_row = await _resolve_limit_row(claim, db)
     twin_sharing_active = await _is_twin_sharing_active(claim, db)
+    cfg = await get_workflow_config(db)
+    # Which exception type each capped field's HARD_BLOCK/SOFT_FLAG actually surfaces as —
+    # mirrors _dedicated_exception_type's hotel/food/incidental mapping (day_visit has no
+    # dedicated chain there, but DAY_VISIT_EXTERNAL_MEETING is what detect_claim_exceptions
+    # auto-raises for it, so that's the toggle this gate has to check).
+    field_exception_types = {
+        "hotel": "ROOM_RENT_DEVIATION",
+        "food": "FOOD_DEVIATION",
+        "incidental": "INCIDENTAL_DEVIATION",
+        "day_visit": "DAY_VISIT_EXTERNAL_MEETING",
+    }
     expenses: list[ClaimExpense] = []
     for (category_id, category_name), amount in grouped.items():
         cap_amount = None
         policy_status = "OK"
         field = _category_limit_field(category_name)
-        if limit_row and field:
+        if limit_row and field and is_exception_enabled(cfg, field_exception_types.get(field, field)):
             cap_amount = getattr(limit_row, f"{field}_cap")
             if twin_sharing_active and field == "hotel" and cap_amount:
                 cap_amount = cap_amount / 2
@@ -1227,31 +1518,42 @@ async def _build_claim_expenses(
         # Override policy_status for non-cap policy exceptions
         normalized_cat = (category_name or "").lower()
         exc_type = None
-        
-        if has_tatkal and ("train" in normalized_cat or not has_train_expense):
+
+        if (
+            has_tatkal
+            and ("train" in normalized_cat or not has_train_expense)
+            and is_exception_enabled(cfg, "TRAIN_TATKAL")
+        ):
             policy_status = "HARD_BLOCK"
             exc_type = "TRAIN_TATKAL"
             has_train_expense = True  # Ensure it only applies once if miscategorized
-        elif ("air" in normalized_cat or "flight" in normalized_cat) and impact:
+        elif (
+            ("air" in normalized_cat or "flight" in normalized_cat)
+            and impact
+            and is_exception_enabled(cfg, "AIR_TRAVEL_L5_L6")
+        ):
             if impact.air_eligibility in (AirEligibility.NO, AirEligibility.CONDITIONAL):
                 policy_status = "HARD_BLOCK"
                 exc_type = "AIR_TRAVEL_L5_L6"
-        elif ("taxi" in normalized_cat or "hired taxi" in normalized_cat or "local conveyance" in normalized_cat) and impact:
+        elif (
+            ("taxi" in normalized_cat or "hired taxi" in normalized_cat or "local conveyance" in normalized_cat)
+            and impact
+            and is_exception_enabled(cfg, "HIRED_TAXI_UNAUTHORIZED")
+        ):
             if impact.level_code.startswith(("L4", "L5", "L6")):
                 modes = impact.local_conveyance_modes or []
                 if "Hired Taxi" not in modes:
                     policy_status = "HARD_BLOCK"
                     exc_type = "HIRED_TAXI_UNAUTHORIZED"
-        elif field in ("hotel", "food", "incidental", "day_visit") and policy_status in ("HARD_BLOCK", "SOFT_FLAG"):
-            if field == "hotel":
-                exc_type = "ROOM_RENT_DEVIATION"
 
         if exc_type is None and policy_status in ("HARD_BLOCK", "SOFT_FLAG"):
-            # Categories with no dedicated rule above (Incidental, Food & Meals, Day Visit, ...)
-            # still need a type to check against — must match ExceptionRequestModal.jsx's own
-            # fallback exactly, or a manually-requested exception here is never recognized as
-            # already covered and the expense reverts to "needs exception" on every redraft.
-            exc_type = f"{(category_name or 'GENERAL').upper()}_DEVIATION"
+            # Covers the cap-driven categories (Hotel, Food, Incidental) via their dedicated
+            # types; "day_visit" and anything uncapped (Office Supplies, Telecom, ...) have no
+            # dedicated chain and fall through to the generic f"{category}_DEVIATION". This is
+            # also what ExceptionRequestModal.jsx reads directly off this expense
+            # (expense.exception_type) rather than re-deriving its own guess, so there's only
+            # one place this string is ever computed.
+            exc_type = _dedicated_exception_type(category_name) or f"{(category_name or 'GENERAL').upper()}_DEVIATION"
 
         exception_requested = False
         if exc_type and exc_type in existing_exception_types:
@@ -1262,13 +1564,24 @@ async def _build_claim_expenses(
             expense_category_id=category_id,
             category_name=category_name,
             amount=amount,
+            taxable_value=grouped_taxable.get((category_id, category_name), Decimal("0.00")),
             cap_amount=cap_amount,
             policy_status=policy_status,
             exception_requested=exception_requested,
         )
+        # Transient, not persisted — the single source of truth for which exception type
+        # requesting an exception on this expense should use (see ClaimExpenseOut.exception_type
+        # and ExceptionRequestModal.jsx, which reads it directly instead of re-deriving its own
+        # guess from category_name).
+        expense.exception_type = exc_type
         db.add(expense)
         expenses.append(expense)
     await db.flush()
+
+    breakdown = await _claim_invoice_breakdown(invoice_ids, db)
+    for expense in expenses:
+        expense.invoice_breakdown = breakdown.get(expense.category_name, [])
+
     return expenses, gst_summary
 
 
@@ -1372,6 +1685,37 @@ async def create_or_update_claim_draft(
         raise
 
 
+async def delete_claim_draft(claim_id: int, user_id: int, db: AsyncSession) -> None:
+    """Delete a claim that's still a DRAFT — anything further along (even SENT_BACK, since
+    that's mid-approval-history, not a fresh draft) is refused. Frees up every invoice/trip
+    it held (they simply become unlinked again, same as release_invoice_from_draft) and
+    drops any pending exception request raised on it — a manually-requested exception never
+    moves the claim out of DRAFT (see create_exception_request / submit_claim's
+    trigger_exceptions_if_needed), so a draft sitting with one attached is the normal case
+    for someone mid-flow on a flagged expense, not a special state worth blocking on."""
+    claim = await db.get(ClaimDraft, claim_id)
+    if claim is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Claim not found")
+    if claim.employee_user_id != user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot delete another employee's claim")
+    if claim.status != ClaimStatus.DRAFT:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Only a draft claim can be deleted — this claim is {claim.status.value.replace('_', ' ').title()}.",
+        )
+
+    from app.models.claim_workflow import ExceptionRequest
+
+    # claim_invoices, claim_expenses and exception_requests have no DB-level ON DELETE
+    # CASCADE, so they're removed explicitly; claim_trips and claim_approval_stages do
+    # cascade at the DB level (and a DRAFT claim never has approval stages anyway).
+    await db.execute(delete(ClaimInvoice).where(ClaimInvoice.claim_id == claim_id))
+    await db.execute(delete(ClaimExpense).where(ClaimExpense.claim_id == claim_id))
+    await db.execute(delete(ExceptionRequest).where(ExceptionRequest.claim_id == claim_id))
+    await db.delete(claim)
+    await db.commit()
+
+
 async def _resolve_claim_reimbursement_category(
     claim: ClaimDraft, invoice_ids: list[int], db: AsyncSession
 ) -> None:
@@ -1434,12 +1778,6 @@ async def _create_or_update_claim_draft_impl(
     for key, value in payload.model_dump(exclude=exclude_keys).items():
         if hasattr(claim, key):
             setattr(claim, key, value)
-    
-    # Auto-deduct outstanding advances if not provided in payload
-    if payload.advance_received == Decimal("0"):
-        outstanding = await get_outstanding_advance(user_id, db)
-        if outstanding > 0:
-            claim.advance_received = outstanding
 
     if payload.destination_city and payload.departure_date:
         claim.destination_city_group = await resolve_city_group(
@@ -1501,6 +1839,17 @@ async def get_claim_bundle(
     trip_ids = (
         await db.execute(select(ClaimTrip.trip_id).where(ClaimTrip.claim_id == claim_id))
     ).scalars().all()
+
+    breakdown = await _claim_invoice_breakdown(invoice_ids, db)
+    for expense in expenses:
+        expense.invoice_breakdown = breakdown.get(expense.category_name, [])
+        exc_type = None
+        if expense.policy_status != "OK":
+            exc_type = _dedicated_exception_type(expense.category_name) or (
+                f"{(expense.category_name or 'GENERAL').upper()}_DEVIATION"
+            )
+        expense.exception_type = exc_type
+
     return claim, expenses, invoice_ids, trip_ids
 
 

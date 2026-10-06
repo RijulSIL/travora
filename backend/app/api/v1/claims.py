@@ -9,6 +9,7 @@ from app.core.database import get_db
 from app.core.rbac import (
     PERMISSION_MATRIX,
     get_current_claims,
+    is_direct_report,
     require_any_permission,
     require_permission,
 )
@@ -17,6 +18,7 @@ from app.models.reimbursement import ClaimDraft, ClaimExpense, ClaimInvoice, Cla
 from app.schemas.reimbursement import ClaimDraftIn, ClaimDraftOut, PolicyCheckOut
 from app.services.reimbursement_service import (
     create_or_update_claim_draft,
+    delete_claim_draft,
     get_claim_bundle,
     list_claims,
     list_claims_all,
@@ -96,7 +98,15 @@ async def employee_claims(
 
     requested_user_id = employee_user_id
     if requested_user_id and requested_user_id != current_user_id:
-        if role not in {Role.IT_ADMIN, Role.FINANCE, Role.HRBP_HR, Role.REPORTING_MANAGER, Role.PAYROLL, Role.CEO, Role.GROUP_HEAD_HR}:
+        # IT_ADMIN/FINANCE/HRBP_HR/PAYROLL/CEO/GROUP_HEAD_HR already hold view_reports or
+        # process_payments org-wide (see PERMISSION_MATRIX) — cross-user access for them is
+        # by design. REPORTING_MANAGER holds neither, so it's scoped to literal direct
+        # reports only, same as /claims/team — anyone else falls back to their own claims.
+        broad_view_roles = {Role.IT_ADMIN, Role.FINANCE, Role.HRBP_HR, Role.PAYROLL, Role.CEO, Role.GROUP_HEAD_HR}
+        if role == Role.REPORTING_MANAGER:
+            if not await is_direct_report(manager_user_id=current_user_id, target_user_id=requested_user_id, db=db):
+                requested_user_id = current_user_id
+        elif role not in broad_view_roles:
             requested_user_id = current_user_id
     rows = await list_claims(current_user_id, db, employee_user_id=requested_user_id)
     response = []
@@ -302,3 +312,16 @@ async def submit_employee_claim(
     claim = await submit_claim(claim_id, int(claims["sub"]), db)
     _claim, expenses, invoice_ids, trip_ids = await get_claim_bundle(claim.id, int(claims["sub"]), db)
     return _claim_response(_claim, expenses, invoice_ids, trip_ids)
+
+
+@router.delete(
+    "/{claim_id}",
+    status_code=204,
+    dependencies=[Depends(require_permission("submit_claim"))],
+)
+async def delete_claim(
+    claim_id: int,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    await delete_claim_draft(claim_id, int(claims["sub"]), db)

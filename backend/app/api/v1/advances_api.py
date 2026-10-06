@@ -1,77 +1,138 @@
 import csv
 import io
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.rbac import require_any_permission, require_permission
-from app.schemas.workflow import AdvanceRequestIn, AdvanceRequestOut
+from app.core.rbac import require_role
+from app.models.auth import Role
+from app.schemas.workflow import AdvanceGrantIn, AdvanceRequestOut, AdvanceSettleIn, AdvanceUpdateIn
+from app.services.advance_service import get_outstanding_advance
+from app.services.workflow_service import (
+    create_advance_grant,
+    list_all_advances,
+    list_archived_advances,
+    settle_advance,
+    update_advance_grant,
+)
 
 router = APIRouter(prefix="/advances", tags=["advances"])
 
-_ADVANCES_MSG = "Advance requests are not offered."
+# Advances are a Finance-only tool end to end — no other role (including Reporting Manager,
+# HRBP, Payroll) ever creates, lists, or looks up an advance through this router, and delegation
+# (which could otherwise stand in for Finance on approve_stage_4/process_payments) is deliberately
+# excluded here too.
+_finance_only = require_role(Role.FINANCE, allow_delegate=False)
 
 
-def _advances_gone() -> None:
-    raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=_ADVANCES_MSG)
-
-
-@router.post("/request", response_model=AdvanceRequestOut)
-async def request_advance(
-    payload: AdvanceRequestIn,
-    claims: dict = Depends(require_permission("submit_claim")),
+@router.post("/grant", response_model=AdvanceRequestOut)
+async def grant_advance(
+    payload: AdvanceGrantIn,
+    claims: dict = Depends(_finance_only),
     db: AsyncSession = Depends(get_db),
 ) -> AdvanceRequestOut:
-    _ = payload, claims, db
-    _advances_gone()
+    return await create_advance_grant(
+        int(claims["sub"]),
+        payload.employee_identifier,
+        payload.amount,
+        payload.purpose,
+        db,
+        confirm_merge=payload.confirm_merge,
+    )
 
 
-@router.get("", response_model=list[AdvanceRequestOut])
-async def list_my_advances(
-    claims: dict = Depends(require_permission("submit_claim")),
+@router.put("/{advance_id}", response_model=AdvanceRequestOut)
+async def edit_advance(
+    advance_id: int,
+    payload: AdvanceUpdateIn,
+    claims: dict = Depends(_finance_only),
     db: AsyncSession = Depends(get_db),
-) -> list[AdvanceRequestOut]:
-    _ = claims, db
-    _advances_gone()
+) -> AdvanceRequestOut:
+    return await update_advance_grant(int(claims["sub"]), advance_id, payload.amount, payload.purpose, db)
 
 
-@router.get("/outstanding", response_model=None)
-async def outstanding_advances(
+@router.get("", response_model=None)
+async def list_advances(
+    employee_user_id: int | None = Query(default=None),
     format: str | None = Query(default=None),
-    claims: dict = Depends(
-        require_any_permission("approve_stage_2", "approve_stage_3", "process_payments")
-    ),
+    claims: dict = Depends(_finance_only),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict] | StreamingResponse:
-    _ = format, claims, db
+    _ = claims
+    rows = await list_all_advances(db, employee_user_id=employee_user_id)
     if (format or "").lower() == "csv":
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["message"])
-        writer.writerow([_ADVANCES_MSG])
+        writer.writerow(
+            [
+                "id",
+                "employee_id",
+                "employee_name",
+                "department",
+                "granted_amount",
+                "remaining_amount",
+                "settled_amount",
+                "purpose",
+                "status",
+                "granted_by",
+                "created_at",
+                "employee_outstanding_total",
+            ]
+        )
+        for row in rows:
+            writer.writerow(
+                [
+                    row["id"],
+                    row["employee_id"],
+                    row["employee_name"],
+                    row["department"],
+                    row["granted_amount"],
+                    row["amount"],
+                    row["settled_amount"],
+                    row["purpose"],
+                    row["status"],
+                    row["created_by_name"],
+                    row["created_at"],
+                    row["employee_outstanding_total"],
+                ]
+            )
         output.seek(0)
         return StreamingResponse(
             iter([output.getvalue()]),
             media_type="text/csv",
-            headers={"Content-Disposition": 'attachment; filename="advances_unavailable.csv"'},
+            headers={"Content-Disposition": 'attachment; filename="advances.csv"'},
         )
-    _advances_gone()
+    return rows
 
 
-@router.post("/{advance_id}/approve", response_model=AdvanceRequestOut)
-async def approve_advance(
-    advance_id: int,
-    claims: dict = Depends(
-        require_any_permission(
-            "approve_stage_1",
-            "approve_stage_2",
-            "approve_stage_3",
-            "process_payments",
-        )
-    ),
+@router.get("/archived", response_model=None)
+async def archived_advances(
+    claims: dict = Depends(_finance_only),
     db: AsyncSession = Depends(get_db),
-) -> AdvanceRequestOut:
-    _ = advance_id, claims, db
-    _advances_gone()
+) -> list[dict]:
+    _ = claims
+    return await list_archived_advances(db)
+
+
+@router.get("/outstanding/{employee_user_id}", response_model=None)
+async def outstanding_advance_for_employee(
+    employee_user_id: int,
+    claims: dict = Depends(_finance_only),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    _ = claims
+    outstanding = await get_outstanding_advance(employee_user_id, db)
+    return {"employee_user_id": employee_user_id, "outstanding_advance": str(outstanding)}
+
+
+@router.post("/settle/{employee_user_id}", response_model=None)
+async def settle_advance_for_employee(
+    employee_user_id: int,
+    payload: AdvanceSettleIn,
+    claims: dict = Depends(_finance_only),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    outstanding = await settle_advance(int(claims["sub"]), employee_user_id, payload.amount, payload.note, db)
+    return {"employee_user_id": employee_user_id, "outstanding_advance": str(outstanding)}

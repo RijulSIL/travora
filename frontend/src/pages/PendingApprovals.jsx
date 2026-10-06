@@ -18,7 +18,7 @@ import {
   X,
 } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
-import { useAuthStore, selectResolvedRole } from '../store/authStore';
+import { useAuthStore } from '../store/authStore';
 
 import ClaimReviewModal from '../components/claims/ClaimReviewModal';
 import TravelRequestProgress from '../components/travel/TravelRequestProgress';
@@ -33,6 +33,12 @@ import { formatCurrency } from '../utils/formatters';
 import { normalizeApiError } from '../utils/apiErrors';
 
 const TRAVEL_MODE_ICONS = { BUS: Bus, TRAIN: TrainFront, FLIGHT: Plane };
+
+const REIMBURSEMENT_TYPE_OPTIONS = [
+  { value: 'TRAVEL', label: 'Travel' },
+  { value: 'GENERAL', label: 'General' },
+  { value: 'REALLOCATION', label: 'Reallocation' },
+];
 
 const titleCase = (value) =>
   String(value || '')
@@ -54,14 +60,12 @@ const formatRequestedAt = (value) =>
 export default function PendingApprovals() {
   useSetPageTitle('Pending Approvals');
   const { showToast } = useToast();
-  const role = useAuthStore(selectResolvedRole);
   const profile = useAuthStore((state) => state.profile);
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
+  // Which tab shows is now driven entirely by the sidebar's Claims/Travel Requests submenu
+  // (see navConfig.js's PENDING_APPROVALS_SUBMENU) rather than an in-page switcher — this just
+  // reads whatever `?tab=` the sidebar link navigated to.
   const [tab, setTabState] = useState(searchParams.get('tab') === 'travel' ? 'travel' : 'claims');
-  const setTab = (next) => {
-    setTabState(next);
-    setSearchParams(next === 'travel' ? { tab: 'travel' } : {}, { replace: true });
-  };
 
   useEffect(() => {
     setTabState(searchParams.get('tab') === 'travel' ? 'travel' : 'claims');
@@ -84,14 +88,20 @@ export default function PendingApprovals() {
     try {
       const res = await reimbursementApi.pendingApprovals();
       setRows(res.data || []);
-      
-      if (role === 'REPORTING_MANAGER' || profile?.is_acting_delegate) {
+
+      // Whether the travel-request queue is fetched at all is driven by the live Approval
+      // Matrix (profile.approver_scope.travel_request, computed server-side by
+      // get_approver_scope) instead of a hardcoded role allowlist — that list kept going stale
+      // every time an admin changed which role a travel-request stage routes to. The backend
+      // route's own require_role(...) gate stays a coarser allowlist of roles that *could* ever
+      // be configured — this is the finer, live check of whether this role actually is right now.
+      if (profile?.approver_scope?.travel_request || profile?.is_acting_delegate) {
         const resp = await reimbursementApi.travelRequestsManagerPending();
-        setTravelRows((resp.data || []).map(r => ({ 
-          request: r.request, 
+        setTravelRows((resp.data || []).map(r => ({
+          request: r.request,
           employee_display_name: r.employee_display_name,
           impact_level_code: r.impact_level_code,
-          ticket: null 
+          ticket: null
         })));
       }
     } catch (e) {
@@ -99,7 +109,7 @@ export default function PendingApprovals() {
     } finally {
       setLoading(false);
     }
-  }, [role, profile?.is_acting_delegate]);
+  }, [profile?.approver_scope?.travel_request, profile?.is_acting_delegate]);
 
   useEffect(() => {
     load();
@@ -175,32 +185,6 @@ export default function PendingApprovals() {
           stage).
         </p>
       </div>
-      {(role === 'REPORTING_MANAGER' || profile?.is_acting_delegate) && (
-        <div className="mb-6 inline-flex rounded-xl bg-slate-200/60 p-1 shadow-inner">
-          <button
-            type="button"
-            className={`rounded-lg px-5 py-2 text-xs font-bold transition-all duration-200 ${
-              tab === 'claims'
-                ? 'bg-white text-brand shadow-sm'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-            onClick={() => setTab('claims')}
-          >
-            Claims ({rows.length})
-          </button>
-          <button
-            type="button"
-            className={`rounded-lg px-5 py-2 text-xs font-bold transition-all duration-200 ${
-              tab === 'travel'
-                ? 'bg-white text-brand shadow-sm'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-            onClick={() => setTab('travel')}
-          >
-            Travel Requests ({travelRows.length})
-          </button>
-        </div>
-      )}
       {tab === 'claims' && (
         <div className="panel mb-6 p-4">
           <div className="mb-3.5 flex items-center gap-2 text-xs font-bold text-slate-500 uppercase tracking-wider">
@@ -221,9 +205,13 @@ export default function PendingApprovals() {
               Reimbursement type
               <select className="field mt-0.5" value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
                 <option value="ALL">All</option>
-                <option value="TRAVEL">Travel</option>
-                <option value="GENERAL">General</option>
-                <option value="REALLOCATION">Reallocation</option>
+                {REIMBURSEMENT_TYPE_OPTIONS.filter(
+                  (opt) =>
+                    !profile?.approver_scope?.claim_categories?.length ||
+                    profile.approver_scope.claim_categories.includes(opt.value)
+                ).map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
               </select>
             </label>
             <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-500">
@@ -516,30 +504,44 @@ export default function PendingApprovals() {
                   {expanded[`travel_${request.id}`] ? (
                     <tr className="border-b border-slate-100 bg-slate-50/40">
                       <td colSpan={7} className="px-5 py-4">
-                        <div className="max-w-3xl rounded-xl border border-slate-200/70 bg-white p-4 shadow-sm">
-                          {detailFields.length ? (
-                            <div className="grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-3">
-                              {detailFields.map((f) => (
-                                <div key={f.label} className="flex items-start gap-2">
-                                  <f.icon size={14} className="mt-0.5 shrink-0 text-slate-400" />
-                                  <div>
-                                    <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
-                                      {f.label}
-                                    </div>
-                                    <div className="text-xs font-medium text-slate-700">{f.value}</div>
-                                  </div>
-                                </div>
-                              ))}
+                        <div className={`flex flex-col gap-4 ${request.exception ? 'lg:flex-row' : ''}`}>
+                          <div
+                            className={`rounded-xl border border-slate-200/70 bg-white p-4 shadow-sm ${
+                              request.exception ? 'flex-1' : 'w-full max-w-2xl'
+                            }`}
+                          >
+                            <div className="mb-3 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-400">
+                              <FileText size={13} className="text-slate-400" />
+                              Trip Details
                             </div>
-                          ) : (
-                            <p className="text-xs text-slate-400">No additional trip details provided.</p>
-                          )}
-                        </div>
-                        {request.exception ? (
-                          <div className="mt-3 max-w-3xl rounded-xl border border-slate-200/70 bg-white p-4 shadow-sm">
-                            <TravelRequestProgress request={request} />
+                            {detailFields.length ? (
+                              <div className="grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-3">
+                                {detailFields.map((f) => (
+                                  <div key={f.label} className="flex items-start gap-2">
+                                    <f.icon size={14} className="mt-0.5 shrink-0 text-slate-400" />
+                                    <div>
+                                      <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                                        {f.label}
+                                      </div>
+                                      <div className="text-xs font-medium text-slate-700">{f.value}</div>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-xs text-slate-400">No additional trip details provided.</p>
+                            )}
                           </div>
-                        ) : null}
+                          {request.exception ? (
+                            <div className="flex-1 rounded-xl border border-slate-200/70 bg-white p-4 shadow-sm">
+                              <div className="mb-3 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-400">
+                                <GitBranch size={13} className="text-slate-400" />
+                                Approval Progress
+                              </div>
+                              <TravelRequestProgress request={request} />
+                            </div>
+                          ) : null}
+                        </div>
                       </td>
                     </tr>
                   ) : null}

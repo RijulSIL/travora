@@ -117,6 +117,11 @@ class TripOut(BaseModel):
     boarding_pass_path: str | None = None
     desk_ticket_id: int | None = None
     return_date: date | None = None
+    # The parent TravelRequest's own trip_type (ONE_WAY/ROUND_TRIP/MULTI_CITY) — a trip with
+    # several legs (one TravelTrip row per ticket) needs this to tell a round trip (2 legs,
+    # same pair of cities) apart from a genuine multi-city itinerary, which leg count alone
+    # can't distinguish.
+    trip_type: str | None = None
     created_at: datetime
 
 

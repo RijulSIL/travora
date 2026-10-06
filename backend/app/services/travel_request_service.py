@@ -1,6 +1,7 @@
 """Travel Request + Travel Desk ticket upload (Phase 1).
 
-Lead validation uses UTC calendar dates (`date.today()` in UTC) and counts Mon–Fri as working days.
+Lead validation uses IST calendar dates (the business's own timezone — see app.core.timezone)
+and counts Mon–Fri as working days.
 Minimum lead: first travel date >= today + N working days (exclusive of today: we advance until N weekdays counted).
 """
 
@@ -8,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Sequence
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
@@ -20,6 +21,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.rbac import PERMISSION_MATRIX
+from app.core.timezone import now_ist, today_ist
 from app.models.auth import Delegation, Role, User
 from app.models.employee import Employee
 from app.models.policy import CityGroup, ImpactLevel
@@ -56,8 +58,8 @@ _TICKET_CONTENT_TYPES = {
 MAX_TICKET_BYTES = 10 * 1024 * 1024
 
 
-def _utc_today() -> date:
-    return datetime.now(UTC).date()
+def _today_ist() -> date:
+    return today_ist()
 
 
 def earliest_travel_date_allowed(today: date, min_lead_working_days: int) -> date:
@@ -71,18 +73,6 @@ def earliest_travel_date_allowed(today: date, min_lead_working_days: int) -> dat
         if d.weekday() < 5:
             remaining -= 1
     return d
-
-
-def _validate_lead_time(travel_date: date, min_days: int) -> None:
-    earliest = earliest_travel_date_allowed(_utc_today(), min_days)
-    if travel_date < earliest:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"Travel must be booked at least {min_days} working day(s) in advance. "
-                f"Earliest allowed travel date is {earliest.isoformat()}."
-            ),
-        )
 
 
 def _validate_ticket_file(filename: str, content_type: str, content: bytes) -> tuple[str, str]:
@@ -139,11 +129,6 @@ async def _validate_common_travel_request_fields(
     if mode_val not in {m.value for m in TravelRequestMode}:
         raise HTTPException(status_code=422, detail="Invalid travel_mode")
 
-    if travel_date:
-        _validate_lead_time(travel_date, settings.travel_request_min_lead_working_days)
-    elif legs and len(legs) > 0:
-        _validate_lead_time(legs[0].travel_date, settings.travel_request_min_lead_working_days)
-
     return user, mode_val
 
 
@@ -156,39 +141,91 @@ async def _determine_blocking_exceptions(
     someone whose level also has air travel locked) — all of them are collected and later
     rolled into one combined ExceptionRequest, not just the first match.
 
-    Checks the primary trip fields plus every MULTI_CITY leg individually — a flight buried in leg 2
-    or 3 of a mixed-mode trip must trigger the same checks as a single-leg flight request.
+    Checks the primary trip fields plus every MULTI_CITY leg individually — a flight (or train)
+    buried in leg 2 or 3 of a mixed-mode trip must trigger the same checks as a single-leg request.
     """
     flight_dates: list[date] = []
+    train_dates: list[date] = []
+    # Any mode with no dedicated advance-booking rule of its own (currently just BUS) still
+    # needs *some* minimum-notice floor — see the TRAVEL_REQUEST_LEAD_TIME_OVERRIDE block below.
+    other_dates: list[date] = []
     if mode_val == "FLIGHT" and travel_date:
         flight_dates.append(travel_date)
+    elif mode_val == "TRAIN" and travel_date:
+        train_dates.append(travel_date)
+    elif travel_date:
+        other_dates.append(travel_date)
     for leg in legs or []:
         leg_mode = leg.travel_mode.upper() if leg.travel_mode else mode_val
         if leg_mode == "FLIGHT" and leg.travel_date:
             flight_dates.append(leg.travel_date)
+        elif leg_mode == "TRAIN" and leg.travel_date:
+            train_dates.append(leg.travel_date)
+        elif leg.travel_date:
+            other_dates.append(leg.travel_date)
 
-    if not flight_dates:
+    if not flight_dates and not train_dates and not other_dates:
         return []
 
+    from app.services.workflow_service import get_workflow_config, is_exception_enabled
+
+    cfg = await get_workflow_config(db)
     blocking: list[tuple[str, str]] = []
 
-    earliest_flight_date = min(flight_dates)
-    min_days = settings.flight_advance_booking_min_days
-    days_in_advance = (earliest_flight_date - date.today()).days
-    min_advance_enforced = days_in_advance < min_days
-    has_advance_override = await _has_completed_exception_chain(
-        user_id, "FLIGHT_ADVANCE_BOOKING_OVERRIDE", db
-    )
-    if min_advance_enforced and not has_advance_override:
-        blocking.append((
-            "FLIGHT_ADVANCE_BOOKING_OVERRIDE",
-            f"Minimum {min_days}-day advance booking window for flights is enforced.",
-        ))
+    if flight_dates and is_exception_enabled(cfg, "FLIGHT_ADVANCE_BOOKING_OVERRIDE"):
+        earliest_flight_date = min(flight_dates)
+        min_days = settings.flight_advance_booking_min_days
+        days_in_advance = (earliest_flight_date - date.today()).days
+        min_advance_enforced = days_in_advance < min_days
+        has_advance_override = await _has_completed_exception_chain(
+            user_id, "FLIGHT_ADVANCE_BOOKING_OVERRIDE", db
+        )
+        if min_advance_enforced and not has_advance_override:
+            blocking.append((
+                "FLIGHT_ADVANCE_BOOKING_OVERRIDE",
+                f"Minimum {min_days}-day advance booking window for flights is enforced.",
+            ))
 
-    if impact_level in LEVELS_REQUIRING_AIR_UNLOCK:
+    if train_dates and is_exception_enabled(cfg, "TRAIN_ADVANCE_BOOKING_OVERRIDE"):
+        # Separate from TRAIN_TATKAL (self-declared/invoice-detected, claims side) — this is
+        # purely date-driven, same as the flight check above. Inclusive boundary (<=, not <):
+        # a departure exactly `min_train_days` days out — e.g. booking on the 6th for the
+        # 8th — is itself the short-notice case this is meant to catch, not the safe side of it.
+        earliest_train_date = min(train_dates)
+        min_train_days = settings.train_advance_booking_min_days
+        train_days_in_advance = (earliest_train_date - date.today()).days
+        min_train_advance_enforced = train_days_in_advance <= min_train_days
+        has_train_advance_override = await _has_completed_exception_chain(
+            user_id, "TRAIN_ADVANCE_BOOKING_OVERRIDE", db
+        )
+        if min_train_advance_enforced and not has_train_advance_override:
+            blocking.append((
+                "TRAIN_ADVANCE_BOOKING_OVERRIDE",
+                f"Trains departing within {min_train_days} day(s) of booking require exception approval.",
+            ))
+
+    if other_dates and is_exception_enabled(cfg, "TRAVEL_REQUEST_LEAD_TIME_OVERRIDE"):
+        # Generic floor for any mode without its own dedicated advance-booking exception
+        # (flight and train are covered above, at their own thresholds, instead of this one).
+        min_lead_days = settings.travel_request_min_lead_working_days
+        earliest_allowed = earliest_travel_date_allowed(_today_ist(), min_lead_days)
+        earliest_other_date = min(other_dates)
+        min_lead_enforced = earliest_other_date < earliest_allowed
+        has_lead_time_override = await _has_completed_exception_chain(
+            user_id, "TRAVEL_REQUEST_LEAD_TIME_OVERRIDE", db
+        )
+        if min_lead_enforced and not has_lead_time_override:
+            blocking.append((
+                "TRAVEL_REQUEST_LEAD_TIME_OVERRIDE",
+                f"Travel must be booked at least {min_lead_days} working day(s) in advance. "
+                f"Earliest allowed travel date is {earliest_allowed.isoformat()}.",
+            ))
+
+    if flight_dates and impact_level in LEVELS_REQUIRING_AIR_UNLOCK and is_exception_enabled(cfg, "AIR_TRAVEL_UNLOCK"):
         # Scoped to this specific request, not a standing unlock for the employee: a prior
         # AIR_TRAVEL_UNLOCK approval covered only the trip it was raised for, so every new
-        # flight booking needs its own fresh exception approval.
+        # flight booking needs its own fresh exception approval. Gated on flight_dates since a
+        # pure train trip never needs air-travel unlock regardless of impact level.
         blocking.append((
             "AIR_TRAVEL_UNLOCK",
             "Air travel is locked for your level until Reporting Manager + Group Head HR + CEO "
@@ -223,10 +260,14 @@ async def create_travel_request(
     )
     if blocking:
         combined_message = " ".join(message for _, message in blocking)
+        # 403/409 (never 422) signal to the frontend that this block is exception-eligible —
+        # i.e. the employee can resubmit via create_travel_request_with_exception instead of
+        # this failing outright. A plain 422 stays reserved for genuine hard-validation errors
+        # (invalid travel_mode, missing employee link, ...) that have no override path.
         status_code = (
             status.HTTP_403_FORBIDDEN
             if any(exc_type == "AIR_TRAVEL_UNLOCK" for exc_type, _ in blocking)
-            else 422
+            else status.HTTP_409_CONFLICT
         )
         raise HTTPException(status_code=status_code, detail=combined_message)
 
@@ -263,28 +304,15 @@ async def create_travel_request(
         db=db,
     )
 
-    # Create notification for manager
+    # Build the (possibly multi-stage, admin-configured) approval chain and notify its first
+    # approver(s) — replaces the old hardcoded "just notify the reporting manager" block.
     try:
-        stmt = select(Employee).where(Employee.employee_id == user.employee_id)
-        emp = (await db.execute(stmt)).scalar_one_or_none()
-        if emp and emp.reporting_manager_id:
-            stmt = select(User).where(User.employee_id == emp.reporting_manager_id)
-            manager_user = (await db.execute(stmt)).scalar_one_or_none()
-            if manager_user:
-                from app.services.notification_service import create_notification
-                dest = to_city if to_city else (legs[0].to_city if legs else "Unknown")
-                src = from_city if from_city else (legs[0].from_city if legs else "Unknown")
-                await create_notification(
-                    user_id=manager_user.id,
-                    title="New Travel Request",
-                    body=f"New travel request from {user.full_name or user.email} for {src} -> {dest}.",
-                    link="/pending-approvals",
-                    category="APPROVAL_REQUIRED",
-                    db=db
-                )
-                await db.commit()
+        from app.services.workflow_service import init_travel_request_approval_chain
+
+        await init_travel_request_approval_chain(row, db)
+        await db.commit()
     except Exception as e:
-        print(f"Failed to create notification: {e}")
+        print(f"Failed to initialize approval chain: {e}")
 
     return await _reload_travel_request_with_legs(row.id, db)
 
@@ -481,6 +509,7 @@ async def get_latest_exceptions_for_requests(request_ids: Sequence[int], db: Asy
             "exception_type": exc.exception_type,
             "exception_types": exc.exception_types or [exc.exception_type],
             "status": exc.status,
+            "description": exc.description,
             "decision_comment": exc.decision_comment,
             "approvals": [
                 {
@@ -623,54 +652,46 @@ async def list_pending_travel_requests_for_desk(db: AsyncSession) -> list[dict]:
     return enriched
 
 
-async def list_pending_travel_requests_for_manager(manager_user_id: int, db: AsyncSession) -> list[TravelRequest]:
-    """List pending travel requests for subordinates of the given manager and any delegators."""
-    mgr = await db.get(User, manager_user_id)
-    if not mgr or not mgr.employee_id:
-        return []
-        
-    from datetime import datetime
+async def list_pending_travel_requests_for_approver(actor_user_id: int, db: AsyncSession) -> list[TravelRequest]:
+    """Every PENDING travel request whose currently active approval stage this actor can act
+    on — stage-aware (see init_travel_request_approval_chain / approve_travel_request_stage),
+    so it correctly surfaces requests routed to a pooled role (HRBP, Finance, CEO, ...), not
+    just ones where the actor is specifically the employee's reporting manager (or an active
+    delegate of one). Replaces the old reporting-manager-only query, which silently returned
+    nothing for any other stage role once the approval chain became admin-configurable.
+    """
+    from app.models.travel_request import TravelRequestApprovalStage
+    from app.services.workflow_service import _user_matches_required_role
 
-    from app.services.delegation_service import is_delegation_enabled
-
-    now = datetime.utcnow()
-    delegator_user_ids = []
-    if await is_delegation_enabled(db):
-        delegators_q = select(Delegation.delegator_id).where(
-            Delegation.delegatee_id == manager_user_id,
-            Delegation.is_active,
-            Delegation.start_date <= now,
-            Delegation.end_date >= now
-        )
-        delegator_user_ids = (await db.execute(delegators_q)).scalars().all()
-
-    manager_emp_ids = [mgr.employee_id]
-    if delegator_user_ids:
-        delegator_emp_ids = (await db.execute(select(User.employee_id).where(User.id.in_(delegator_user_ids)))).scalars().all()
-        manager_emp_ids.extend([eid for eid in delegator_emp_ids if eid])
-        
-    sub_stmt = select(Employee.employee_id).where(Employee.reporting_manager_id.in_(manager_emp_ids))
-    sub_emp_ids = (await db.execute(sub_stmt)).scalars().all()
-    if not sub_emp_ids:
+    actor = await db.get(User, actor_user_id)
+    if actor is None:
         return []
-        
-    user_stmt = select(User.id).where(User.employee_id.in_(sub_emp_ids))
-    sub_user_ids = (await db.execute(user_stmt)).scalars().all()
-    if not sub_user_ids:
-        return []
+
     stmt = (
-        select(TravelRequest)
+        select(TravelRequest, TravelRequestApprovalStage)
+        .join(
+            TravelRequestApprovalStage,
+            and_(
+                TravelRequestApprovalStage.travel_request_id == TravelRequest.id,
+                TravelRequestApprovalStage.stage_number == TravelRequest.current_approval_stage,
+            ),
+        )
         .options(selectinload(TravelRequest.legs), selectinload(TravelRequest.tickets))
         .where(
-            and_(
-                TravelRequest.employee_user_id.in_(sub_user_ids),
-                TravelRequest.status == TravelRequestStatus.PENDING.value
-            )
+            TravelRequest.status == TravelRequestStatus.PENDING.value,
+            TravelRequestApprovalStage.status == "PENDING",
         )
         .order_by(TravelRequest.requested_at.desc())
     )
-    rows = list((await db.execute(stmt)).scalars().all())
-    
+    candidates = (await db.execute(stmt)).all()
+
+    rows: list[TravelRequest] = []
+    for req, stage in candidates:
+        subject_user = await db.get(User, req.employee_user_id)
+        subject_employee_id = subject_user.employee_id if subject_user else None
+        if await _user_matches_required_role(actor, stage.required_role, subject_employee_id, db):
+            rows.append(req)
+
     user_ids = {r.employee_user_id for r in rows}
     users_map = {}
     if user_ids:
@@ -866,14 +887,12 @@ async def _actor_is_reporting_manager_for(
     if sub_emp.reporting_manager_id == mgr.employee_id:
         return True
 
-    from datetime import datetime
-
     from app.services.delegation_service import is_delegation_enabled
 
     if not await is_delegation_enabled(db):
         return False
 
-    now = datetime.utcnow()
+    now = now_ist()
     delegators_q = select(Delegation.delegator_id).where(
         Delegation.delegatee_id == manager_user_id,
         Delegation.is_active,
@@ -889,86 +908,26 @@ async def _actor_is_reporting_manager_for(
     return False
 
 
-async def assert_can_approve_or_reject(actor_user_id: int, request: TravelRequest, role: Role, db: AsyncSession) -> None:
-    if await _actor_is_reporting_manager_for(
-        manager_user_id=actor_user_id, subordinate_user_id=request.employee_user_id, db=db
-    ):
-        return
-    raise HTTPException(status_code=403, detail="Not allowed to approve or reject this request")
-
-
 async def approve_travel_request(request_id: int, actor_user_id: int, role: Role, db: AsyncSession) -> TravelRequest:
-    stmt = select(TravelRequest).options(selectinload(TravelRequest.legs), selectinload(TravelRequest.tickets)).where(TravelRequest.id == request_id)
-    req = (await db.execute(stmt)).scalar_one_or_none()
-    if req is None:
-        raise HTTPException(status_code=404, detail="Travel request not found")
-    await assert_can_approve_or_reject(actor_user_id, req, role, db)
-    if req.status != TravelRequestStatus.PENDING.value:
-        raise HTTPException(status_code=409, detail="Only PENDING requests can be approved")
-    req.status = TravelRequestStatus.APPROVED.value
+    """Approves whichever stage of the configured approval chain is currently active for this
+    request — a single-stage chain (today's default) behaves identically to the old
+    hardcoded "reporting manager approves" flow; a multi-stage chain just advances one step at
+    a time instead of jumping straight to APPROVED. Authorization is enforced per-stage inside
+    approve_travel_request_stage (via the stage's own required_role), not by this function —
+    unlike the old assert_can_approve_or_reject, that correctly lets a non-reporting-manager
+    role (e.g. HRBP) act on a stage actually routed to them.
+    """
+    from app.services.workflow_service import approve_travel_request_stage
 
-    # Create notification for employee
-    try:
-        from app.services.notification_service import create_notification
-        await create_notification(
-            user_id=req.employee_user_id,
-            title="Travel Request Approved",
-            body=f"Your travel request for {req.from_city} -> {req.to_city} has been approved by your manager.",
-            link="/travel-requests",
-            category="CLAIM_UPDATE",
-            db=db
-        )
-        
-        # Notify HRBP / Travel Desk to book the tickets
-        stmt = select(User).where(User.role == Role.HRBP_HR)
-        hrbps = (await db.execute(stmt)).scalars().all()
-        for hrbp in hrbps:
-            await create_notification(
-                user_id=hrbp.id,
-                title="Pending Travel Booking",
-                body=f"A travel request from {req.from_city} -> {req.to_city} was approved and is pending ticketing.",
-                link="/travel-desk",
-                category="ACTION_REQUIRED",
-                db=db
-            )
-    except Exception as e:
-        print(f"Failed to create notification: {e}")
-
-    await db.commit()
-    await db.refresh(req)
-    return req
+    return await approve_travel_request_stage(request_id, actor_user_id, None, db)
 
 
 async def reject_travel_request(
     request_id: int, actor_user_id: int, role: Role, reason: str, db: AsyncSession
 ) -> TravelRequest:
-    stmt = select(TravelRequest).options(selectinload(TravelRequest.legs), selectinload(TravelRequest.tickets)).where(TravelRequest.id == request_id)
-    req = (await db.execute(stmt)).scalar_one_or_none()
-    if req is None:
-        raise HTTPException(status_code=404, detail="Travel request not found")
-    await assert_can_approve_or_reject(actor_user_id, req, role, db)
-    if req.status != TravelRequestStatus.PENDING.value:
-        raise HTTPException(status_code=409, detail="Only PENDING requests can be rejected")
-    req.status = TravelRequestStatus.REJECTED.value
-    req.rejection_reason = reason.strip()
+    from app.services.workflow_service import reject_travel_request_stage
 
-    # Create notification for employee
-    try:
-        from app.services.notification_service import create_notification
-        await create_notification(
-            user_id=req.employee_user_id,
-            title="Travel Request Rejected",
-            body=f"Your travel request for {req.from_city} -> {req.to_city} has been rejected. Reason: {reason}",
-            link="/travel-requests",
-            category="CLAIM_UPDATE",
-            db=db
-        )
-    except Exception as e:
-        print(f"Failed to create notification: {e}")
-
-    await db.commit()
-    await db.refresh(req)
-    return req
+    return await reject_travel_request_stage(request_id, actor_user_id, reason, db)
 
 
 async def cancel_travel_request(request_id: int, owner_user_id: int, db: AsyncSession) -> TravelRequest:
@@ -1256,7 +1215,7 @@ async def list_team_travel_calendar(manager_user_id: int, db: AsyncSession) -> l
                     TravelTrip.assigned_to_employee_id.in_(sub_emp_ids)
                 ),
                 TravelTrip.status == TripStatus.CONFIRMED,
-                TravelTrip.travel_date >= _utc_today()
+                TravelTrip.travel_date >= _today_ist()
             )
         )
         .order_by(asc(TravelTrip.travel_date))

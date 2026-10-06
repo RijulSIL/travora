@@ -1,17 +1,18 @@
 """Phase 3 claim approval chain, advances, exceptions, and workflow config."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from app.core.rbac import PERMISSION_MATRIX
+from app.core.rbac import PERMISSION_MATRIX, is_direct_report
+from app.core.timezone import now_ist
 from app.models.auth import Delegation, Role, User
 from app.models.claim_workflow import (
-    AdvanceApprovalStage,
     AdvanceRequest,
     AdvanceRequestStatus,
     ClaimApprovalStage,
@@ -24,6 +25,7 @@ from app.models.claim_workflow import (
 )
 from app.models.employee import AuditLog, Employee
 from app.models.reimbursement import ClaimDraft, ClaimStatus, ReimbursementCategory
+from app.services.advance_service import get_outstanding_advance
 from app.services.audit_service import log_event
 from app.services.claim_submission_rules import (
     parse_auto_approve_threshold,
@@ -40,17 +42,59 @@ EXCEPTION_APPROVAL_CHAINS: dict[str, list[str]] = {
     "AIR_TRAVEL_UNLOCK": ["REPORTING_MANAGER", "GROUP_HEAD_HR", "CEO"],
     "TRAIN_TATKAL": ["REPORTING_MANAGER", "HRBP_HR"],
     "FLIGHT_ADVANCE_BOOKING_OVERRIDE": ["REPORTING_MANAGER"],
+    # Distinct from TRAIN_TATKAL (self-declared/invoice-detected, claims side): this is the
+    # train equivalent of FLIGHT_ADVANCE_BOOKING_OVERRIDE — auto-raised against a travel
+    # request whenever a train leg's departure falls inside the minimum advance-booking window.
+    "TRAIN_ADVANCE_BOOKING_OVERRIDE": ["REPORTING_MANAGER"],
+    # Generic minimum-notice floor for any travel request mode with no dedicated advance-booking
+    # rule of its own (currently just BUS — flight and train are covered by their own entries
+    # above instead of this one).
+    "TRAVEL_REQUEST_LEAD_TIME_OVERRIDE": ["REPORTING_MANAGER"],
     "FLIGHT_COST_DELTA": ["REPORTING_MANAGER", "HRBP_HR"],
     "ROOM_RENT_DEVIATION": ["REPORTING_MANAGER", "HRBP_HR", "CEO"],
-    "HOTEL/ACCOMMODATION_DEVIATION": ["REPORTING_MANAGER", "HRBP_HR", "CEO"],
-    "HOTEL_DEVIATION": ["REPORTING_MANAGER", "HRBP_HR", "CEO"],
-    "ACCOMMODATION_DEVIATION": ["REPORTING_MANAGER", "HRBP_HR", "CEO"],
     "AIR_TRAVEL_L5_L6": ["REPORTING_MANAGER", "GROUP_HEAD_HR", "CEO"],
     "HIRED_TAXI_UNAUTHORIZED": ["REPORTING_MANAGER", "HRBP_HR", "CEO"],
     "MODE_DEVIATION": ["REPORTING_MANAGER", "HRBP_HR", "CEO"],
     "DAY_VISIT_EXTERNAL_MEETING": ["CEO"],
+    # Food and Incidental are both capped, admin-configurable dimensions on the Expense Limits
+    # page, same as Hotel — they previously had no dedicated chain and fell through to the
+    # generic POLICY_EXCEPTION_GENERAL bucket alongside every uncapped category (Telecom,
+    # Courier, ...). Giving them their own entries (currently equal to what they already got
+    # via the generic fallback, so this changes no current approver — just makes them
+    # independently configurable) matches Hotel's ROOM_RENT_DEVIATION pattern.
+    "FOOD_DEVIATION": ["REPORTING_MANAGER", "HRBP_HR"],
+    "INCIDENTAL_DEVIATION": ["REPORTING_MANAGER", "HRBP_HR"],
+    # The catch-all for any expense category with no dedicated rule above (e.g.
+    # Office Supplies, Telecom...) — _resolve_exception_chain falls back to this whenever an
+    # exception_type isn't one of the named keys here, so it's the one editable control over
+    # what happens to every "my claim breached a cap and there's no specific rule" case.
     "POLICY_EXCEPTION_GENERAL": ["REPORTING_MANAGER", "HRBP_HR"],
 }
+
+
+def _chain_for_type(chains: dict, exception_type: str) -> list[str]:
+    """Approval chain for a given exception type out of an already-resolved chains dict. A
+    type with no dedicated entry — every generic f"{category}_DEVIATION" fallback raised for a
+    category without its own named rule — falls back to the admin-configurable
+    POLICY_EXCEPTION_GENERAL chain instead of a hardcoded literal, so it's actually
+    visible/editable in the approval matrix rather than silently defaulting (or, worse,
+    resolving to an empty chain and leaving the exception with zero approvers forever).
+    """
+    return chains.get(exception_type) or chains.get("POLICY_EXCEPTION_GENERAL") or ["HRBP_HR"]
+
+
+def _resolve_exception_chain(cfg: dict, exception_type: str) -> list[str]:
+    return _chain_for_type(cfg.get("exception_chains", EXCEPTION_APPROVAL_CHAINS), exception_type)
+
+
+def is_exception_enabled(cfg: dict, exception_type: str) -> bool:
+    """False only when an admin has explicitly switched this exception type off in the Approval
+    Matrix (the "Flag this exception" toggle) — every check that would otherwise flag/block on
+    this type should instead treat the request/claim as if the condition never happened. Absent
+    from the map (the default for every type, and the only state possible before this toggle
+    existed) means enabled, so existing configs keep behaving exactly as before."""
+    enabled_map = cfg.get("exception_enabled") or {}
+    return enabled_map.get(exception_type, True) is not False
 
 
 def _humanize_token(value: str) -> str:
@@ -85,7 +129,7 @@ _CANONICAL_EXCEPTION_ROLE_ORDER = [
 def _merge_exception_chains(exception_types: list[str], chains_cfg: dict) -> list[str]:
     roles: set[str] = set()
     for exc_type in exception_types:
-        roles.update(chains_cfg.get(exc_type, ["HRBP_HR"]))
+        roles.update(_chain_for_type(chains_cfg, exc_type))
     ordered = [r for r in _CANONICAL_EXCEPTION_ROLE_ORDER if r in roles]
     # Any role outside the known hierarchy (custom admin-configured chain) goes last.
     ordered += [r for r in roles if r not in _CANONICAL_EXCEPTION_ROLE_ORDER]
@@ -126,7 +170,7 @@ async def _get_function_head(employee_id: str, db: AsyncSession) -> Employee | N
 
 
 def _now() -> datetime:
-    return datetime.now(UTC).replace(tzinfo=None)
+    return now_ist()
 
 
 async def _active_delegator_ids(user_id: int, db: AsyncSession) -> list[int]:
@@ -396,6 +440,16 @@ def _validate_workflow_config(config: dict) -> None:
                         status_code=422, detail=f"exception_chain '{key}' contains unsupported role '{role}'"
                     )
 
+    exception_enabled = config.get("exception_enabled")
+    if exception_enabled is not None:
+        if not isinstance(exception_enabled, dict):
+            raise HTTPException(status_code=422, detail="exception_enabled must be a dictionary")
+        for key, val in exception_enabled.items():
+            if not isinstance(val, bool):
+                raise HTTPException(
+                    status_code=422, detail=f"exception_enabled '{key}' must be true or false"
+                )
+
 
 def _normalize_stage_defs(config: dict) -> list[dict]:
     raw_stages = config.get("stages")
@@ -432,12 +486,63 @@ async def get_workflow_config(db: AsyncSession, category: str | None = None) -> 
     if "stages" in row.config_json:
         merged["stages"] = row.config_json["stages"]
     if "exception_chains" in row.config_json:
-        merged["exception_chains"] = row.config_json["exception_chains"]
+        # Per-key merge, not a wholesale replace: a persisted config_json predates any exception
+        # type added to EXCEPTION_APPROVAL_CHAINS after it was last saved, so a flat override
+        # would silently drop that new type's default chain (and hide it from the admin's
+        # Approval Matrix editor) until someone happens to re-save the whole config.
+        merged["exception_chains"] = {**EXCEPTION_APPROVAL_CHAINS, **row.config_json["exception_chains"]}
     if category:
         override = (row.config_json.get("category_overrides") or {}).get(category)
         if isinstance(override, dict) and override.get("stages"):
             merged["stages"] = override["stages"]
     return merged
+
+
+_APPROVER_SCOPE_CATEGORIES = [c.value for c in ReimbursementCategory]
+
+
+async def get_approver_scope(role: Role, db: AsyncSession) -> dict:
+    """Which parts of the live Approval Matrix `role` currently appears in — claim categories,
+    the travel-request chain, and exception chains. Used to decide whether approval-queue nav
+    items / pages should be visible at all for this role, instead of a hardcoded per-role
+    assumption that goes stale the moment an admin reconfigures routing (the recurring bug
+    class this replaces — see navConfig.js / PendingApprovals.jsx / ExceptionRequestsPage.jsx).
+
+    REPORTING_MANAGER/FUNCTION_HEAD route_role tokens are relative to each claim's employee,
+    but checking the literal token against a stage's route_role is still the right question
+    here: every user holding Role.REPORTING_MANAGER is exactly the kind of user that token
+    routes to for *some* employee, so "is this token configured anywhere" answers "could a nav
+    item ever be useful to this role," not "can I act on this specific claim" (that's
+    _can_user_act_on_claim_stage's job, unchanged)."""
+    role_val = role.value if isinstance(role, Role) else str(role)
+
+    claim_categories: list[str] = []
+    for category in _APPROVER_SCOPE_CATEGORIES:
+        cfg = await get_workflow_config(db, category=category)
+        stage_roles = {str(s.get("route_role") or "") for s in (cfg.get("stages") or [])}
+        if role_val in stage_roles:
+            claim_categories.append(category)
+
+    # Deliberately NOT get_workflow_config(db, category="TRAVEL_REQUEST") — with no
+    # category_overrides.TRAVEL_REQUEST configured, that call falls back to the *claim* default
+    # stages (Manager/HRBP/Payroll/Finance), not the travel-request-specific single-stage
+    # default. _travel_request_stage_defs is the one real source of truth for what a travel
+    # request's chain actually resolves to (see init_travel_request_approval_chain) — reusing
+    # it here instead of re-deriving the same fallback independently.
+    base_cfg_for_travel = await get_workflow_config(db)
+    travel_roles = {str(s.get("route_role") or "") for s in _travel_request_stage_defs(base_cfg_for_travel)}
+    travel_request = role_val in travel_roles
+
+    base_cfg = await get_workflow_config(db)
+    chains_cfg = base_cfg.get("exception_chains") or EXCEPTION_APPROVAL_CHAINS
+    exceptions = [etype for etype, chain in chains_cfg.items() if role_val in chain]
+
+    return {
+        "claims": bool(claim_categories),
+        "claim_categories": claim_categories,
+        "travel_request": travel_request,
+        "exceptions": exceptions,
+    }
 
 
 # REPORTING_MANAGER and FUNCTION_HEAD are resolved relative to each claim's employee
@@ -466,7 +571,201 @@ async def _assert_roles_have_active_users(config: dict, db: AsyncSession) -> Non
             )
 
 
-async def save_workflow_config(config: dict, user_id: int | None, db: AsyncSession) -> dict:
+def _effective_claim_stage_defs_from_raw(cfg: dict, category: str) -> list[dict]:
+    """Same category-override-with-fallback resolution as get_workflow_config(db, category=...),
+    but operating on a plain config dict already in hand — used to diff an old config against a
+    new one at save time without a second DB round-trip (see _migrate_inflight_approvals)."""
+    merged = dict(DEFAULT_WORKFLOW_CONFIG)
+    merged.update(cfg or {})
+    if cfg and "stages" in cfg:
+        merged["stages"] = cfg["stages"]
+    override = ((cfg or {}).get("category_overrides") or {}).get(category)
+    if isinstance(override, dict) and override.get("stages"):
+        merged["stages"] = override["stages"]
+    return _normalize_stage_defs(merged)
+
+
+def _single_role_stage_swaps(old_defs: list[dict], new_defs: list[dict]) -> dict[int, tuple[str, str, dict]]:
+    """Stage numbers where exactly one role served before and exactly one, different, role
+    serves now — {stage_number: (old_role, new_role, new_stage_def)}. A stage number that's
+    parallel (more than one role sharing that number) on either side, or that doesn't exist on
+    both sides, is left out entirely: those are structural chain edits (branch added/removed,
+    stage added/removed/reordered), not a plain reassignment, and are out of scope for the
+    automatic in-flight migration below — see save_workflow_config's note."""
+    old_by_number: dict[int, list[dict]] = {}
+    for d in old_defs:
+        old_by_number.setdefault(int(d["number"]), []).append(d)
+    new_by_number: dict[int, list[dict]] = {}
+    for d in new_defs:
+        new_by_number.setdefault(int(d["number"]), []).append(d)
+
+    swaps: dict[int, tuple[str, str, dict]] = {}
+    for number, old_group in old_by_number.items():
+        if len(old_group) != 1:
+            continue
+        new_group = new_by_number.get(number)
+        if not new_group or len(new_group) != 1:
+            continue
+        old_role = str(old_group[0].get("route_role") or "")
+        new_def = new_group[0]
+        new_role = str(new_def.get("route_role") or "")
+        if old_role and new_role and old_role != new_role:
+            swaps[number] = (old_role, new_role, new_def)
+    return swaps
+
+
+async def _reassign_pending_claim_stages(
+    category: str, swaps: dict[int, tuple[str, str, dict]], db: AsyncSession
+) -> int:
+    if not swaps:
+        return 0
+    rows = (
+        await db.execute(
+            select(ClaimApprovalStage, ClaimDraft)
+            .join(ClaimDraft, ClaimDraft.id == ClaimApprovalStage.claim_id)
+            .where(
+                ClaimApprovalStage.status == ClaimApprovalStageStatus.PENDING.value,
+                ClaimDraft.reimbursement_category == ReimbursementCategory(category),
+            )
+        )
+    ).all()
+    now = _now()
+    count = 0
+    for stage, claim in rows:
+        swap = swaps.get(stage.stage_number)
+        if not swap:
+            continue
+        old_role, new_role, new_def = swap
+        if stage.required_role != old_role:
+            continue
+        stage.required_role = new_role
+        stage.stage_label = str(new_def.get("label") or stage.stage_label)
+        stage.sla_deadline_at = now + timedelta(hours=int(new_def.get("sla_hours", 48)))
+        await _notify_stage_approver(claim, new_def, db)
+        count += 1
+    return count
+
+
+async def _reassign_pending_travel_stages(swaps: dict[int, tuple[str, str, dict]], db: AsyncSession) -> int:
+    if not swaps:
+        return 0
+    from app.models.travel_request import TravelRequest, TravelRequestApprovalStage
+
+    rows = (
+        await db.execute(
+            select(TravelRequestApprovalStage, TravelRequest)
+            .join(TravelRequest, TravelRequest.id == TravelRequestApprovalStage.travel_request_id)
+            .where(TravelRequestApprovalStage.status == ClaimApprovalStageStatus.PENDING.value)
+        )
+    ).all()
+    now = _now()
+    count = 0
+    for stage, travel_request in rows:
+        swap = swaps.get(stage.stage_number)
+        if not swap:
+            continue
+        old_role, new_role, new_def = swap
+        if stage.required_role != old_role:
+            continue
+        stage.required_role = new_role
+        stage.stage_label = str(new_def.get("label") or stage.stage_label)
+        stage.sla_deadline_at = now + timedelta(hours=int(new_def.get("sla_hours", 48)))
+        await _notify_travel_stage_approver(travel_request, new_def, db)
+        count += 1
+    return count
+
+
+async def _reassign_pending_exception_approvals(old_chains_cfg: dict, new_chains_cfg: dict, db: AsyncSession) -> int:
+    """Exception chains are a flat ordered role list per type (not stage-numbered), so the
+    1-for-1 comparison is by position in that list instead of by stage number — same
+    unchanged-length-only scope as the stage migration above. Claim-sourced requests resolve
+    their chain from `req.exception_type` alone (_resolve_exception_chain, matching
+    init_claim_approval_chain's own PENDING_EXCEPTION branch); travel-request-sourced ones
+    resolve from the full `req.exception_types` union (_merge_exception_chains, matching
+    create_travel_exception_request) — each side reuses the exact function the live code uses,
+    so the predicted 'new' order here can't drift from what was actually used to create it."""
+    pending_reqs = (
+        await db.execute(
+            select(ExceptionRequest).where(ExceptionRequest.status == ExceptionRequestStatus.PENDING.value)
+        )
+    ).scalars().all()
+
+    count = 0
+    for req in pending_reqs:
+        if req.claim_id is not None:
+            old_chain = _resolve_exception_chain(old_chains_cfg, req.exception_type)
+            new_chain = _resolve_exception_chain(new_chains_cfg, req.exception_type)
+        else:
+            types = req.exception_types or [req.exception_type]
+            old_chain = _merge_exception_chains(types, old_chains_cfg)
+            new_chain = _merge_exception_chains(types, new_chains_cfg)
+
+        if len(old_chain) != len(new_chain):
+            continue
+        swaps = {i: (o, n) for i, (o, n) in enumerate(zip(old_chain, new_chain, strict=True)) if o != n}
+        if not swaps:
+            continue
+
+        approvals = (
+            await db.execute(
+                select(ExceptionApproval)
+                .where(ExceptionApproval.exception_request_id == req.id)
+                .order_by(ExceptionApproval.id)
+            )
+        ).scalars().all()
+
+        subject_claim = await db.get(ClaimDraft, req.claim_id) if req.claim_id is not None else None
+        subject_travel = None
+        if req.travel_request_id is not None:
+            from app.models.travel_request import TravelRequest
+
+            subject_travel = await db.get(TravelRequest, req.travel_request_id)
+
+        for idx, approval in enumerate(approvals):
+            if approval.status not in (ExceptionRequestStatus.PENDING.value, "AWAITING"):
+                continue
+            swap = swaps.get(idx)
+            if not swap:
+                continue
+            old_role, new_role = swap
+            if approval.required_role != old_role:
+                continue
+            approval.required_role = new_role
+            count += 1
+            if approval.status == ExceptionRequestStatus.PENDING.value:
+                if subject_claim is not None:
+                    await _notify_exception_approver(subject_claim, req, new_role, db)
+                elif subject_travel is not None:
+                    await _notify_travel_exception_approver(subject_travel, req, new_role, db)
+    return count
+
+
+async def _migrate_inflight_approvals(old_config: dict | None, new_config: dict, db: AsyncSession) -> dict[str, int]:
+    """Called from save_workflow_config on every save: when a stage/chain's route_role changed
+    for an unchanged stage count, requests already sitting at that exact stage move to the new
+    role immediately (SLA clock reset, new approver notified) instead of staying frozen on
+    whoever used to own it. Structural edits (stage added/removed/reordered, a parallel branch
+    added/removed) are deliberately left alone — see _single_role_stage_swaps' docstring."""
+    old_cfg = old_config or dict(DEFAULT_WORKFLOW_CONFIG)
+    migrated = {"claims": 0, "travel_request": 0, "exceptions": 0}
+
+    for category in [c.value for c in ReimbursementCategory]:
+        old_defs = _effective_claim_stage_defs_from_raw(old_cfg, category)
+        new_defs = _effective_claim_stage_defs_from_raw(new_config, category)
+        swaps = _single_role_stage_swaps(old_defs, new_defs)
+        migrated["claims"] += await _reassign_pending_claim_stages(category, swaps, db)
+
+    travel_swaps = _single_role_stage_swaps(_travel_request_stage_defs(old_cfg), _travel_request_stage_defs(new_config))
+    migrated["travel_request"] = await _reassign_pending_travel_stages(travel_swaps, db)
+
+    old_chains_cfg = old_cfg.get("exception_chains") or EXCEPTION_APPROVAL_CHAINS
+    new_chains_cfg = new_config.get("exception_chains") or EXCEPTION_APPROVAL_CHAINS
+    migrated["exceptions"] = await _reassign_pending_exception_approvals(old_chains_cfg, new_chains_cfg, db)
+
+    return migrated
+
+
+async def save_workflow_config(config: dict, user_id: int | None, db: AsyncSession) -> tuple[dict, dict[str, int]]:
     _validate_workflow_config(config)
     await _assert_roles_have_active_users(config, db)
     row = await db.get(WorkflowConfigRow, 1)
@@ -486,9 +785,10 @@ async def save_workflow_config(config: dict, user_id: int | None, db: AsyncSessi
         new=config,
         db=db,
     )
+    migrated = await _migrate_inflight_approvals(old_config, config, db)
     await db.commit()
     await db.refresh(row)
-    return row.config_json
+    return row.config_json, migrated
 
 
 def _stage_hours(stage_defs: list[dict], stage_number: int) -> int:
@@ -714,7 +1014,7 @@ async def init_claim_approval_chain(claim: ClaimDraft, db: AsyncSession) -> None
             if existing:
                 continue
 
-            chain = cfg.get("exception_chains", EXCEPTION_APPROVAL_CHAINS).get(req.exception_type, [])
+            chain = _resolve_exception_chain(cfg, req.exception_type)
             for i, role in enumerate(chain):
                 status_val = ExceptionRequestStatus.PENDING.value if i == 0 else "AWAITING"
                 db.add(
@@ -727,7 +1027,7 @@ async def init_claim_approval_chain(claim: ClaimDraft, db: AsyncSession) -> None
         await db.flush()
         # Notify first approvers of exceptions
         for req in requests:
-            chain = cfg.get("exception_chains", EXCEPTION_APPROVAL_CHAINS).get(req.exception_type, [])
+            chain = _resolve_exception_chain(cfg, req.exception_type)
             if chain:
                 await _notify_exception_approver(claim, req, chain[0], db)
         return
@@ -814,11 +1114,7 @@ async def assert_user_can_view_claim_workflow(claim_id: int, user_id: int, db: A
     if user is None:
         raise HTTPException(status_code=403, detail="Forbidden")
         
-    # Check if user is the reporting manager of the claim's owner
-    from app.models.employee import Employee
-    owner_stmt = select(Employee.reporting_manager_id).join(User, User.employee_id == Employee.employee_id).where(User.id == claim.employee_user_id)
-    owner_mgr_id = (await db.execute(owner_stmt)).scalar_one_or_none()
-    if owner_mgr_id and user.employee_id and owner_mgr_id == user.employee_id:
+    if await is_direct_report(manager_user_id=user_id, target_user_id=claim.employee_user_id, db=db):
         return claim
         
     viewer_ok = PERMISSION_MATRIX.get(user.role, set()) & {"view_reports", "process_payments"}
@@ -1359,6 +1655,7 @@ async def record_claim_payment(
     amount: Decimal,
     db: AsyncSession,
     tds_deduction: Decimal = Decimal("0"),
+    advance_deducted: Decimal = Decimal("0"),
 ) -> ClaimDraft:
     if not utr or not utr.strip():
         raise HTTPException(status_code=422, detail="UTR reference is required")
@@ -1388,19 +1685,29 @@ async def record_claim_payment(
     expected = _authoritative_payable_amount(claim)
     provided = amount.quantize(Decimal("0.01"))
     deduction = tds_deduction.quantize(Decimal("0.01"))
+    advance = advance_deducted.quantize(Decimal("0.01"))
     if deduction < 0 or deduction > expected:
         raise HTTPException(
             status_code=422,
             detail=f"TDS/other deductions must be between 0 and the approved amount {expected}.",
         )
-    # provided is what actually gets transferred to the employee — deduction is withheld
-    # (TDS and similar), so the two together must still add up to the full approved amount.
-    if provided + deduction != expected:
+    if advance < 0:
+        raise HTTPException(status_code=422, detail="Advance deducted cannot be negative")
+    outstanding = await get_outstanding_advance(claim.employee_user_id, db)
+    if advance > outstanding:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Cannot deduct more than the employee's outstanding advance ({outstanding})",
+        )
+    # provided is what actually gets transferred to the employee — deduction (TDS) is
+    # withheld and advance is netted off against what they already drew down, so all three
+    # together must still add up to the full approved amount.
+    if provided + deduction + advance != expected:
         raise HTTPException(
             status_code=422,
             detail=(
-                f"Payment amount plus TDS/other deductions must equal the authoritative payable "
-                f"amount {expected}. Use approved amount when set, otherwise net payable after advances."
+                f"Payment amount plus TDS/other deductions plus advance deducted must equal the "
+                f"authoritative payable amount {expected}."
             ),
         )
 
@@ -1415,8 +1722,13 @@ async def record_claim_payment(
     claim.payment_utr = utr.strip()
     claim.payment_amount = provided
     claim.tds_deduction = deduction
+    claim.advance_received = advance
     claim.payment_recorded_at = now
     claim.payment_recorded_by = user_id
+
+    # Actually draws the advance down on the grant itself, not just in this claim's own
+    # record — otherwise the grant would still look untouched (see _draw_down_advance).
+    await _draw_down_advance(claim.employee_user_id, advance, "claims", db)
 
     # Posting to the ERP ledger used to be a second, separate API call the frontend made
     # right after this one (see PaymentQueuePage.jsx) — if that second call ever failed for
@@ -1440,6 +1752,7 @@ async def record_claim_payment(
             "payment_utr": claim.payment_utr,
             "payment_amount": str(claim.payment_amount),
             "tds_deduction": str(claim.tds_deduction),
+            "advance_deducted": str(claim.advance_received),
             "stage_number": stage4.stage_number,
         },
         db=db,
@@ -1567,6 +1880,10 @@ async def list_pending_approvals(user_id: int, db: AsyncSession) -> list[dict]:
             {
                 "claim_id": claim.id,
                 "claim_reference": claim.claim_reference or f"CLM-{claim.id}",
+                # Just an id, not advance data — lets a Finance-only caller separately look up
+                # this employee's outstanding advance via GET /advances/outstanding/{id}, without
+                # this shared queue (also read by managers/HRBP/payroll) ever carrying that figure.
+                "employee_user_id": claim.employee_user_id,
                 "employee_label": f"{emp.full_name if emp else 'Unknown'} ({claim.employee_id or '—'})",
                 "employee_name": emp.full_name if emp else "Unknown",
                 "department": emp.department if emp else None,
@@ -1665,29 +1982,348 @@ async def _notify_travel_exception_approver(travel_request, req: ExceptionReques
         )
 
 
-async def _notify_travel_manager_of_pending_request(travel_request, db: AsyncSession) -> None:
-    user = await db.get(User, travel_request.employee_user_id)
-    if user is None or not user.employee_id:
+# Travel requests have no finance stage and no conditional/parallel stage support (unlike
+# claims) — this is deliberately the simple sequential subset of the claim-stage machinery.
+TRAVEL_REQUEST_DEFAULT_STAGES: list[dict] = [
+    {"number": 1, "label": "Manager Review", "sla_hours": 48, "route_role": Role.REPORTING_MANAGER.value},
+]
+
+
+def _travel_request_stage_defs(config: dict) -> list[dict]:
+    override = (config.get("category_overrides") or {}).get("TRAVEL_REQUEST")
+    raw_stages = override.get("stages") if isinstance(override, dict) else None
+    return _normalize_stage_defs({"stages": raw_stages or TRAVEL_REQUEST_DEFAULT_STAGES})
+
+
+async def _notify_travel_stage_approver(travel_request, stage_def: dict, db: AsyncSession) -> None:
+    route_role = str(stage_def.get("route_role") or "")
+    recipients = await _user_ids_for_exception_role_for_travel(travel_request, route_role, db)
+    if not recipients:
         return
-    employee = await db.get(Employee, user.employee_id)
-    if employee is None or not employee.reporting_manager_id:
-        return
-    manager_user = (
-        await db.execute(select(User).where(User.employee_id == employee.reporting_manager_id))
-    ).scalar_one_or_none()
-    if manager_user is None:
-        return
+    ref = f"TR-{travel_request.id:04d}"
+    stage_number = int(stage_def.get("number", 0))
+    for user_id in recipients:
+        await create_notification(
+            user_id=user_id,
+            title=f"Approval required: {ref}",
+            body=f"Travel request is awaiting action at stage {stage_number}.",
+            link="/pending-approvals",
+            category=NotificationCategory.APPROVAL_REQUIRED.value,
+            db=db,
+        )
+
+
+async def init_travel_request_approval_chain(travel_request, db: AsyncSession) -> None:
+    """Creates this request's TravelRequestApprovalStage rows and notifies the first stage's
+    approver(s) — called once a travel request is actually ready to enter the normal approval
+    flow (on creation with no exception, or once every exception on it clears)."""
+    from app.models.travel_request import TravelRequestApprovalStage
+
+    cfg = await get_workflow_config(db)
+    stage_defs = _travel_request_stage_defs(cfg)
+    now = _now()
+
+    await db.execute(
+        delete(TravelRequestApprovalStage).where(
+            TravelRequestApprovalStage.travel_request_id == travel_request.id
+        )
+    )
+
+    min_n = min(int(s["number"]) for s in stage_defs)
+    travel_request.current_approval_stage = min_n
+
+    active_stage_def = None
+    for stage in stage_defs:
+        n = int(stage["number"])
+        is_active = n == min_n
+        row = TravelRequestApprovalStage(
+            travel_request_id=travel_request.id,
+            stage_number=n,
+            stage_label=str(stage["label"]),
+            required_role=stage["route_role"],
+            status=ClaimApprovalStageStatus.PENDING.value if is_active else STAGE_STATUS_NOT_STARTED,
+            sla_deadline_at=(
+                now + timedelta(hours=int(stage.get("sla_hours", 48))) if is_active else None
+            ),
+        )
+        db.add(row)
+        if is_active:
+            active_stage_def = stage
+    await db.flush()
+
+    if active_stage_def:
+        await _notify_travel_stage_approver(travel_request, active_stage_def, db)
+
+
+async def _load_travel_stages(request_id: int, db: AsyncSession) -> list:
+    from app.models.travel_request import TravelRequestApprovalStage
+
+    result = await db.execute(
+        select(TravelRequestApprovalStage)
+        .where(TravelRequestApprovalStage.travel_request_id == request_id)
+        .order_by(TravelRequestApprovalStage.stage_number)
+    )
+    return list(result.scalars().all())
+
+
+def _active_pending_travel_stage(travel_request, stages: list):
+    if travel_request.current_approval_stage is None:
+        return None
+    row = next((s for s in stages if s.stage_number == travel_request.current_approval_stage), None)
+    if row is None or row.status != ClaimApprovalStageStatus.PENDING.value:
+        return None
+    return row
+
+
+async def _finalize_travel_request_approval(travel_request, db: AsyncSession) -> None:
     await create_notification(
-        user_id=manager_user.id,
-        title="Travel Request Ready for Review",
-        body=(
-            f"Travel request from {user.full_name or user.email} cleared its policy exception "
-            "and now needs your approval."
-        ),
-        link="/pending-approvals",
-        category=NotificationCategory.APPROVAL_REQUIRED.value,
+        user_id=travel_request.employee_user_id,
+        title="Travel Request Approved",
+        body=f"Your travel request for {travel_request.from_city} -> {travel_request.to_city} has been approved.",
+        link="/travel-requests",
+        category=NotificationCategory.CLAIM_UPDATE.value,
         db=db,
     )
+    hrbps = (await db.execute(select(User).where(User.role == Role.HRBP_HR))).scalars().all()
+    for hrbp in hrbps:
+        await create_notification(
+            user_id=hrbp.id,
+            title="Pending Travel Booking",
+            body=(
+                f"A travel request from {travel_request.from_city} -> {travel_request.to_city} "
+                "was approved and is pending ticketing."
+            ),
+            link="/travel-desk",
+            category="ACTION_REQUIRED",
+            db=db,
+        )
+
+
+async def approve_travel_request_stage(request_id: int, user_id: int, comment: str | None, db: AsyncSession):
+    from app.models.travel_request import TravelRequest, TravelRequestStatus
+
+    stmt = (
+        select(TravelRequest)
+        .options(selectinload(TravelRequest.legs), selectinload(TravelRequest.tickets))
+        .where(TravelRequest.id == request_id)
+    )
+    req = (await db.execute(stmt)).scalar_one_or_none()
+    if req is None:
+        raise HTTPException(status_code=404, detail="Travel request not found")
+    if req.status != TravelRequestStatus.PENDING.value:
+        raise HTTPException(status_code=409, detail="Only PENDING requests can be approved")
+
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    stages = await _load_travel_stages(request_id, db)
+    pending = _active_pending_travel_stage(req, stages)
+    if pending is None:
+        raise HTTPException(status_code=409, detail="No pending approval stage")
+
+    cfg = await get_workflow_config(db)
+    stage_defs = _travel_request_stage_defs(cfg)
+    stage_def = next((s for s in stage_defs if int(s["number"]) == pending.stage_number), None)
+    if stage_def is None:
+        raise HTTPException(status_code=500, detail="Approval chain is misconfigured")
+
+    subject_user = await db.get(User, req.employee_user_id)
+    subject_employee_id = subject_user.employee_id if subject_user else None
+    if not await _user_matches_required_role(user, pending.required_role, subject_employee_id, db):
+        raise HTTPException(status_code=403, detail="Not allowed to approve this stage")
+
+    now = _now()
+    previous_stage = req.current_approval_stage
+    pending.status = ClaimApprovalStageStatus.APPROVED.value
+    pending.decided_at = now
+    pending.decided_by_user_id = user_id
+    if comment:
+        pending.comment = comment
+
+    next_stage_number = min(
+        (s.stage_number for s in stages if s.stage_number > pending.stage_number), default=None
+    )
+    if next_stage_number is None:
+        req.status = TravelRequestStatus.APPROVED.value
+        req.current_approval_stage = None
+        await _finalize_travel_request_approval(req, db)
+    else:
+        next_stages = [s for s in stages if s.stage_number == next_stage_number]
+        next_stage_defs = [s for s in stage_defs if int(s["number"]) == next_stage_number]
+        req.current_approval_stage = next_stage_number
+        for ns in next_stages:
+            ns.status = ClaimApprovalStageStatus.PENDING.value
+            ns.sla_deadline_at = now + timedelta(hours=_stage_hours(stage_defs, next_stage_number))
+            ns_def = next((sd for sd in next_stage_defs if sd["route_role"] == ns.required_role), None)
+            if ns_def:
+                await _notify_travel_stage_approver(req, ns_def, db)
+
+    await log_event(
+        entity_type="travel_request",
+        entity_id=str(req.id),
+        action="approve_stage",
+        actor_id=user_id,
+        old={"status": TravelRequestStatus.PENDING.value, "current_approval_stage": previous_stage},
+        new={
+            "status": req.status,
+            "current_approval_stage": req.current_approval_stage,
+            "approved_stage_number": pending.stage_number,
+            "comment": comment,
+        },
+        db=db,
+    )
+    await db.commit()
+    await db.refresh(req)
+    return req
+
+
+async def reject_travel_request_stage(request_id: int, user_id: int, reason: str, db: AsyncSession):
+    from app.models.travel_request import TravelRequest, TravelRequestStatus
+
+    stmt = (
+        select(TravelRequest)
+        .options(selectinload(TravelRequest.legs), selectinload(TravelRequest.tickets))
+        .where(TravelRequest.id == request_id)
+    )
+    req = (await db.execute(stmt)).scalar_one_or_none()
+    if req is None:
+        raise HTTPException(status_code=404, detail="Travel request not found")
+    if req.status != TravelRequestStatus.PENDING.value:
+        raise HTTPException(status_code=409, detail="Only PENDING requests can be rejected")
+
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    stages = await _load_travel_stages(request_id, db)
+    pending = _active_pending_travel_stage(req, stages)
+    if pending is None:
+        raise HTTPException(status_code=409, detail="No pending approval stage")
+
+    subject_user = await db.get(User, req.employee_user_id)
+    subject_employee_id = subject_user.employee_id if subject_user else None
+    if not await _user_matches_required_role(user, pending.required_role, subject_employee_id, db):
+        raise HTTPException(status_code=403, detail="Not allowed to reject this stage")
+
+    now = _now()
+    previous_stage = req.current_approval_stage
+    pending.status = ClaimApprovalStageStatus.REJECTED.value
+    pending.decided_at = now
+    pending.decided_by_user_id = user_id
+    if reason:
+        pending.comment = reason
+
+    req.status = TravelRequestStatus.REJECTED.value
+    req.rejection_reason = reason.strip()
+    req.current_approval_stage = None
+
+    await create_notification(
+        user_id=req.employee_user_id,
+        title="Travel Request Rejected",
+        body=f"Your travel request for {req.from_city} -> {req.to_city} has been rejected. Reason: {reason}",
+        link="/travel-requests",
+        category=NotificationCategory.CLAIM_UPDATE.value,
+        db=db,
+    )
+
+    await log_event(
+        entity_type="travel_request",
+        entity_id=str(req.id),
+        action="reject_stage",
+        actor_id=user_id,
+        old={"status": TravelRequestStatus.PENDING.value, "current_approval_stage": previous_stage},
+        new={"status": req.status, "reason": reason},
+        db=db,
+    )
+    await db.commit()
+    await db.refresh(req)
+    return req
+
+
+async def get_travel_request_approval_chain(travel_request, db: AsyncSession) -> dict:
+    from app.models.travel_request import TravelRequestStatus
+
+    stages = await _load_travel_stages(travel_request.id, db)
+    subject_user = await db.get(User, travel_request.employee_user_id)
+    subject_employee_id = subject_user.employee_id if subject_user else None
+
+    exception_stages: list[dict] = []
+    exc_requests = (
+        await db.execute(
+            select(ExceptionRequest)
+            .where(ExceptionRequest.travel_request_id == travel_request.id)
+            .order_by(ExceptionRequest.id)
+        )
+    ).scalars().all()
+    for req_exc in exc_requests:
+        approvals = (
+            await db.execute(
+                select(ExceptionApproval)
+                .where(ExceptionApproval.exception_request_id == req_exc.id)
+                .order_by(ExceptionApproval.id)
+            )
+        ).scalars().all()
+        for approval in approvals:
+            acted_by_name, _ = await _user_identity(approval.acted_by_user_id, db)
+            pending_names: list[str] = []
+            if approval.status in (ExceptionRequestStatus.PENDING.value, "AWAITING"):
+                pending_names = await _pending_approver_names(approval.required_role, subject_employee_id, db)
+            exception_stages.append(
+                {
+                    "exception_request_id": req_exc.id,
+                    "exception_type": req_exc.exception_type,
+                    "exception_type_label": _humanize_token(req_exc.exception_type),
+                    "required_role": approval.required_role,
+                    "status": approval.status,
+                    "acted_at": approval.acted_at.isoformat() if approval.acted_at else None,
+                    "acted_by_user_id": approval.acted_by_user_id,
+                    "acted_by_name": acted_by_name,
+                    "pending_approver_names": pending_names,
+                    "comment": approval.comment,
+                }
+            )
+
+    # Mirrors get_approval_chain's claim-side "preview the real chain before it exists" —
+    # a PENDING_EXCEPTION request has no TravelRequestApprovalStage rows yet (see
+    # init_travel_request_approval_chain, which only runs once every exception clears).
+    upcoming_stages: list[dict] = []
+    if travel_request.status == TravelRequestStatus.PENDING_EXCEPTION.value and not stages:
+        cfg = await get_workflow_config(db)
+        for s in _travel_request_stage_defs(cfg):
+            names = await _pending_approver_names(str(s.get("route_role") or ""), subject_employee_id, db)
+            upcoming_stages.append(
+                {"stage_number": s["number"], "label": s["label"], "pending_approver_names": names}
+            )
+
+    stage_dicts = []
+    for s in stages:
+        decided_by_name, _ = await _user_identity(s.decided_by_user_id, db)
+        pending_names = []
+        if s.status in (ClaimApprovalStageStatus.PENDING.value, STAGE_STATUS_NOT_STARTED) and s.required_role:
+            pending_names = await _pending_approver_names(s.required_role, subject_employee_id, db)
+        stage_dicts.append(
+            {
+                "stage_number": s.stage_number,
+                "label": s.stage_label,
+                "status": s.status,
+                "sla_deadline_at": s.sla_deadline_at.isoformat() if s.sla_deadline_at else None,
+                "decided_at": s.decided_at.isoformat() if s.decided_at else None,
+                "decided_by_user_id": s.decided_by_user_id,
+                "decided_by_name": decided_by_name,
+                "pending_approver_names": pending_names,
+                "comment": s.comment,
+            }
+        )
+
+    return {
+        "travel_request_id": travel_request.id,
+        "status": travel_request.status,
+        "current_approval_stage": travel_request.current_approval_stage,
+        "stages": stage_dicts,
+        "exception_stages": exception_stages,
+        "upcoming_stages": upcoming_stages,
+    }
 
 
 async def create_travel_exception_request(
@@ -1787,6 +2423,10 @@ async def create_exception_request(
         category_keyword = "taxi"
     elif exception_type == "TRAIN_TATKAL":
         category_keyword = "train"
+    elif exception_type == "FOOD_DEVIATION":
+        category_keyword = "food"
+    elif exception_type == "INCIDENTAL_DEVIATION":
+        category_keyword = "incidental"
 
     if category_keyword:
         from app.models.reimbursement import ClaimExpense
@@ -1805,7 +2445,7 @@ async def create_exception_request(
     # also when any *other* pending exception requests on this claim get folded in.
 
     cfg = await get_workflow_config(db)
-    required_roles = cfg.get("exception_chains", EXCEPTION_APPROVAL_CHAINS).get(exception_type, ["HRBP_HR"])
+    required_roles = _resolve_exception_chain(cfg, exception_type)
     for i, role in enumerate(required_roles):
         status_val = ExceptionRequestStatus.PENDING.value if i == 0 else "AWAITING"
         db.add(
@@ -2000,7 +2640,7 @@ async def decide_exception_request(
                 other_active = (await db.execute(active_exceptions_stmt)).scalars().first()
                 if not other_active:
                     travel_request.status = TravelRequestStatus.PENDING.value
-                    await _notify_travel_manager_of_pending_request(travel_request, db)
+                    await init_travel_request_approval_chain(travel_request, db)
 
     await db.commit()
     await db.refresh(row)
@@ -2049,60 +2689,241 @@ async def decide_exception_request(
     return row
 
 
-async def create_advance_request(user_id: int, amount: Decimal, purpose: str | None, db: AsyncSession) -> AdvanceRequest:
+async def create_advance_grant(
+    finance_user_id: int,
+    employee_identifier: str,
+    amount: Decimal,
+    purpose: str | None,
+    db: AsyncSession,
+    *,
+    confirm_merge: bool = False,
+) -> AdvanceRequest:
+    """Finance grants an advance directly to an employee — no request, no approval chain.
+    It's active the moment it's created; drawdown happens later, at payment time, against
+    the employee's outstanding balance (see get_outstanding_advance).
+
+    An employee only ever has one *active* grant at a time — otherwise a grant that's already
+    been fully drawn down could reappear as if it were still open the moment the employee gets
+    a new one (each grant's own remaining amount would look unrelated to the others). If they
+    already have one, this tops it up instead of creating a second row, but only once Finance
+    has explicitly confirmed that (see the 409 raised below, and AdvanceGrantIn.confirm_merge).
+
+    There's no employee picker/search UI (that would need a new broad "list users" endpoint
+    Finance doesn't otherwise have access to), so Finance identifies the employee by their
+    employee ID or email, resolved to a user here."""
     if amount <= 0:
         raise HTTPException(status_code=422, detail="Advance amount must be positive")
 
-    adv = AdvanceRequest(employee_user_id=user_id, amount=amount, purpose=purpose, status=AdvanceRequestStatus.IN_APPROVAL.value)
+    identifier = employee_identifier.strip()
+    employee = (
+        await db.execute(
+            select(User).where((User.employee_id == identifier) | (User.email.ilike(identifier)))
+        )
+    ).scalars().first()
+    if employee is None:
+        raise HTTPException(status_code=404, detail=f"No employee found matching '{identifier}'")
+
+    existing = (
+        await db.execute(
+            select(AdvanceRequest)
+            .where(
+                AdvanceRequest.employee_user_id == employee.id,
+                AdvanceRequest.status == AdvanceRequestStatus.APPROVED.value,
+                AdvanceRequest.amount > 0,
+            )
+            .order_by(AdvanceRequest.created_at.asc())
+        )
+    ).scalars().first()
+
+    if existing is not None:
+        if not confirm_merge:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "existing_active_advance",
+                    "existing_amount": str(existing.amount),
+                    "message": (
+                        f"{employee.full_name or employee.email} already has an active advance of "
+                        f"₹{existing.amount}. Add ₹{amount} to it instead of creating a new one?"
+                    ),
+                },
+            )
+        old = {"amount": str(existing.amount), "granted_amount": str(existing.granted_amount)}
+        existing.amount += amount
+        existing.granted_amount += amount
+        await log_event(
+            entity_type="advance_request",
+            entity_id=str(existing.id),
+            action="advance_topped_up",
+            actor_id=finance_user_id,
+            old=old,
+            new={"added_amount": str(amount), "added_purpose": purpose, "amount": str(existing.amount)},
+            db=db,
+        )
+        await db.commit()
+        await db.refresh(existing)
+        return existing
+
+    adv = AdvanceRequest(
+        employee_user_id=employee.id,
+        amount=amount,
+        granted_amount=amount,
+        purpose=purpose,
+        status=AdvanceRequestStatus.APPROVED.value,
+        created_by_user_id=finance_user_id,
+    )
     db.add(adv)
     await db.flush()
-
-    cfg = await get_workflow_config(db)
-    stage_defs = _normalize_stage_defs(cfg)
-    now = _now()
-    first_stage = int(stage_defs[0]["number"])
-    for stage in stage_defs:
-        i = int(stage["number"])
-        is_active = i == first_stage
-        sla = now + timedelta(hours=_stage_hours(stage_defs, i)) if is_active else None
-        db.add(
-            AdvanceApprovalStage(
-                advance_id=adv.id,
-                stage_number=i,
-                stage_label=str(stage["label"]),
-                required_role=stage["route_role"],
-                status=ClaimApprovalStageStatus.PENDING.value if is_active else STAGE_STATUS_NOT_STARTED,
-                sla_deadline_at=sla,
-            )
-        )
+    await log_event(
+        entity_type="advance_request",
+        entity_id=str(adv.id),
+        action="advance_granted",
+        actor_id=finance_user_id,
+        old=None,
+        new={"employee_user_id": employee.id, "amount": str(amount), "purpose": purpose},
+        db=db,
+    )
     await db.commit()
     await db.refresh(adv)
     return adv
 
 
-async def list_advance_requests(user_id: int, db: AsyncSession) -> list[AdvanceRequest]:
-    result = await db.execute(
-        select(AdvanceRequest)
-        .where(AdvanceRequest.employee_user_id == user_id)
-        .order_by(AdvanceRequest.created_at.desc())
+async def update_advance_grant(
+    finance_user_id: int, advance_id: int, granted_amount: Decimal, purpose: str | None, db: AsyncSession
+) -> AdvanceRequest:
+    """Corrects the amount/purpose of a grant already made — e.g. Finance typed the wrong
+    figure. Which employee it was granted to is not editable here (see AdvanceUpdateIn).
+
+    `amount` (the current remaining allocation) shifts by the same delta rather than being
+    overwritten outright — otherwise correcting a grant that's already been partly settled
+    would silently wipe out that settlement (the remaining balance would jump back up to the
+    full new figure instead of staying reduced by whatever was already settled off it)."""
+    if granted_amount <= 0:
+        raise HTTPException(status_code=422, detail="Advance amount must be positive")
+
+    adv = await db.get(AdvanceRequest, advance_id)
+    if adv is None:
+        raise HTTPException(status_code=404, detail="Advance not found")
+
+    old = {"granted_amount": str(adv.granted_amount), "amount": str(adv.amount), "purpose": adv.purpose}
+    delta = granted_amount - adv.granted_amount
+    adv.granted_amount = granted_amount
+    adv.amount = max(adv.amount + delta, Decimal("0"))
+    adv.purpose = purpose
+    await log_event(
+        entity_type="advance_request",
+        entity_id=str(adv.id),
+        action="advance_updated",
+        actor_id=finance_user_id,
+        old=old,
+        new={"granted_amount": str(granted_amount), "amount": str(adv.amount), "purpose": purpose},
+        db=db,
     )
-    return list(result.scalars().all())
+    await db.commit()
+    await db.refresh(adv)
+    return adv
 
 
-async def list_outstanding_advances(db: AsyncSession) -> list[dict]:
-    result = await db.execute(
+async def _draw_down_advance(
+    employee_user_id: int,
+    amount: Decimal,
+    via: str,
+    db: AsyncSession,
+    *,
+    actor_id: int | None = None,
+    note: str | None = None,
+) -> None:
+    """Reduces the employee's active grant(s) by `amount`, oldest first, crediting whichever
+    channel (claims vs settlement) actually drew it down — shared by record_claim_payment and
+    settle_advance so a grant's own remaining amount is always accurate regardless of which
+    channel touched it, and can never look "still open" once it's genuinely been drawn dry.
+    Employees normally have at most one active grant (see create_advance_grant's merge-on-top-up
+    behavior), but this still loops in case older data ever has more than one."""
+    if amount <= 0:
+        return
+    grants = (
+        await db.execute(
+            select(AdvanceRequest)
+            .where(
+                AdvanceRequest.employee_user_id == employee_user_id,
+                AdvanceRequest.status == AdvanceRequestStatus.APPROVED.value,
+                AdvanceRequest.amount > 0,
+            )
+            .order_by(AdvanceRequest.created_at.asc())
+        )
+    ).scalars().all()
+
+    remaining = amount
+    for grant in grants:
+        if remaining <= 0:
+            break
+        reduced_by = min(grant.amount, remaining)
+        old_amount = grant.amount
+        grant.amount -= reduced_by
+        remaining -= reduced_by
+        if via == "settlement":
+            grant.consumed_via_settlement += reduced_by
+            await log_event(
+                entity_type="advance_request",
+                entity_id=str(grant.id),
+                action="advance_settled",
+                actor_id=actor_id,
+                old={"amount": str(old_amount)},
+                new={"amount": str(grant.amount), "settled": str(reduced_by), "note": note},
+                db=db,
+            )
+        else:
+            grant.consumed_via_claims += reduced_by
+
+
+async def settle_advance(
+    finance_user_id: int, employee_user_id: int, amount: Decimal, note: str | None, db: AsyncSession
+) -> Decimal:
+    """Clears some or all of an employee's outstanding advance directly — e.g. they paid it
+    back in cash, or it's being written off — without a claim payment to net it against."""
+    if amount <= 0:
+        raise HTTPException(status_code=422, detail="Settlement amount must be positive")
+
+    outstanding = await get_outstanding_advance(employee_user_id, db)
+    if amount > outstanding:
+        raise HTTPException(
+            status_code=422, detail=f"Cannot settle more than the outstanding advance ({outstanding})"
+        )
+
+    await _draw_down_advance(employee_user_id, amount, "settlement", db, actor_id=finance_user_id, note=note)
+    await db.commit()
+    return await get_outstanding_advance(employee_user_id, db)
+
+
+async def list_all_advances(db: AsyncSession, employee_user_id: int | None = None) -> list[dict]:
+    """Finance's active view — grants that still have a remaining balance of their own. A
+    grant that's been fully drawn down (`amount` <= 0) never shows here again, even if the
+    same employee later gets a brand new one (see list_archived_advances)."""
+    query = (
         select(AdvanceRequest, User, Employee)
         .outerjoin(User, User.id == AdvanceRequest.employee_user_id)
         .outerjoin(Employee, Employee.employee_id == User.employee_id)
+        .where(AdvanceRequest.amount > 0)
         .order_by(AdvanceRequest.created_at.desc())
     )
-    rows = list(result.all())
+    if employee_user_id is not None:
+        query = query.where(AdvanceRequest.employee_user_id == employee_user_id)
+    rows = list((await db.execute(query)).all())
+
+    creator_ids = {adv.created_by_user_id for adv, _, _ in rows if adv.created_by_user_id}
+    creators: dict[int, str] = {}
+    if creator_ids:
+        creator_rows = (await db.execute(select(User).where(User.id.in_(creator_ids)))).scalars().all()
+        creators = {u.id: (u.full_name or u.email) for u in creator_rows}
+
     now = _now()
-    out = []
+    outstanding_by_employee: dict[int, Decimal] = {}
+    out: list[dict] = []
     for adv, user, employee in rows:
-        if adv.status not in (AdvanceRequestStatus.DISBURSED.value, AdvanceRequestStatus.APPROVED.value):
-            continue
+        if adv.employee_user_id not in outstanding_by_employee:
+            outstanding_by_employee[adv.employee_user_id] = await get_outstanding_advance(adv.employee_user_id, db)
         age_days = (now - adv.created_at).days if adv.created_at else 0
+        settled_amount = adv.consumed_via_claims + adv.consumed_via_settlement
         out.append(
             {
                 "id": adv.id,
@@ -2110,87 +2931,108 @@ async def list_outstanding_advances(db: AsyncSession) -> list[dict]:
                 "employee_id": user.employee_id if user else None,
                 "employee_name": user.full_name if user else None,
                 "department": employee.department if employee else None,
+                "granted_amount": str(adv.granted_amount),
                 "amount": str(adv.amount),
+                "settled_amount": str(settled_amount),
+                "purpose": adv.purpose,
                 "status": adv.status,
+                "created_by_name": creators.get(adv.created_by_user_id),
                 "created_at": adv.created_at.isoformat() if adv.created_at else None,
                 "age_days": age_days,
-                "days_outstanding": age_days,
-                "aging_flag": age_days >= 21,
-                "reminder_due": age_days >= 15,
+                "employee_outstanding_total": str(outstanding_by_employee[adv.employee_user_id]),
             }
         )
     return out
 
 
-async def _user_may_approve_advance_stage(user: User, adv: AdvanceRequest, stage_number: int, db: AsyncSession) -> bool:
-    cfg = await get_workflow_config(db)
-    stage_defs = _normalize_stage_defs(cfg)
-    stage_def = next((s for s in stage_defs if int(s["number"]) == stage_number), None)
-    if stage_def is None:
-        return False
-    route_role = str(stage_def["route_role"])
-
-    if route_role == Role.REPORTING_MANAGER.value:
-        if user.role != Role.REPORTING_MANAGER:
-            return False
-        sub_user = await db.get(User, adv.employee_user_id)
-        if not sub_user or not sub_user.employee_id or not user.employee_id:
-            return True
-        sub_emp = await db.get(Employee, sub_user.employee_id)
-        if not sub_emp or not sub_emp.reporting_manager_id:
-            return True
-        return sub_emp.reporting_manager_id == user.employee_id
-    if route_role == Role.HRBP_HR.value:
-        return user.role == Role.HRBP_HR
-    if route_role == Role.PAYROLL.value:
-        return user.role == Role.PAYROLL
-    if route_role == Role.FINANCE.value:
-        return user.role == Role.FINANCE
-    return False
-
-
-async def approve_advance_stage(advance_id: int, user_id: int, db: AsyncSession) -> AdvanceRequest:
-    adv = await db.get(AdvanceRequest, advance_id)
-    if adv is None:
-        raise HTTPException(status_code=404, detail="Advance request not found")
-    if adv.status != AdvanceRequestStatus.IN_APPROVAL.value:
-        raise HTTPException(status_code=409, detail="Advance is not pending approval")
-
-    user = await db.get(User, user_id)
-    if user is None:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    result = await db.execute(
-        select(AdvanceApprovalStage)
-        .where(AdvanceApprovalStage.advance_id == advance_id)
-        .order_by(AdvanceApprovalStage.stage_number)
+async def list_archived_advances(db: AsyncSession) -> list[dict]:
+    """Grants that have been fully drawn down (`amount` <= 0) — settled, either by claim
+    payments netting them off, by a direct Settle Up, or a mix of both. Grouped by employee
+    for display, but scoped to *these specific settled grants* only — an employee's separate,
+    still-active grant (if they have a new one) stays in the active list, never mixed in here."""
+    rows = list(
+        (
+            await db.execute(
+                select(AdvanceRequest, User, Employee)
+                .outerjoin(User, User.id == AdvanceRequest.employee_user_id)
+                .outerjoin(Employee, Employee.employee_id == User.employee_id)
+                .where(AdvanceRequest.amount <= 0, AdvanceRequest.granted_amount > 0)
+                .order_by(AdvanceRequest.employee_user_id, AdvanceRequest.created_at.asc())
+            )
+        ).all()
     )
-    stages = list(result.scalars().all())
-    pending = next((s for s in stages if s.status == ClaimApprovalStageStatus.PENDING.value), None)
-    if pending is None:
-        raise HTTPException(status_code=409, detail="No pending advance stage")
 
-    if not await _user_may_approve_advance_stage(user, adv, pending.stage_number, db):
-        raise HTTPException(status_code=403, detail="Not allowed to approve this advance stage")
+    by_employee: dict[int, list[tuple[AdvanceRequest, User | None, Employee | None]]] = {}
+    for adv, user, employee in rows:
+        by_employee.setdefault(adv.employee_user_id, []).append((adv, user, employee))
 
-    cfg = await get_workflow_config(db)
-    stage_defs = _normalize_stage_defs(cfg)
-    now = _now()
+    creator_ids = {
+        adv.created_by_user_id for group in by_employee.values() for adv, _, _ in group if adv.created_by_user_id
+    }
+    creators: dict[int, str] = {}
+    if creator_ids:
+        creator_rows = (await db.execute(select(User).where(User.id.in_(creator_ids)))).scalars().all()
+        creators = {u.id: (u.full_name or u.email) for u in creator_rows}
 
-    pending.status = ClaimApprovalStageStatus.APPROVED.value
-    pending.decided_at = now
-    pending.decided_by_user_id = user_id
+    out: list[dict] = []
+    for employee_user_id, group in by_employee.items():
+        total_granted = sum((adv.granted_amount for adv, _, _ in group), Decimal("0"))
+        consumed_via_claims = sum((adv.consumed_via_claims for adv, _, _ in group), Decimal("0"))
+        consumed_via_settlement = sum((adv.consumed_via_settlement for adv, _, _ in group), Decimal("0"))
 
-    nxt = next((s for s in stages if s.stage_number == pending.stage_number + 1), None)
-    if nxt:
-        nxt.status = ClaimApprovalStageStatus.PENDING.value
-        nxt.sla_deadline_at = now + timedelta(hours=_stage_hours(stage_defs, nxt.stage_number))
-    else:
-        adv.status = AdvanceRequestStatus.APPROVED.value
+        _, user, employee = group[0]
+        # A grant's `updated_at` bumps every time a drawdown touches it, so the latest one
+        # marks the moment this specific group actually hit zero — used both as "Settled On"
+        # and as the cutoff for which claims below could plausibly have drawn from it (as
+        # opposed to a separate, still-active grant the same employee has since been given).
+        settled_at = max((adv.updated_at for adv, _, _ in group), default=None)
 
-    await db.commit()
-    await db.refresh(adv)
-    return adv
+        claim_rows = []
+        if consumed_via_claims > 0:
+            claim_query = select(
+                ClaimDraft.claim_reference, ClaimDraft.id, ClaimDraft.payment_recorded_at, ClaimDraft.advance_received
+            ).where(
+                ClaimDraft.employee_user_id == employee_user_id,
+                ClaimDraft.status == ClaimStatus.PAID,
+                ClaimDraft.advance_received > 0,
+            )
+            if settled_at is not None:
+                claim_query = claim_query.where(ClaimDraft.payment_recorded_at <= settled_at)
+            claim_rows = (await db.execute(claim_query.order_by(ClaimDraft.payment_recorded_at.asc()))).all()
+
+        out.append(
+            {
+                "employee_user_id": employee_user_id,
+                "employee_id": user.employee_id if user else None,
+                "employee_name": user.full_name if user else None,
+                "department": employee.department if employee else None,
+                "total_granted": str(total_granted),
+                "consumed_via_claims": str(consumed_via_claims),
+                "consumed_via_settlement": str(consumed_via_settlement),
+                "settled_at": settled_at.isoformat() if settled_at else None,
+                "grants": [
+                    {
+                        "id": adv.id,
+                        "granted_amount": str(adv.granted_amount),
+                        "purpose": adv.purpose,
+                        "created_at": adv.created_at.isoformat() if adv.created_at else None,
+                        "created_by_name": creators.get(adv.created_by_user_id),
+                    }
+                    for adv, _, _ in group
+                ],
+                "claims_used": [
+                    {
+                        "claim_reference": c.claim_reference or f"CLM-{c.id}",
+                        "payment_recorded_at": c.payment_recorded_at.isoformat() if c.payment_recorded_at else None,
+                        "amount_deducted": str(c.advance_received),
+                    }
+                    for c in claim_rows
+                ],
+            }
+        )
+
+    out.sort(key=lambda r: r["settled_at"] or "", reverse=True)
+    return out
 
 
 async def process_auto_approvals(db: AsyncSession) -> None:

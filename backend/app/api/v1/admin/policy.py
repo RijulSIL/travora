@@ -1,10 +1,11 @@
-from datetime import date, datetime
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.timezone import now_ist, today_ist
 from app.core.rbac import (
     get_current_claims,
     require_any_permission,
@@ -405,7 +406,7 @@ async def approve_policy_version(
     approver_id = int(claims["sub"])
     item.status = PolicyStatus.ACTIVE
     item.approved_by = approver_id
-    item.approved_at = datetime.utcnow()
+    item.approved_at = now_ist()
     await log_event(
         entity_type="policy_version",
         entity_id=str(item.id),
@@ -461,5 +462,5 @@ async def dashboard_stats(db: AsyncSession = Depends(get_db)) -> dict:
         "total_employees": employee_count or 0,
         "pending_hrbp_approvals": pending_count or 0,
         "impact_level_count": impact_count or 0,
-        "as_of": date.today().isoformat(),
+        "as_of": today_ist().isoformat(),
     }

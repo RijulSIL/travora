@@ -1,10 +1,11 @@
 import asyncio
-from datetime import UTC, datetime
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import AsyncSessionLocal
+from app.core.timezone import now_ist
 from app.models.auth import User
 from app.models.claim_workflow import (
     ClaimApprovalStage,
@@ -17,7 +18,7 @@ from app.services.notification_service import create_notification
 
 
 def _now() -> datetime:
-    return datetime.now(UTC).replace(tzinfo=None)
+    return now_ist()
 
 async def monitor_slas(db: AsyncSession):
     """

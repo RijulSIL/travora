@@ -12,6 +12,7 @@ from fpdf import FPDF
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timezone import now_ist
 from app.models.auth import User
 from app.models.claim_workflow import ClaimApprovalStage, ExceptionApproval, ExceptionRequest
 from app.models.employee import AuditLog, Employee
@@ -26,7 +27,7 @@ from app.models.reimbursement import (
     InvoiceLineItem,
 )
 from app.models.travel_booking import TravelTrip
-from app.models.travel_request import TravelRequest
+from app.models.travel_request import TravelRequest, TravelRequestLeg
 from app.schemas.finance_reporting import FinanceFilterParams, ReportScheduleIn
 from app.services.audit_service import log_event
 from app.services.notification_service import send_email_async
@@ -271,7 +272,7 @@ async def schedule_report(payload: ReportScheduleIn, user_id: int, db: AsyncSess
         created_by_user_id=user_id,
         # Due immediately so the first run happens on the next scheduler tick (see
         # run_scheduled_reports) rather than waiting a full cycle for the first email.
-        next_run_at=datetime.utcnow(),
+        next_run_at=now_ist(),
     )
     db.add(row)
     await db.flush()
@@ -328,7 +329,7 @@ async def run_scheduled_reports(db: AsyncSession) -> int:
     """Finds every active schedule whose next_run_at is due, generates that report as CSV,
     emails it to each recipient, and reschedules it for its next occurrence. Called
     periodically by the background loop started in main.py's _run_monitors."""
-    now = datetime.utcnow()
+    now = now_ist()
     due = (
         await db.execute(
             select(ScheduledReport).where(
@@ -373,8 +374,16 @@ async def list_erp_ledger_entries(
     cost_centre: str | None,
     status_value: str | None,
     db: AsyncSession,
-) -> list[ERPLedgerEntry]:
-    query = select(ERPLedgerEntry)
+) -> list[dict]:
+    # Left-joined so a ledger entry never vanishes just because the claim (or the employee
+    # master record, or the finance user who posted it) can't be resolved for some reason —
+    # the extra columns just come back blank rather than dropping the row.
+    query = (
+        select(ERPLedgerEntry, ClaimDraft, Employee, User)
+        .outerjoin(ClaimDraft, ClaimDraft.id == ERPLedgerEntry.claim_id)
+        .outerjoin(Employee, Employee.employee_id == ERPLedgerEntry.employee_id)
+        .outerjoin(User, User.id == ERPLedgerEntry.posted_by_user_id)
+    )
     start, end = _date_bounds(from_date, to_date)
     if start:
         query = query.where(ERPLedgerEntry.payment_date >= start)
@@ -390,7 +399,39 @@ async def list_erp_ledger_entries(
             raise HTTPException(status_code=422, detail="Invalid ERP status filter")
         query = query.where(ERPLedgerEntry.status == ERPPostStatus(normalized))
     query = query.order_by(ERPLedgerEntry.payment_date.desc(), ERPLedgerEntry.id.desc())
-    return list((await db.execute(query)).scalars().all())
+
+    rows = (await db.execute(query)).all()
+    out: list[dict] = []
+    for entry, claim, employee_row, posted_by in rows:
+        report = (claim.compliance_report or {}) if claim else {}
+        out.append(
+            {
+                "id": entry.id,
+                "claim_id": entry.claim_id,
+                "claim_reference": claim.claim_reference if claim else None,
+                "employee_id": entry.employee_id,
+                "employee_name": employee_row.full_name if employee_row else None,
+                "cost_centre": entry.cost_centre,
+                "expense_category_breakdown": entry.expense_category_breakdown,
+                "taxable_value": entry.taxable_value,
+                "cgst": entry.cgst,
+                "sgst": entry.sgst,
+                "igst": entry.igst,
+                "total_claimed": report.get("total_claimed"),
+                "payment_amount": claim.payment_amount if claim else None,
+                "tds_deduction": claim.tds_deduction if claim else None,
+                "advance_deducted": claim.advance_received if claim else None,
+                "payment_reference": entry.payment_reference,
+                "payment_date": entry.payment_date,
+                "erp_system": entry.erp_system,
+                "erp_entry_id": entry.erp_entry_id,
+                "status": entry.status.value,
+                "failure_reason": entry.failure_reason,
+                "posted_by_name": posted_by.full_name if posted_by else None,
+                "created_at": entry.created_at,
+            }
+        )
+    return out
 
 
 async def generate_report(report_type: str, filters: FinanceFilterParams, db: AsyncSession) -> dict:
@@ -518,7 +559,7 @@ def generate_pdf_report(report_type: str, data: list[dict]) -> bytes:
     pdf.set_font("helvetica", "B", 16)
     pdf.cell(0, 10, f"SIL - {report_type.replace('-', ' ').title()}", ln=True, align="C")
     pdf.set_font("helvetica", "", 10)
-    pdf.cell(0, 10, f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True, align="C")
+    pdf.cell(0, 10, f"Generated on: {now_ist().strftime('%Y-%m-%d %H:%M')} IST", ln=True, align="C")
     pdf.ln(10)
     
     if not data:
@@ -638,9 +679,11 @@ async def list_exception_requests_log(
             User.id,
             User.email,
             User.full_name,
+            TravelRequest,
         )
         .outerjoin(ClaimDraft, ClaimDraft.id == ExceptionRequest.claim_id)
         .outerjoin(User, User.id == ExceptionRequest.requested_by_user_id)
+        .outerjoin(TravelRequest, TravelRequest.id == ExceptionRequest.travel_request_id)
     )
     start, end = _date_bounds(from_date, to_date)
     if start:
@@ -671,8 +714,21 @@ async def list_exception_requests_log(
         users = (await db.execute(select(User).where(User.id.in_(decided_by_ids)))).scalars().all()
         decided_users = {user.id: (user.full_name or user.email) for user in users}
 
+    travel_request_ids = [row[0].travel_request_id for row in result if row[0].travel_request_id is not None]
+    legs_map: dict[int, list[TravelRequestLeg]] = {}
+    if travel_request_ids:
+        leg_rows = (
+            await db.execute(
+                select(TravelRequestLeg)
+                .where(TravelRequestLeg.travel_request_id.in_(travel_request_ids))
+                .order_by(TravelRequestLeg.leg_sequence)
+            )
+        ).scalars().all()
+        for leg in leg_rows:
+            legs_map.setdefault(leg.travel_request_id, []).append(leg)
+
     response: list[dict] = []
-    for exc, claim_ref, full_name, employee_id, email, *_ in result:
+    for exc, claim_ref, full_name, employee_id, email, _uid, _email2, _full_name2, travel_request in result:
         approvals = approvals_map.get(exc.id, [])
         if status_value and status_value.upper() == "PENDING" and current_user:
             from app.services.workflow_service import _can_user_act_on_exception
@@ -715,6 +771,32 @@ async def list_exception_requests_log(
                     }
                     for a in approvals
                 ],
+                "travel_request": (
+                    {
+                        "id": travel_request.id,
+                        "trip_type": travel_request.trip_type,
+                        "travel_mode": travel_request.travel_mode,
+                        "from_city": travel_request.from_city,
+                        "to_city": travel_request.to_city,
+                        "travel_date": travel_request.travel_date,
+                        "return_date": travel_request.return_date,
+                        "purpose": travel_request.purpose,
+                        "preferred_class": travel_request.preferred_class,
+                        "notes": travel_request.notes,
+                        "requested_at": travel_request.requested_at,
+                        "legs": [
+                            {
+                                "from_city": leg.from_city,
+                                "to_city": leg.to_city,
+                                "travel_date": leg.travel_date,
+                                "travel_mode": leg.travel_mode,
+                            }
+                            for leg in legs_map.get(travel_request.id, [])
+                        ],
+                    }
+                    if travel_request
+                    else None
+                ),
             }
         )
     return response

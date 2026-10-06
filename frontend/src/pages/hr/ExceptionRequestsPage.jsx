@@ -1,4 +1,4 @@
-import { CheckCircle2, Info, Search } from 'lucide-react';
+import { Armchair, Calendar, CheckCircle2, FileText, Info, Layers, MapPin, MessageSquare, Search } from 'lucide-react';
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
@@ -17,9 +17,16 @@ import {
   formatRole,
 } from '../../utils/formatters';
 
+const titleCase = (value) =>
+  String(value || '')
+    .split('_')
+    .map((w) => w.charAt(0) + w.slice(1).toLowerCase())
+    .join(' ');
+
 export default function ExceptionRequestsPage() {
   useSetPageTitle('Exception Requests');
   const role = useAuthStore(selectResolvedRole);
+  const approverScopeExceptions = useAuthStore((state) => state.profile?.approver_scope?.exceptions);
   const [filters, setFilters] = useState({
     status: 'PENDING',
     exception_type: '',
@@ -93,9 +100,13 @@ export default function ExceptionRequestsPage() {
               onChange={(e) => setFilters({ ...filters, exception_type: e.target.value })}
             >
               <option value="">All types</option>
-              {Object.entries(EXCEPTION_TYPE_LABELS).map(([type, label]) => (
-                <option key={type} value={type}>{label}</option>
-              ))}
+              {Object.entries(EXCEPTION_TYPE_LABELS)
+                .filter(
+                  ([type]) => !approverScopeExceptions?.length || approverScopeExceptions.includes(type)
+                )
+                .map(([type, label]) => (
+                  <option key={type} value={type}>{label}</option>
+                ))}
             </select>
           </div>
           <div className="space-y-1">
@@ -229,6 +240,65 @@ export default function ExceptionRequestsPage() {
                             ))}
                           </div>
                         </div>
+
+                        {row.travel_request ? (
+                          <div className="mb-4 rounded-lg border border-slate-200/80 bg-white p-4 shadow-sm">
+                            <span className="mb-3 block text-xs font-semibold uppercase tracking-wider text-slate-500">
+                              Travel Request Details
+                            </span>
+                            <div className="grid gap-x-6 gap-y-3 sm:grid-cols-3">
+                              {row.travel_request.legs?.length ? (
+                                <div className="sm:col-span-3">
+                                  <div className="mb-1 flex items-center gap-2 text-xs text-slate-400">
+                                    <MapPin size={13} className="shrink-0" />
+                                    Route (multi-city)
+                                  </div>
+                                  <div className="space-y-1">
+                                    {row.travel_request.legs.map((leg, i) => (
+                                      <div key={i} className="flex items-center gap-1.5 text-sm text-slate-800">
+                                        <span>{leg.from_city}</span>
+                                        <span className="text-slate-400">→</span>
+                                        <span>{leg.to_city}</span>
+                                        <span className="text-xs text-slate-400">
+                                          ({leg.travel_date}{leg.travel_mode ? `, ${titleCase(leg.travel_mode)}` : ''})
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : (
+                                <div>
+                                  <div className="mb-1 flex items-center gap-2 text-xs text-slate-400">
+                                    <MapPin size={13} className="shrink-0" />
+                                    Route
+                                  </div>
+                                  <p className="text-sm font-semibold text-slate-800">
+                                    {row.travel_request.from_city} <span className="text-slate-400">→</span> {row.travel_request.to_city}
+                                  </p>
+                                </div>
+                              )}
+                              {[
+                                { icon: Layers, label: 'Trip Type', value: titleCase(row.travel_request.trip_type) },
+                                { icon: Layers, label: 'Mode', value: titleCase(row.travel_request.travel_mode) },
+                                { icon: Calendar, label: 'Travel Date', value: row.travel_request.travel_date },
+                                { icon: Calendar, label: 'Return Date', value: row.travel_request.return_date },
+                                { icon: Armchair, label: 'Preferred Class', value: row.travel_request.preferred_class },
+                                { icon: FileText, label: 'Purpose', value: row.travel_request.purpose },
+                                { icon: MessageSquare, label: 'Notes', value: row.travel_request.notes },
+                              ]
+                                .filter((f) => f.value)
+                                .map((f) => (
+                                  <div key={f.label}>
+                                    <div className="mb-1 flex items-center gap-2 text-xs text-slate-400">
+                                      <f.icon size={13} className="shrink-0" />
+                                      {f.label}
+                                    </div>
+                                    <p className="text-sm font-semibold text-slate-800">{f.value}</p>
+                                  </div>
+                                ))}
+                            </div>
+                          </div>
+                        ) : null}
 
                         <div className="grid gap-5 md:grid-cols-2 p-4 bg-white rounded-lg border border-slate-200/80 shadow-sm">
                           <div className="space-y-3">

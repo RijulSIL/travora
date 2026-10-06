@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import PageHeader from '../../components/ui/PageHeader';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
+import useToast from '../../hooks/useToast';
 import { adminApi } from '../../services/adminApi';
 import { canEditWorkflowConfig } from '../../services/permissions';
 import { useAuthStore } from '../../store/authStore';
@@ -11,20 +12,35 @@ import { useAuthStore } from '../../store/authStore';
 const DEADLINE_MODES = ['hard_block', 'soft_warning'];
 const DEFAULT_MAX_DAYS = 5;
 
+// The only exception types ever actually raised against a travel request rather than a
+// claim — the dropdown below groups these into their own "Travel Requests" optgroup instead of
+// mixing them in with the claim exception types, so the label here stays plain (no inline
+// "(Travel Request)" suffix needed — the optgroup heading already says so).
+const TRAVEL_REQUEST_EXCEPTION_KEYS = new Set([
+  'AIR_TRAVEL_UNLOCK',
+  'FLIGHT_ADVANCE_BOOKING_OVERRIDE',
+  'TRAIN_ADVANCE_BOOKING_OVERRIDE',
+  'TRAVEL_REQUEST_LEAD_TIME_OVERRIDE',
+]);
+
 const EXCEPTION_TYPES = {
   "AIR_TRAVEL_UNLOCK": "Exception: Air Travel Unlock",
   "TRAIN_TATKAL": "Exception: Train Tatkal",
   "FLIGHT_ADVANCE_BOOKING_OVERRIDE": "Exception: Flight Advance Booking",
+  "TRAIN_ADVANCE_BOOKING_OVERRIDE": "Exception: Train Advance Booking",
+  "TRAVEL_REQUEST_LEAD_TIME_OVERRIDE": "Exception: Travel Request Lead Time (Other Modes)",
   "FLIGHT_COST_DELTA": "Exception: Flight Cost Delta",
   "ROOM_RENT_DEVIATION": "Exception: Room Rent Deviation",
-  "HOTEL/ACCOMMODATION_DEVIATION": "Exception: Accommodation Deviation",
-  "HOTEL_DEVIATION": "Exception: Hotel Deviation",
-  "ACCOMMODATION_DEVIATION": "Exception: Accommodation Deviation (Alt)",
+  "FOOD_DEVIATION": "Exception: Food & Meals Deviation",
+  "INCIDENTAL_DEVIATION": "Exception: Incidental Expenses Deviation",
   "AIR_TRAVEL_L5_L6": "Exception: Air Travel L5/L6",
   "HIRED_TAXI_UNAUTHORIZED": "Exception: Unauthorized Hired Taxi",
   "MODE_DEVIATION": "Exception: Travel Mode Deviation",
   "DAY_VISIT_EXTERNAL_MEETING": "Exception: Day Visit External Meeting Expenses",
-  "POLICY_EXCEPTION_GENERAL": "Exception: Policy Exception (General)",
+  // The one editable route for any expense category without its own dedicated rule above
+  // (Office Supplies, Telecom, ...) — every such category's generic deviation type is routed
+  // through this chain by the backend's _chain_for_type fallback.
+  "POLICY_EXCEPTION_GENERAL": "Exception: Other Category Deviation (Default)",
 };
 
 function sanitizeMaxWorkingDaysAfterReturn(raw) {
@@ -51,11 +67,23 @@ function sanitizeAutoApproveAmount(raw) {
   return n.toFixed(2);
 }
 
+// Only claim categories — Travel Request approval is a separate top-level "Workflow Type"
+// now (see selectedWorkflow === 'TRAVEL_REQUEST'), not nested under this claim-only selector,
+// since it was being mixed in with claim categories here and that was confusing: a travel
+// request isn't a claim category, it's a wholly different approval flow (pre-trip, not
+// reimbursement).
 const STAGE_CATEGORIES = [
   { value: 'DEFAULT', label: 'Default (all categories)' },
   { value: 'TRAVEL', label: 'Travel claims' },
   { value: 'GENERAL', label: 'General reimbursements' },
   { value: 'REALLOCATION', label: 'Reallocations' },
+];
+
+// Travel requests have their own approval chain, separate from claim reimbursement — no
+// finance stage required (there's no payment here), and the "shared default" they fall back to
+// when unconfigured is a single Reporting Manager step, not the claim stages list.
+const TRAVEL_REQUEST_DEFAULT_STAGES = [
+  { number: 1, label: 'Manager Review', route_role: 'REPORTING_MANAGER', sla_hours: 48 },
 ];
 
 const ALLOWED_STAGE_ROLES = ['REPORTING_MANAGER', 'HRBP_HR', 'PAYROLL', 'FINANCE', 'CEO', 'GROUP_HEAD_HR', 'IT_ADMIN'];
@@ -65,6 +93,38 @@ function sanitizeStageRoles(stageList) {
     ...s,
     route_role: ALLOWED_STAGE_ROLES.includes(s.route_role) ? s.route_role : 'HRBP_HR',
   }));
+}
+
+// Every role token that ever appears in a stage/chain, for the "you're about to remove this
+// role from the matrix entirely" save-time warning below. REPORTING_MANAGER is included even
+// though it's relative-to-employee — see workflow_service.get_approver_scope's identical
+// reasoning: a user holding that role is still the kind of user this token routes to.
+const ROLES_WORTH_WARNING_ABOUT = ['REPORTING_MANAGER', 'HRBP_HR', 'PAYROLL', 'FINANCE', 'CEO', 'GROUP_HEAD_HR'];
+
+function roleLabel(role) {
+  return String(role || '')
+    .split('_')
+    .map((w) => w.charAt(0) + w.slice(1).toLowerCase())
+    .join(' ');
+}
+
+/** Every route_role/chain-role token present anywhere in a full workflow config — stages,
+ * every category override (incl. TRAVEL_REQUEST), and exception_chains. Used to diff
+ * before-vs-after on save: a role dropping out of this set entirely means anyone holding that
+ * role loses every approval-queue nav item and the Exception Requests page (see
+ * get_approver_scope / navConfig.js's applyApproverScope) — worth a confirmation, since nothing
+ * else here would otherwise catch "admin meant to edit one stage but deleted the role instead." */
+function rolesCoveredByConfig(config) {
+  const roles = new Set();
+  const addStages = (list) => (list || []).forEach((s) => s?.route_role && roles.add(s.route_role));
+  addStages(config.stages);
+  for (const override of Object.values(config.category_overrides || {})) {
+    addStages(override?.stages);
+  }
+  for (const chain of Object.values(config.exception_chains || {})) {
+    (chain || []).forEach((r) => roles.add(r));
+  }
+  return roles;
 }
 
 function errorMessage(err) {
@@ -79,11 +139,31 @@ export default function WorkflowConfig() {
   useSetPageTitle('Workflow Configuration');
   const role = useAuthStore((s) => s.user?.role);
   const isViewOnly = !canEditWorkflowConfig(role);
+  const { showToast } = useToast();
   const [selectedWorkflow, setSelectedWorkflow] = useState('STANDARD');
   const [selectedCategory, setSelectedCategory] = useState('DEFAULT');
   const [stages, setStages] = useState([]);
   const [categoryOverrides, setCategoryOverrides] = useState({});
   const [exceptionChains, setExceptionChains] = useState({});
+  // Per-type on/off switch — a disabled type is never flagged/blocked anywhere it would
+  // otherwise apply (travel-request creation, flight/train search, claim submission, ...);
+  // missing from this map means enabled, same as a fresh deployment with nothing configured.
+  const [exceptionEnabled, setExceptionEnabled] = useState({});
+  // What a category override "falls back to" when unconfigured — every claim category shares
+  // the main `stages` list, but Travel Request has its own, unrelated default.
+  const defaultStagesForCategory = (category) =>
+    category === 'TRAVEL_REQUEST' ? TRAVEL_REQUEST_DEFAULT_STAGES : stages;
+  // Travel Request approval is stored the same way as a claim category override
+  // (category_overrides.TRAVEL_REQUEST) — it's just surfaced as its own top-level "Workflow
+  // Type" instead of nested in the claim "Applies to" selector, so it behaves exactly like one
+  // throughout the stage editor below, just keyed by 'TRAVEL_REQUEST' instead of selectedCategory.
+  const isTravelRequestWorkflow = selectedWorkflow === 'TRAVEL_REQUEST';
+  const isCategoryOverride = (selectedWorkflow === 'STANDARD' && selectedCategory !== 'DEFAULT') || isTravelRequestWorkflow;
+  const overrideKey = isTravelRequestWorkflow ? 'TRAVEL_REQUEST' : selectedCategory;
+  // Claim and Travel Request stages are full {label, route_role, sla_hours} objects with
+  // editable label/SLA — exception chains are just a bare ordered list of roles, so those two
+  // fields stay fixed/disabled for them.
+  const isStageBasedWorkflow = selectedWorkflow === 'STANDARD' || isTravelRequestWorkflow;
   const [draggedIdx, setDraggedIdx] = useState(null);
   const [submission, setSubmission] = useState({
     max_working_days_after_return: 5,
@@ -91,19 +171,23 @@ export default function WorkflowConfig() {
   });
   const [autoApprove, setAutoApprove] = useState('2000.00');
   const [loadError, setLoadError] = useState(null);
+  // Snapshot of the config exactly as last loaded from the server — diffed against what's
+  // about to be saved so we can warn before a role silently drops out of the matrix entirely.
+  const [lastLoadedConfig, setLastLoadedConfig] = useState(null);
 
   const load = async () => {
     try {
       setLoadError(null);
       const res = await adminApi.workflowConfig();
       const cfg = res.data?.config || {};
+      setLastLoadedConfig(cfg);
 
 
       setStages(sanitizeStageRoles(cfg.stages || []));
 
       const loadedOverrides = cfg.category_overrides || {};
       const sanitizedOverrides = {};
-      for (const cat of ['TRAVEL', 'GENERAL', 'REALLOCATION']) {
+      for (const cat of ['TRAVEL', 'GENERAL', 'REALLOCATION', 'TRAVEL_REQUEST']) {
         if (loadedOverrides[cat]?.stages?.length) {
           sanitizedOverrides[cat] = { stages: sanitizeStageRoles(loadedOverrides[cat].stages) };
         }
@@ -111,6 +195,7 @@ export default function WorkflowConfig() {
       setCategoryOverrides(sanitizedOverrides);
       setSelectedCategory('DEFAULT');
       setExceptionChains(cfg.exception_chains || {});
+      setExceptionEnabled(cfg.exception_enabled || {});
 
       const sub = cfg.submission || {};
       setSubmission({
@@ -155,9 +240,39 @@ export default function WorkflowConfig() {
       },
       auto_approve_below_amount: sanitizeAutoApproveAmount(autoApprove),
       exception_chains: exceptionChains,
+      exception_enabled: exceptionEnabled,
     };
-    await adminApi.updateWorkflowConfig(config);
+
+    if (lastLoadedConfig) {
+      const before = rolesCoveredByConfig(lastLoadedConfig);
+      const after = rolesCoveredByConfig(config);
+      const dropped = ROLES_WORTH_WARNING_ABOUT.filter((r) => before.has(r) && !after.has(r));
+      if (dropped.length) {
+        const names = dropped.map(roleLabel).join(', ');
+        const proceed = window.confirm(
+          `After this save, ${names} will no longer be assigned to any claim stage, travel-request stage, or exception chain anywhere in the Approval Matrix. Anyone holding ${dropped.length > 1 ? 'these roles' : 'this role'} will lose access to Pending Approvals and Exception Requests entirely.\n\nSave anyway?`
+        );
+        if (!proceed) return;
+      }
+    }
+
+    const res = await adminApi.updateWorkflowConfig(config);
     await load();
+
+    const reassigned = res.data?.reassigned || {};
+    const totalReassigned = Object.values(reassigned).reduce((sum, n) => sum + (n || 0), 0);
+    if (totalReassigned > 0) {
+      const parts = [];
+      if (reassigned.claims) parts.push(`${reassigned.claims} claim stage${reassigned.claims > 1 ? 's' : ''}`);
+      if (reassigned.travel_request) parts.push(`${reassigned.travel_request} travel request${reassigned.travel_request > 1 ? 's' : ''}`);
+      if (reassigned.exceptions) parts.push(`${reassigned.exceptions} exception approval${reassigned.exceptions > 1 ? 's' : ''}`);
+      showToast(
+        `Workflow configuration saved. Reassigned to the new approver: ${parts.join(', ')}.`,
+        'success'
+      );
+    } else {
+      showToast('Workflow configuration saved.', 'success');
+    }
   });
 
   const displayError = loadError || saveAction.error;
@@ -195,14 +310,21 @@ export default function WorkflowConfig() {
             Workflow Type:
           </label>
           <select className="field min-w-64 bg-slate-50 py-1.5 text-sm" value={selectedWorkflow} onChange={(event) => setSelectedWorkflow(event.target.value)}>
-            <option value="STANDARD">Standard Claim Approval</option>
-            <optgroup label="Exception Workflows">
-              {Object.entries(EXCEPTION_TYPES).map(([key, label]) => (
-                <option key={key} value={key}>
-                  {label}
-                  {key === 'AIR_TRAVEL_UNLOCK' || key === 'FLIGHT_ADVANCE_BOOKING_OVERRIDE' ? ' (Travel Request)' : ''}
-                </option>
-              ))}
+            <option value="STANDARD">Claim Approval</option>
+            <option value="TRAVEL_REQUEST">Travel Request Approval</option>
+            <optgroup label="Exception Workflows — Claims">
+              {Object.entries(EXCEPTION_TYPES)
+                .filter(([key]) => !TRAVEL_REQUEST_EXCEPTION_KEYS.has(key))
+                .map(([key, label]) => (
+                  <option key={key} value={key}>{label}</option>
+                ))}
+            </optgroup>
+            <optgroup label="Exception Workflows — Travel Requests">
+              {Object.entries(EXCEPTION_TYPES)
+                .filter(([key]) => TRAVEL_REQUEST_EXCEPTION_KEYS.has(key))
+                .map(([key, label]) => (
+                  <option key={key} value={key}>{label}</option>
+                ))}
             </optgroup>
           </select>
           {selectedWorkflow === 'STANDARD' ? (
@@ -222,21 +344,23 @@ export default function WorkflowConfig() {
         </div>
       </section>
 
-      {selectedWorkflow === 'STANDARD' && selectedCategory !== 'DEFAULT' ? (
+      {isCategoryOverride ? (
         <section className="panel mb-4 flex flex-wrap items-center justify-between gap-3 p-4">
-          {categoryOverrides[selectedCategory]?.stages?.length ? (
-            <span className="badge bg-brand/10 text-brand">Custom route configured for this category</span>
+          {categoryOverrides[overrideKey]?.stages?.length ? (
+            <span className="badge bg-brand/10 text-brand">
+              Custom route configured{isTravelRequestWorkflow ? '' : ' for this category'}
+            </span>
           ) : (
             <span className="badge bg-slate-100 text-slate-700">Using the shared default route below</span>
           )}
-          {!isViewOnly && categoryOverrides[selectedCategory]?.stages?.length ? (
+          {!isViewOnly && categoryOverrides[overrideKey]?.stages?.length ? (
             <button
               type="button"
               className="btn-secondary text-xs"
               onClick={() =>
                 setCategoryOverrides((prev) => {
                   const next = { ...prev };
-                  delete next[selectedCategory];
+                  delete next[overrideKey];
                   return next;
                 })
               }
@@ -247,14 +371,55 @@ export default function WorkflowConfig() {
         </section>
       ) : null}
 
+      {!isStageBasedWorkflow ? (
+        <section className="panel mb-4 flex flex-wrap items-center justify-between gap-3 p-4">
+          <div>
+            <div className="text-sm font-semibold text-ink">
+              {exceptionEnabled[selectedWorkflow] === false ? 'Exception disabled' : 'Exception enabled'}
+            </div>
+            <p className="text-xs text-slate-500">
+              {exceptionEnabled[selectedWorkflow] === false
+                ? "This condition is never flagged — a request or claim that would otherwise trip it goes through untouched, with no approval needed."
+                : 'This condition is actively checked and routes through the approval chain below whenever it fires.'}
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={exceptionEnabled[selectedWorkflow] !== false}
+            aria-label="Toggle this exception on or off"
+            disabled={isViewOnly}
+            onClick={() =>
+              setExceptionEnabled((prev) => {
+                const currentlyEnabled = prev[selectedWorkflow] !== false;
+                return { ...prev, [selectedWorkflow]: !currentlyEnabled };
+              })
+            }
+            className={`relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+              exceptionEnabled[selectedWorkflow] === false ? 'bg-slate-300' : 'bg-brand'
+            }`}
+          >
+            <span
+              className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                exceptionEnabled[selectedWorkflow] === false ? 'left-0.5' : 'left-[22px]'
+              }`}
+            />
+          </button>
+        </section>
+      ) : null}
+
       <section className="panel p-4">
         <h2 className="mb-3 text-base font-semibold text-ink">
           {selectedWorkflow === 'STANDARD'
             ? `Approval Stages — ${STAGE_CATEGORIES.find((c) => c.value === selectedCategory)?.label}`
-            : EXCEPTION_TYPES[selectedWorkflow]}
+            : isTravelRequestWorkflow
+              ? 'Approval Stages — Travel Requests'
+              : EXCEPTION_TYPES[selectedWorkflow]}
         </h2>
         <p className="mb-3 text-xs text-slate-500">
-          Stages run in order. Finance must be the final stage. Maximum 6 stages.
+          {isTravelRequestWorkflow
+            ? 'Stages run in order. Maximum 6 stages.'
+            : 'Stages run in order. Finance must be the final stage. Maximum 6 stages.'}
         </p>
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-center text-[11px] font-bold uppercase tracking-wider text-slate-500">
@@ -268,11 +433,10 @@ export default function WorkflowConfig() {
           </thead>
           <tbody>
             {(() => {
-              const isCategoryOverride = selectedWorkflow === 'STANDARD' && selectedCategory !== 'DEFAULT';
               const currentStages = isCategoryOverride
-                ? categoryOverrides[selectedCategory]?.stages?.length
-                  ? categoryOverrides[selectedCategory].stages
-                  : stages
+                ? categoryOverrides[overrideKey]?.stages?.length
+                  ? categoryOverrides[overrideKey].stages
+                  : defaultStagesForCategory(overrideKey)
                 : selectedWorkflow === 'STANDARD'
                   ? stages
                   : (exceptionChains[selectedWorkflow] || []).map((r, i) => ({
@@ -283,7 +447,7 @@ export default function WorkflowConfig() {
 
               const updateCurrentStages = (newStages) => {
                 if (isCategoryOverride) {
-                  setCategoryOverrides((prev) => ({ ...prev, [selectedCategory]: { stages: newStages } }));
+                  setCategoryOverrides((prev) => ({ ...prev, [overrideKey]: { stages: newStages } }));
                 } else if (selectedWorkflow === 'STANDARD') {
                   setStages(newStages);
                 } else {
@@ -322,7 +486,7 @@ export default function WorkflowConfig() {
                 <td className="px-4 py-3 text-center">
                   <input
                     className="w-full rounded-lg border border-transparent bg-slate-50 px-3 py-1.5 text-sm hover:border-slate-200 focus:border-brand focus:bg-white focus:ring-1 focus:ring-brand/30 transition-all outline-none disabled:opacity-50 disabled:bg-slate-100 disabled:text-slate-500"
-                    disabled={isViewOnly || selectedWorkflow !== 'STANDARD'}
+                    disabled={isViewOnly || !isStageBasedWorkflow}
                     value={stage.label ?? ''}
                     placeholder="Stage Label"
                     onChange={(e) => {
@@ -358,7 +522,7 @@ export default function WorkflowConfig() {
                       className="w-20 text-center rounded-lg border border-transparent bg-slate-50 px-3 py-1.5 text-sm hover:border-slate-200 focus:border-brand focus:bg-white focus:ring-1 focus:ring-brand/30 transition-all outline-none disabled:opacity-50 disabled:bg-slate-100 disabled:text-slate-500"
                       type="number"
                       min="1"
-                      disabled={isViewOnly || selectedWorkflow !== 'STANDARD'}
+                      disabled={isViewOnly || !isStageBasedWorkflow}
                       value={stage.sla_hours ?? ''}
                       onChange={(e) => {
                         const next = [...currentStages];
@@ -423,11 +587,10 @@ export default function WorkflowConfig() {
           </tbody>
         </table>
         {!isViewOnly && (() => {
-          const isCategoryOverride = selectedWorkflow === 'STANDARD' && selectedCategory !== 'DEFAULT';
           const activeStages = isCategoryOverride
-            ? categoryOverrides[selectedCategory]?.stages?.length
-              ? categoryOverrides[selectedCategory].stages
-              : stages
+            ? categoryOverrides[overrideKey]?.stages?.length
+              ? categoryOverrides[overrideKey].stages
+              : defaultStagesForCategory(overrideKey)
             : selectedWorkflow === 'STANDARD'
               ? stages
               : exceptionChains[selectedWorkflow] || [];
@@ -437,13 +600,12 @@ export default function WorkflowConfig() {
             type="button"
             className="btn-secondary mt-3"
             onClick={() => {
-              const isCategoryOverride = selectedWorkflow === 'STANDARD' && selectedCategory !== 'DEFAULT';
               const newStage = { label: 'New Stage', route_role: 'HRBP_HR', sla_hours: 48 };
               if (isCategoryOverride) {
-                const base = categoryOverrides[selectedCategory]?.stages?.length
-                  ? categoryOverrides[selectedCategory].stages
-                  : stages;
-                setCategoryOverrides((prev) => ({ ...prev, [selectedCategory]: { stages: [...base, newStage] } }));
+                const base = categoryOverrides[overrideKey]?.stages?.length
+                  ? categoryOverrides[overrideKey].stages
+                  : defaultStagesForCategory(overrideKey);
+                setCategoryOverrides((prev) => ({ ...prev, [overrideKey]: { stages: [...base, newStage] } }));
               } else if (selectedWorkflow === 'STANDARD') {
                 setStages([...stages, newStage]);
               } else {

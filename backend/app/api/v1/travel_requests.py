@@ -140,13 +140,27 @@ async def my_requests(
 @router.get(
     "/manager/pending",
     response_model=list[DeskQueueItemOut],
-    dependencies=[Depends(require_role(Role.REPORTING_MANAGER))],
+    # The normal-flow approval chain is admin-configurable and can route a stage to any of
+    # these roles, not just Reporting Manager (see list_pending_travel_requests_for_approver) —
+    # matches the same broadened gate used on /approve and /reject.
+    dependencies=[
+        Depends(
+            require_role(
+                Role.REPORTING_MANAGER,
+                Role.HRBP_HR,
+                Role.PAYROLL,
+                Role.FINANCE,
+                Role.CEO,
+                Role.GROUP_HEAD_HR,
+            )
+        )
+    ],
 )
 async def manager_pending_requests(
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ) -> list[DeskQueueItemOut]:
-    enriched = await svc.list_pending_travel_requests_for_manager(int(claims["sub"]), db)
+    enriched = await svc.list_pending_travel_requests_for_approver(int(claims["sub"]), db)
     exceptions_by_request = await svc.get_latest_exceptions_for_requests(
         [e["request"].id for e in enriched], db
     )
@@ -310,10 +324,37 @@ async def cancel_request(
     return _build_request_out(row)
 
 
+@router.get("/{request_id}/approval-chain")
+async def approval_chain(
+    request_id: int,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    from app.services.workflow_service import get_travel_request_approval_chain
+
+    req, _tix = await svc.get_travel_request_for_viewer(request_id, int(claims["sub"]), _role(claims), db)
+    return await get_travel_request_approval_chain(req, db)
+
+
 @router.post(
     "/{request_id}/approve",
     response_model=TravelRequestOut,
-    dependencies=[Depends(require_role(Role.REPORTING_MANAGER, Role.HRBP_HR))],
+    # The normal-flow approval chain is admin-configurable (see workflow_service
+    # TRAVEL_REQUEST_DEFAULT_STAGES / category_overrides.TRAVEL_REQUEST) and can route a stage
+    # to any of these roles, not just Reporting Manager — the exact role actually required for
+    # whichever stage is currently active is enforced inside approve_travel_request_stage.
+    dependencies=[
+        Depends(
+            require_role(
+                Role.REPORTING_MANAGER,
+                Role.HRBP_HR,
+                Role.PAYROLL,
+                Role.FINANCE,
+                Role.CEO,
+                Role.GROUP_HEAD_HR,
+            )
+        )
+    ],
 )
 async def approve_request(
     request_id: int,
@@ -328,7 +369,18 @@ async def approve_request(
 @router.post(
     "/{request_id}/reject",
     response_model=TravelRequestOut,
-    dependencies=[Depends(require_role(Role.REPORTING_MANAGER, Role.HRBP_HR))],
+    dependencies=[
+        Depends(
+            require_role(
+                Role.REPORTING_MANAGER,
+                Role.HRBP_HR,
+                Role.PAYROLL,
+                Role.FINANCE,
+                Role.CEO,
+                Role.GROUP_HEAD_HR,
+            )
+        )
+    ],
 )
 async def reject_request(
     request_id: int,

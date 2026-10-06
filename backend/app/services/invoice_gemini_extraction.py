@@ -33,6 +33,7 @@ Return JSON with this exact structure:
     "cgst": {"value": "decimal string", "confidence": 0-100},
     "sgst": {"value": "decimal string", "confidence": 0-100},
     "igst": {"value": "decimal string", "confidence": 0-100},
+    "other_tax": {"value": "see other_tax rule below", "confidence": 0-100},
     "is_tatkal": {"value": "true or false", "confidence": 0-100},
     "expense_category": {"value": "see expense_category rule below", "confidence": 0-100}
   },
@@ -47,6 +48,7 @@ Return JSON with this exact structure:
       "cgst": "decimal",
       "sgst": "decimal",
       "igst": "decimal",
+      "other_tax": "see other_tax rule below",
       "total_amount": "decimal",
       "category_hint": "see category_hint rule below"
     }
@@ -66,7 +68,12 @@ Rules:
 - line_items: use one summary row if the document only shows totals; otherwise list itemized rows.
 - All monetary values as strings with dot decimal separator.
 - If IGST applies, cgst and sgst may be 0 and igst non-zero.
-- If the document shows a generic "GST" or "Tax" amount without specifying CGST/SGST/IGST, place the full tax amount into "igst".
+- If the document shows a generic "GST" or "Tax" amount without specifying CGST/SGST/IGST *and
+  the invoice currency is INR*, place the full tax amount into "igst".
+- other_tax: any tax that is NOT Indian CGST/SGST/IGST — e.g. a foreign "Sales Tax", VAT, or
+  service tax line on a non-INR invoice. cgst/sgst/igst must stay 0 in that case; the tax
+  amount goes in other_tax instead, never into igst. Leave other_tax as "0" for a normal INR
+  invoice with proper GST.
 - For electronic tickets (such as IRCTC e-tickets) showing a Transaction ID or online booking details, if the specific payment method (Card/UPI) is not explicitly named, default the payment_mode to "Other" with high confidence (95%).
 - place_of_supply: it is a 2-digit numeric GST state code, never a state name or abbreviation.
   Derive it in this order: (1) if the invoice explicitly prints a "Place of Supply" field, map

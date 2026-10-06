@@ -56,34 +56,32 @@ class ClaimApprovalStage(Base):
 
 
 class AdvanceRequest(Base):
+    """A cash advance Finance grants directly to an employee — no approval chain (Finance is
+    both the grantor and the only role that can ever see or manage these). An employee has at
+    most one *active* grant at a time (see workflow_service.create_advance_grant) — a new grant
+    while one is still active tops it up instead of creating a second row, so a fully-drawn
+    grant can never look active again just because the employee gets a new one later."""
+
     __tablename__ = "advance_requests"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     employee_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    # `amount` is the current remaining allocation on THIS grant — both a claim payment and a
+    # Settle Up draw it down directly (see workflow_service._draw_down_advance), crediting
+    # `consumed_via_claims`/`consumed_via_settlement` respectively, so it's always the real
+    # remaining figure. `granted_amount` is frozen at grant time (only an explicit Edit, or a
+    # top-up merge, changes it) so the archive view can always show what was actually granted.
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    granted_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)
+    consumed_via_claims: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)
+    consumed_via_settlement: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=0)
     purpose: Mapped[str | None] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default=AdvanceRequestStatus.IN_APPROVAL.value)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default=AdvanceRequestStatus.APPROVED.value)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
     )
-
-
-class AdvanceApprovalStage(Base):
-    __tablename__ = "advance_approval_stages"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    advance_id: Mapped[int] = mapped_column(
-        ForeignKey("advance_requests.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    stage_number: Mapped[int] = mapped_column(Integer, nullable=False)
-    stage_label: Mapped[str] = mapped_column(String(128), nullable=False)
-    required_role: Mapped[str | None] = mapped_column(String(64), index=True)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default=ClaimApprovalStageStatus.PENDING.value)
-    sla_deadline_at: Mapped[datetime | None] = mapped_column(DateTime)
-    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
-    decided_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
-    comment: Mapped[str | None] = mapped_column(Text)
 
 
 class ExceptionRequest(Base):

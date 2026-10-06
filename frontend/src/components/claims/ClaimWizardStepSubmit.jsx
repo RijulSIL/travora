@@ -19,7 +19,13 @@ export default function ClaimWizardStepSubmit({
 }) {
   const selectedTrips = trips.filter((trip) => selectedTripIds.includes(trip.id));
   const selectedInvoices = invoices.filter((invoice) => selectedInvoiceIds.includes(invoice.id));
-  const hardBlocks = (claim?.expenses || []).some((expense) => expense.policy_status === 'HARD_BLOCK');
+  // Matches the Policy Check step's own gate (hasUnresolvedDeviations): a hard-blocked expense
+  // only has to stay resolved via a filed exception, not cleared back to OK — once that
+  // exception is requested, the step before this one already let the employee proceed, so this
+  // step must not re-block submission on the same still-HARD_BLOCK status.
+  const hardBlocks = (claim?.expenses || []).some(
+    (expense) => expense.policy_status === 'HARD_BLOCK' && !expense.exception_requested
+  );
 
   return (
     <div className="space-y-6">
