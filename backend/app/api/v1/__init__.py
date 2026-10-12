@@ -13,11 +13,12 @@ from app.api.v1 import (
     manager_analytics,
     me,
     notifications_admin,
+    permission_matrix_admin,
     travel_booking,
     travel_requests,
     workflow_admin,
 )
-from app.api.v1.admin import budgets, company_profile, expense_categories, policy, users
+from app.api.v1.admin import budgets, company_profile, expense_categories, policy, travel_options, users
 
 api_router = APIRouter()
 api_router.include_router(health.router)
@@ -39,4 +40,6 @@ api_router.include_router(policy.router)
 api_router.include_router(users.router)
 api_router.include_router(expense_categories.router)
 api_router.include_router(company_profile.router)
+api_router.include_router(travel_options.router)
 api_router.include_router(budgets.router)
+api_router.include_router(permission_matrix_admin.router)

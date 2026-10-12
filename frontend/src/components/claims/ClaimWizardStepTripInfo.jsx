@@ -120,6 +120,9 @@ export default function ClaimWizardStepTripInfo({
   form,
   onChange,
   officeLocations,
+  travelOptions,
+  cityOptions = [],
+  onCityQueryChange,
   cityGroupHint,
   deadlineWarning,
   validationErrors,
@@ -191,17 +194,63 @@ export default function ClaimWizardStepTripInfo({
         )}
 
         <div className="grid gap-5 md:grid-cols-2">
+          {/* Travel Type */}
+          <div className="space-y-1">
+            <span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide">Travel Type *</span>
+            <select
+              className={`w-full h-10 px-3 rounded-lg border bg-white text-slate-800 text-sm outline-none transition-all duration-200 focus:border-slate-400 focus:ring-2 focus:ring-slate-150 ${
+                getError('travel_type') ? 'border-rose-300 focus:border-rose-400 focus:ring-rose-500/10' : 'border-slate-250'
+              }`}
+              value={form.travel_type}
+              onChange={(e) => onChange('travel_type', e.target.value)}
+            >
+              <option value="NON_PROJECT">Non-Project</option>
+              <option value="PROJECT">Project</option>
+            </select>
+            {getError('travel_type') && <p className="text-xs text-rose-600 font-semibold">{getError('travel_type')}</p>}
+          </div>
+
+          {/* Project Code — only when Travel Type is Project */}
+          {form.travel_type === 'PROJECT' ? (
+            <div className="space-y-1">
+              <span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide">Project Code *</span>
+              <select
+                className={`w-full h-10 px-3 rounded-lg border bg-white text-slate-800 text-sm outline-none transition-all duration-200 focus:border-slate-400 focus:ring-2 focus:ring-slate-150 ${
+                  getError('project_code') ? 'border-rose-300 focus:border-rose-400 focus:ring-rose-500/10' : 'border-slate-250'
+                }`}
+                value={form.project_code}
+                onChange={(e) => onChange('project_code', e.target.value)}
+              >
+                <option value="">Select project code</option>
+                {(travelOptions?.project_codes || []).map((o) => (
+                  <option key={o.id} value={o.value}>{o.label || o.value}</option>
+                ))}
+              </select>
+              {(travelOptions?.project_codes || []).length === 0 ? (
+                <p className="text-[10px] font-bold text-amber-700">No project codes are configured yet — ask an admin to add them.</p>
+              ) : null}
+              {getError('project_code') && <p className="text-xs text-rose-600 font-semibold">{getError('project_code')}</p>}
+            </div>
+          ) : null}
+
           {/* Trip Purpose */}
           <div className="space-y-1">
             <span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide">Trip Purpose *</span>
-            <input 
+            <select
               className={`w-full h-10 px-3 rounded-lg border bg-white text-slate-800 text-sm outline-none transition-all duration-200 focus:border-slate-400 focus:ring-2 focus:ring-slate-150 ${
                 getError('trip_purpose') ? 'border-rose-300 focus:border-rose-400 focus:ring-rose-500/10' : 'border-slate-250'
               }`}
-              value={form.trip_purpose} 
-              onChange={(e) => onChange('trip_purpose', e.target.value)} 
-              placeholder="e.g. Client visit, quarterly review"
-            />
+              value={form.trip_purpose}
+              onChange={(e) => onChange('trip_purpose', e.target.value)}
+            >
+              <option value="">Select trip purpose</option>
+              {(travelOptions?.trip_purposes || []).map((o) => (
+                <option key={o.id} value={o.value}>{o.label || o.value}</option>
+              ))}
+            </select>
+            {(travelOptions?.trip_purposes || []).length === 0 ? (
+              <p className="text-[10px] font-bold text-amber-700">No trip purposes are configured yet — ask an admin to add them.</p>
+            ) : null}
             {getError('trip_purpose') && <p className="text-xs text-rose-600 font-semibold">{getError('trip_purpose')}</p>}
           </div>
 
@@ -231,13 +280,17 @@ export default function ClaimWizardStepTripInfo({
           <div className="space-y-1">
             <span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide">From City *</span>
             <div className="relative">
-              <input 
+              <input
                 className={`w-full h-10 pl-9 pr-3 rounded-lg border bg-white text-slate-800 text-sm outline-none transition-all duration-200 focus:border-slate-400 focus:ring-2 focus:ring-slate-150 ${
                   getError('from_city') ? 'border-rose-300 focus:border-rose-400 focus:ring-rose-500/10' : 'border-slate-250'
                 }`}
-                value={form.from_city} 
-                onChange={(e) => onChange('from_city', e.target.value)} 
+                value={form.from_city}
+                onChange={(e) => {
+                  onChange('from_city', e.target.value);
+                  onCityQueryChange?.(e.target.value);
+                }}
                 placeholder="Origin city"
+                list="claim-city-from"
               />
               <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={15} />
             </div>
@@ -253,15 +306,30 @@ export default function ClaimWizardStepTripInfo({
                   getError('destination_city') ? 'border-rose-300 focus:border-rose-400 focus:ring-rose-500/10' : 'border-slate-250'
                 }`}
                 value={form.destination_city}
-                onChange={(e) => onChange('destination_city', e.target.value)}
+                onChange={(e) => {
+                  onChange('destination_city', e.target.value);
+                  onCityQueryChange?.(e.target.value);
+                }}
                 onBlur={onResolveCityGroup}
                 placeholder="Destination city"
+                list="claim-city-to"
               />
               <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={15} />
             </div>
             {cityGroupHint && <p className="text-xs text-indigo-700 font-medium">{cityGroupHint}</p>}
             {getError('destination_city') && <p className="text-xs text-rose-600 font-semibold">{getError('destination_city')}</p>}
           </div>
+
+          <datalist id="claim-city-from">
+            {cityOptions.map((c) => (
+              <option key={`f-${c}`} value={c} />
+            ))}
+          </datalist>
+          <datalist id="claim-city-to">
+            {cityOptions.map((c) => (
+              <option key={`t-${c}`} value={c} />
+            ))}
+          </datalist>
 
           {/* Departure Date */}
           <div className="space-y-1">

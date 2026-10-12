@@ -1,13 +1,16 @@
-import { Loader2 } from 'lucide-react';
+import { useEffect, useState } from 'react';
+
+import BounceLoader from './BounceLoader';
+
+// Most page chunks load in well under this, so the loader only appears when there's a real wait —
+// and never flashes straight after the session loader's tick.
+const SHOW_AFTER_MS = 250;
 
 export default function PageLoader() {
-  return (
-    <div className="flex h-screen w-full flex-col items-center justify-center space-y-4">
-      <div className="relative flex h-16 w-16 items-center justify-center">
-        <div className="absolute inset-0 animate-ping rounded-full bg-brand/20"></div>
-        <Loader2 className="h-8 w-8 animate-spin text-brand" />
-      </div>
-      <p className="text-sm font-medium text-slate-500 animate-pulse">Loading...</p>
-    </div>
-  );
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const id = setTimeout(() => setVisible(true), SHOW_AFTER_MS);
+    return () => clearTimeout(id);
+  }, []);
+  return visible ? <BounceLoader fullScreen={false} /> : <div className="h-screen w-full" />;
 }

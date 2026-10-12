@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import Decimal
 
 from pydantic import BaseModel, Field
@@ -46,9 +47,10 @@ class MeOut(BaseModel):
     workflow_submission_max_working_days: int = 5
     is_acting_delegate: bool = False
     # Roles of everyone currently delegating to this user — must match frontend's
-    # navConfig.js DELEGATABLE_NAV_BY_ROLE / permissions.js DELEGATABLE_PERMISSIONS keys
-    # exactly, since the frontend uses this to decide which "current queue" nav items and
-    # permissions to grant, on top of the user's own base role.
+    # navConfig.js DELEGATABLE_NAV_BY_ROLE keys exactly, since the frontend uses this to decide
+    # which "current queue" nav items to inject on top of the user's own base role. (The
+    # delegated *permissions* themselves are already folded into `permissions` below — the
+    # frontend no longer needs to re-derive them from the role list itself.)
     delegated_roles: list[str] = Field(default_factory=list)
     # Org-wide admin toggle (User Management) — the Profile page's Delegation section reads
     # this to show "disabled by your administrator" instead of a working form.
@@ -62,6 +64,47 @@ class MeOut(BaseModel):
     auto_approve_threshold: str | None = None
     org_auto_approve_ceiling: str | None = None
     approver_scope: ApproverScopeOut = Field(default_factory=ApproverScopeOut)
+    # This viewer's own effective, delegation-merged permission set — computed server-side from
+    # the (admin-editable) role->permission matrix, see permission_config_service.py. The
+    # frontend trusts this directly instead of keeping its own hardcoded copy of the matrix, so
+    # RoleGuard/nav visibility automatically track whatever an IT Admin has configured.
+    permissions: list[str] = Field(default_factory=list)
+
+
+class PolicyCapOut(BaseModel):
+    amount: str | None = None
+    # Hard block = a claim over this cap is rejected outright; otherwise it needs an exception.
+    is_hard_block: bool = False
+
+
+class CityTierLimitsOut(BaseModel):
+    city_group: str
+    city_group_name: str
+    is_default: bool = False
+    hotel: PolicyCapOut
+    food: PolicyCapOut
+    incidental: PolicyCapOut
+    day_visit: PolicyCapOut
+
+
+class MyPolicyLimitsOut(BaseModel):
+    """Everything the travel policy in force today allows the signed-in employee, at their impact level."""
+
+    has_policy: bool = False
+    policy_version: str | None = None
+    effective_from: date | None = None
+    effective_to: date | None = None
+    impact_level_code: str | None = None
+    impact_level_name: str | None = None
+    air_eligibility: str | None = None
+    air_class_allowed: str | None = None
+    air_eligibility_conditions: dict | None = None
+    train_classes_allowed: list[str] = Field(default_factory=list)
+    local_conveyance_modes: list[str] = Field(default_factory=list)
+    vehicle_rate_4w: str | None = None
+    vehicle_rate_2w: str | None = None
+    twin_sharing_mandatory: bool = False
+    city_limits: list[CityTierLimitsOut] = Field(default_factory=list)
 
 
 class AutoApproveThresholdIn(BaseModel):

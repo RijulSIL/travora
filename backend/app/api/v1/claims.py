@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # Triggering reload to see if it fixes the hang
 from app.core.database import get_db
 from app.core.rbac import (
-    PERMISSION_MATRIX,
     get_current_claims,
     is_direct_report,
     require_any_permission,
@@ -68,7 +67,10 @@ async def employee_claims(
         role = Role.EMPLOYEE
 
     if all_claims:
-        allowed = PERMISSION_MATRIX.get(role, set())
+        from app.services.permission_config_service import get_effective_permission_matrix
+
+        matrix = await get_effective_permission_matrix(db)
+        allowed = matrix.get(role, set())
         if not (allowed & {"view_reports", "process_payments"}):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
         rows = await list_claims_all(db, viewer_user_id=current_user_id)
@@ -161,6 +163,7 @@ async def policy_check(
 
 @router.get(
     "/team",
+    dependencies=[Depends(require_permission("view_team_claims"))],
 )
 async def team_claims(
     claims: dict = Depends(get_current_claims),
@@ -168,19 +171,7 @@ async def team_claims(
 ) -> list[dict]:
     from app.models.auth import User
     from app.models.employee import Employee
-    
-    # Check role manually
-    if claims.get("role") not in ["REPORTING_MANAGER", "IT_ADMIN"]:
-        raise HTTPException(status_code=403, detail="Only managers can view team claims")
-    
-    try:
-        role = Role(claims.get("role"))
-    except ValueError:
-        role = Role.EMPLOYEE
-        
-    if role != Role.REPORTING_MANAGER:
-        raise HTTPException(status_code=403, detail="Forbidden")
-        
+
     current_user_id = int(claims["sub"])
     mgr = await db.get(User, current_user_id)
     if not mgr or not mgr.employee_id:
@@ -233,6 +224,7 @@ async def team_claims(
 
 @router.get(
     "/team/spend",
+    dependencies=[Depends(require_permission("view_team_claims"))],
 )
 async def team_spend(
     claims: dict = Depends(get_current_claims),
@@ -240,15 +232,7 @@ async def team_spend(
 ) -> dict:
     from app.models.auth import User
     from app.models.employee import Employee
-    
-    try:
-        role = Role(claims.get("role"))
-    except ValueError:
-        role = Role.EMPLOYEE
-        
-    if role != Role.REPORTING_MANAGER:
-        raise HTTPException(status_code=403, detail="Forbidden")
-        
+
     current_user_id = int(claims["sub"])
     mgr = await db.get(User, current_user_id)
     if not mgr or not mgr.employee_id:

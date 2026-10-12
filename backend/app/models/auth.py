@@ -2,7 +2,7 @@ import enum
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, Numeric, String, func
+from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Integer, Numeric, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -84,6 +84,26 @@ class DelegationConfig(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+    updated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+
+
+class RolePermissionConfig(Base):
+    """Single-row admin-editable override of app.core.rbac's PERMISSION_MATRIX /
+    DELEGATABLE_PERMISSIONS (same pattern as WorkflowConfigRow for claim-approval routing).
+    Absent row => those hardcoded dicts are authoritative, unchanged from today — see
+    app.services.permission_config_service.get_effective_permission_matrix.
+
+    config_json shape: {"permissions": {role_value: [perm, ...]}, "delegatable_permissions":
+    {role_value: [perm, ...]}}. submit_claim/view_self are never stored here — they're an
+    unconditional baseline every role always has, outside this config entirely."""
+
+    __tablename__ = "role_permission_config"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    config_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
     )

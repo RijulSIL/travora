@@ -8,9 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.rbac import get_current_claims
 from app.models.auth import Delegation, Role, User
-from app.schemas.me import AutoApproveThresholdIn, DelegationIn, DelegationOut, MeOut
+from app.schemas.me import AutoApproveThresholdIn, DelegationIn, DelegationOut, MeOut, MyPolicyLimitsOut
 from app.services.claim_submission_rules import parse_auto_approve_threshold
-from app.services.me_service import build_me_profile
+from app.services.me_service import build_me_profile, build_my_policy_limits
 from app.services.workflow_service import get_workflow_config
 
 router = APIRouter(tags=["me"])
@@ -25,6 +25,14 @@ async def read_me(
         return await build_me_profile(int(claims["sub"]), db)
     except ValueError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found") from None
+
+
+@router.get("/me/policy-limits", response_model=MyPolicyLimitsOut)
+async def read_my_policy_limits(
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> MyPolicyLimitsOut:
+    return await build_my_policy_limits(int(claims["sub"]), db)
 
 
 @router.patch("/me/auto-approve-threshold", response_model=MeOut)
@@ -102,8 +110,8 @@ async def create_delegation(
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ):
-    from app.core.rbac import DELEGATABLE_PERMISSIONS
     from app.services.delegation_service import is_delegation_enabled
+    from app.services.permission_config_service import get_effective_delegatable_permissions
 
     if not await is_delegation_enabled(db):
         raise HTTPException(status_code=409, detail="Delegation is currently disabled by your administrator")
@@ -112,7 +120,8 @@ async def create_delegation(
     delegator = await db.get(User, user_id)
     if delegator is None:
         raise HTTPException(status_code=404, detail="User not found")
-    if not DELEGATABLE_PERMISSIONS.get(delegator.role, set()):
+    delegatable = await get_effective_delegatable_permissions(db)
+    if not delegatable.get(delegator.role, set()):
         raise HTTPException(status_code=403, detail="Delegation is not available for your role")
 
     if user_id == payload.delegatee_id:

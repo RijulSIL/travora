@@ -6,8 +6,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.rbac import require_role
-from app.models.auth import Role
+from app.core.rbac import require_permission
 from app.schemas.workflow import AdvanceGrantIn, AdvanceRequestOut, AdvanceSettleIn, AdvanceUpdateIn
 from app.services.advance_service import get_outstanding_advance
 from app.services.workflow_service import (
@@ -20,11 +19,12 @@ from app.services.workflow_service import (
 
 router = APIRouter(prefix="/advances", tags=["advances"])
 
-# Advances are a Finance-only tool end to end — no other role (including Reporting Manager,
-# HRBP, Payroll) ever creates, lists, or looks up an advance through this router, and delegation
-# (which could otherwise stand in for Finance on approve_stage_4/process_payments) is deliberately
-# excluded here too.
-_finance_only = require_role(Role.FINANCE, allow_delegate=False)
+# Advances are a Finance-only tool end to end by default — no other role (including Reporting
+# Manager, HRBP, Payroll) ever creates, lists, or looks up an advance through this router.
+# process_advances is never marked delegatable in permission_config_service.
+# DELEGATION_ELIGIBLE_PERMISSIONS, so delegation (which could otherwise stand in for Finance on
+# approve_claims/process_payments) is deliberately excluded here too.
+_finance_only = require_permission("process_advances")
 
 
 @router.post("/grant", response_model=AdvanceRequestOut)

@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.travel_request import TravelRequestMode
+from app.models.travel_request import TravelRequestMode, TravelRequestTravelType
 
 
 class TravelRequestTicketAttachmentOut(BaseModel):
@@ -19,10 +19,35 @@ class TravelRequestTicketAttachmentOut(BaseModel):
     content_type: str
     file_size_bytes: int
     pnr_or_booking_ref: str | None = None
-    ticket_amount: Decimal | None = None
-    ticket_travel_class: str | None = None
-    external_booking_source: str | None = None
     notes_for_employee: str | None = None
+
+
+class TravelRequestSupportingDocumentOut(BaseModel):
+    """Travel Desk-uploaded supporting document metadata (no filesystem path exposed)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    # Which TravelRequestBookingItem this proof is for — None only for documents uploaded
+    # before per-item linking existed.
+    booking_item_id: int | None = None
+    original_filename: str
+    content_type: str
+    file_size_bytes: int
+    description: str | None = None
+    uploaded_at: datetime
+
+
+class SupportingDocumentUploadOut(TravelRequestSupportingDocumentOut):
+    # A proof can complete the booking, so the desk needs the request's status after the upload.
+    request_status: str
+
+
+class TravelRequestBookingItemOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    description: str
 
 
 class TravelRequestSegmentOut(BaseModel):
@@ -62,8 +87,13 @@ class TravelRequestCreate(BaseModel):
     to_city: str | None = None
     travel_date: date | None = None
     return_date: date | None = None
+    travel_type: TravelRequestTravelType | str = TravelRequestTravelType.NON_PROJECT.value
+    project_code: str | None = None
     purpose: str | None = None
-    preferred_class: str | None = None
+    needs_additional_booking: bool = False
+    # One entry per "please also book X" need (hotel, cab, visa, ...) — replaces the old single
+    # free-text additional_booking_details, which new submissions no longer write to.
+    additional_booking_items: list[str] = Field(default_factory=list)
     notes: str | None = None
     legs: list[TravelRequestLegIn] | None = None
 
@@ -100,8 +130,13 @@ class TravelRequestOut(BaseModel):
     to_city: str | None
     travel_date: date | None
     return_date: date | None
+    travel_type: str = TravelRequestTravelType.NON_PROJECT.value
+    project_code: str | None = None
     purpose: str | None = None
-    preferred_class: str | None = None
+    needs_additional_booking: bool = False
+    # Legacy free text — only ever populated on requests submitted before booking_items existed.
+    additional_booking_details: str | None = None
+    booking_items: list[TravelRequestBookingItemOut] = Field(default_factory=list)
     notes: str | None = None
     status: str
     rejection_reason: str | None = None
@@ -110,6 +145,7 @@ class TravelRequestOut(BaseModel):
     legs: list[TravelRequestLegOut] | None = None
     exception: TravelExceptionSummaryOut | None = None
     segments: list[TravelRequestSegmentOut] = Field(default_factory=list)
+    supporting_documents: list[TravelRequestSupportingDocumentOut] = Field(default_factory=list)
 
 
 class TravelRequestListItemOut(BaseModel):
@@ -137,9 +173,81 @@ class TicketUploadForm(BaseModel):
 
     leg_sequence: int = 1
     pnr_or_booking_ref: str | None = None
-    ticket_amount: Decimal | None = None
-    ticket_travel_class: str | None = None
     provider: str | None = None
-    reference_id: str | None = None
-    external_booking_source: str | None = None
     notes_for_employee: str | None = None
+
+
+class TravelOptionOut(BaseModel):
+    """One entry of an admin-managed travel-request dropdown."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    option_type: str
+    value: str
+    label: str
+    is_active: bool
+    # Only meaningful on a TRIP_PURPOSE row — see TravelRequestOption's docstring.
+    notify_project_stakeholders: bool = False
+
+
+class TravelOptionsOut(BaseModel):
+    """Active options the travel request form offers."""
+
+    project_codes: list[TravelOptionOut] = Field(default_factory=list)
+    trip_purposes: list[TravelOptionOut] = Field(default_factory=list)
+
+
+class TravelOptionIn(BaseModel):
+    option_type: str
+    value: str = Field(..., min_length=1, max_length=128)
+    label: str | None = Field(default=None, max_length=255)
+
+
+class TravelOptionUpdateIn(BaseModel):
+    # Omit to keep the current value. Changing it also rewrites requests already using it.
+    value: str | None = Field(default=None, min_length=1, max_length=128)
+    label: str = Field(..., min_length=1, max_length=255)
+    is_active: bool = True
+    notify_project_stakeholders: bool = False
+
+
+class ProjectRecipientIn(BaseModel):
+    project_code: str = Field(..., min_length=1, max_length=128)
+    email: str = Field(..., min_length=3, max_length=255)
+    display_name: str | None = Field(default=None, max_length=255)
+
+
+class ProjectRecipientUpdateIn(BaseModel):
+    # project_code is deliberately absent — moving a recipient to a different project is an
+    # add-to-the-new-one/remove-from-the-old-one action, not an edit of this row.
+    email: str = Field(..., min_length=3, max_length=255)
+    display_name: str | None = Field(default=None, max_length=255)
+
+
+class ProjectRecipientOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    project_code: str
+    email: str
+    display_name: str | None = None
+
+
+class CityExpenseLimitOut(BaseModel):
+    """What the travel policy allows the requester to spend in one destination city."""
+
+    city: str
+    city_group: str
+    city_group_name: str | None = None
+    impact_level: str
+    # None when no limit row is configured for this level/city-group combination.
+    hotel_cap: Decimal | None = None
+    hotel_is_hard_block: bool = False
+    food_cap: Decimal | None = None
+    food_is_hard_block: bool = False
+    incidental_cap: Decimal | None = None
+    incidental_is_hard_block: bool = False
+    day_visit_cap: Decimal | None = None
+    day_visit_is_hard_block: bool = False
+    has_limits: bool = False

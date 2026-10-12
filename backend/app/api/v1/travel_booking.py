@@ -177,25 +177,36 @@ async def my_trips(
     trips = await list_trips(int(claims["sub"]), db)
     desk_ids = await desk_ticket_ids_for_trips(trips, db)
 
-    # Fetch return dates and trip type from travel requests
+    # Fetch return date / trip type / purpose / travel type / project code from travel requests
+    # — everything the Travel Claim wizard needs to auto-fill from a linked trip.
     req_ids = [t.travel_request_id for t in trips if t.travel_request_id]
-    return_dates = {}
-    trip_types = {}
+    requests_by_id = {}
     if req_ids:
         res = await db.execute(
-            select(TravelRequest.id, TravelRequest.return_date, TravelRequest.trip_type).where(
-                TravelRequest.id.in_(req_ids)
-            )
+            select(
+                TravelRequest.id,
+                TravelRequest.return_date,
+                TravelRequest.trip_type,
+                TravelRequest.purpose,
+                TravelRequest.travel_type,
+                TravelRequest.project_code,
+            ).where(TravelRequest.id.in_(req_ids))
         )
         for row in res.all():
-            return_dates[row.id] = row.return_date
-            trip_types[row.id] = row.trip_type
+            requests_by_id[row.id] = row
+
+    def _req_field(trip, field: str):
+        req = requests_by_id.get(trip.travel_request_id) if trip.travel_request_id else None
+        return getattr(req, field) if req else None
 
     return [
         TripOut.model_validate(t).model_copy(update={
             "desk_ticket_id": desk_ids.get(t.id),
-            "return_date": return_dates.get(t.travel_request_id) if t.travel_request_id else None,
-            "trip_type": trip_types.get(t.travel_request_id) if t.travel_request_id else None,
+            "return_date": _req_field(t, "return_date"),
+            "trip_type": _req_field(t, "trip_type"),
+            "purpose": _req_field(t, "purpose"),
+            "travel_type": _req_field(t, "travel_type"),
+            "project_code": _req_field(t, "project_code"),
         })
         for t in trips
     ]

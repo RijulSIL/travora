@@ -40,7 +40,7 @@ from app.services.finance_reporting_service import (
 router = APIRouter(tags=["finance-reporting"])
 
 _EXCEPTION_QUEUE_ACCESS = Depends(
-    require_any_permission("approve_stage_2", "approve_stage_4", "configure_policy", "approve_exception")
+    require_any_permission("approve_claims", "configure_policy", "approve_exception")
 )
 
 

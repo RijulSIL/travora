@@ -2,21 +2,112 @@
 
 from decimal import Decimal
 
-from sqlalchemy import select
+from fastapi import HTTPException
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timezone import today_ist
 from app.models.auth import Role, User
 from app.models.claim_workflow import ExceptionApproval, ExceptionRequest, ExceptionRequestStatus
 from app.models.employee import Employee
 from app.models.expense_category import CompanyProfile
-from app.models.policy import CityGroupType, ExpenseLimit, ImpactLevel, PolicyStatus, PolicyVersion
-from app.schemas.me import ApproverScopeOut, MeOut
+from app.models.policy import CityGroupTier, ExpenseLimit, ImpactLevel, PolicyVersion
+from app.schemas.me import ApproverScopeOut, CityTierLimitsOut, MeOut, MyPolicyLimitsOut, PolicyCapOut
 from app.services.claim_submission_rules import parse_auto_approve_threshold
+from app.services.policy_engine import get_active_policy_version, get_expense_limits
 from app.services.workflow_service import get_approver_scope, get_workflow_config, list_pending_approvals
 
 
 def _fmt_inr(value: Decimal) -> str:
     return f"{value.quantize(Decimal('0.01'))}"
+
+
+def _fmt_optional_inr(value: Decimal | None) -> str | None:
+    return _fmt_inr(value) if value is not None else None
+
+
+async def _current_policy_and_level(
+    own_level: ImpactLevel | None, db: AsyncSession
+) -> tuple[PolicyVersion | None, ImpactLevel | None]:
+    """The policy version governing today (by effective-date window, same as claims use — not
+    by status) and the employee's impact level *within that version*. ImpactLevel rows are
+    cloned per version with new ids, so the employee's own impact_level_id can point at an
+    older version's row; matching on level_code keeps this correct across versions."""
+    if own_level is None:
+        return None, None
+    try:
+        policy = await get_active_policy_version(today_ist(), db)
+    except HTTPException:
+        return None, None
+    level = (
+        await db.execute(
+            select(ImpactLevel).where(
+                ImpactLevel.policy_version_id == policy.id,
+                func.upper(ImpactLevel.level_code) == own_level.level_code.upper(),
+            )
+        )
+    ).scalars().first()
+    return policy, level
+
+
+async def build_my_policy_limits(user_id: int, db: AsyncSession) -> MyPolicyLimitsOut:
+    user = await db.get(User, user_id)
+    emp = await db.get(Employee, user.employee_id) if user and user.employee_id else None
+    own_level = await db.get(ImpactLevel, emp.impact_level_id) if emp and emp.impact_level_id else None
+    policy, level = await _current_policy_and_level(own_level, db)
+    if policy is None or level is None:
+        return MyPolicyLimitsOut(
+            impact_level_code=own_level.level_code if own_level else None,
+            impact_level_name=own_level.level_name if own_level else None,
+        )
+
+    tiers = {t.code: t for t in (await db.execute(select(CityGroupTier).order_by(CityGroupTier.id))).scalars()}
+    tier_order = list(tiers)
+    rows = (
+        await db.execute(
+            select(ExpenseLimit).where(
+                ExpenseLimit.policy_version_id == policy.id, ExpenseLimit.impact_level_id == level.id
+            )
+        )
+    ).scalars().all()
+    # Deprecated tiers no longer apply to any city, so their caps would only mislead.
+    rows = [r for r in rows if not (tiers.get(r.city_group) and tiers[r.city_group].is_deprecated)]
+    rows.sort(key=lambda r: tier_order.index(r.city_group) if r.city_group in tiers else len(tier_order))
+
+    def cap(row: ExpenseLimit, field: str) -> PolicyCapOut:
+        return PolicyCapOut(
+            amount=_fmt_optional_inr(getattr(row, f"{field}_cap")),
+            is_hard_block=bool(getattr(row, f"{field}_is_hard_block")),
+        )
+
+    return MyPolicyLimitsOut(
+        has_policy=True,
+        policy_version=policy.version_number,
+        effective_from=policy.effective_from,
+        effective_to=policy.effective_to,
+        impact_level_code=level.level_code,
+        impact_level_name=level.level_name,
+        air_eligibility=level.air_eligibility.value if level.air_eligibility else None,
+        air_class_allowed=level.air_class_allowed.value if level.air_class_allowed else None,
+        air_eligibility_conditions=level.air_eligibility_conditions,
+        train_classes_allowed=list(level.train_classes_allowed or []),
+        local_conveyance_modes=list(level.local_conveyance_modes or []),
+        vehicle_rate_4w=_fmt_optional_inr(level.vehicle_rate_4w),
+        vehicle_rate_2w=_fmt_optional_inr(level.vehicle_rate_2w),
+        twin_sharing_mandatory=bool(level.twin_sharing_mandatory),
+        city_limits=[
+            CityTierLimitsOut(
+                city_group=r.city_group,
+                city_group_name=tiers[r.city_group].display_name if r.city_group in tiers else r.city_group,
+                is_default=bool(tiers[r.city_group].is_default) if r.city_group in tiers else False,
+                hotel=cap(r, "hotel"),
+                food=cap(r, "food"),
+                incidental=cap(r, "incidental"),
+                day_visit=cap(r, "day_visit"),
+            )
+            for r in rows
+        ],
+    )
 
 
 async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
@@ -36,32 +127,24 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
     if emp and emp.impact_level_id:
         impact = await db.get(ImpactLevel, emp.impact_level_id)
 
-    active_policy = (
-        await db.execute(select(PolicyVersion).where(PolicyVersion.status == PolicyStatus.ACTIVE))
-    ).scalar_one_or_none()
-
     hotel_cap_group_a: str | None = None
-    if active_policy and emp and emp.impact_level_id:
-        limit_row = (
-            await db.execute(
-                select(ExpenseLimit)
-                .where(
-                    ExpenseLimit.policy_version_id == active_policy.id,
-                    ExpenseLimit.impact_level_id == emp.impact_level_id,
-                    ExpenseLimit.city_group == CityGroupType.A,
-                )
-                .limit(1)
-            )
-        ).scalar_one_or_none()
+    policy, current_level = await _current_policy_and_level(impact, db)
+    if policy and current_level:
+        limit_row = await get_expense_limits(policy.id, current_level.id, "A", db)
         if limit_row and limit_row.hotel_cap is not None:
             hotel_cap_group_a = _fmt_inr(limit_row.hotel_cap)
 
-    from app.core.rbac import DELEGATABLE_PERMISSIONS, _active_delegator_roles
+    from app.core.rbac import _active_delegator_roles, get_delegated_permissions
     from app.services.delegation_service import is_delegation_enabled
+    from app.services.permission_config_service import (
+        get_effective_delegatable_permissions,
+        get_effective_permission_matrix,
+    )
 
     delegated_roles = await _active_delegator_roles(user_id, db)
     delegation_feature_enabled = await is_delegation_enabled(db)
-    can_create_delegation = bool(DELEGATABLE_PERMISSIONS.get(user.role, set()))
+    delegatable_matrix = await get_effective_delegatable_permissions(db)
+    can_create_delegation = bool(delegatable_matrix.get(user.role, set()))
 
     pending_rows = await list_pending_approvals(user_id, db)
     pending_claims_count = len(pending_rows)
@@ -140,6 +223,14 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
         exceptions=sorted(scope_exceptions),
     )
 
+    # The single source the frontend trusts for "can I see/use this page" — replaces its own
+    # previously-hardcoded copy of PERMISSION_MATRIX/DELEGATABLE_PERMISSIONS (see
+    # permission_config_service.py). Already delegation-merged, same as approver_scope above.
+    effective_matrix = await get_effective_permission_matrix(db)
+    own_permissions = set(effective_matrix.get(user.role, set()))
+    delegated_permissions = await get_delegated_permissions(user_id, db)
+    permissions = sorted(own_permissions | delegated_permissions)
+
     return MeOut(
         user_id=user.id,
         email=user.email,
@@ -169,4 +260,5 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
         auto_approve_threshold=auto_approve_threshold_str,
         org_auto_approve_ceiling=org_auto_approve_ceiling_str,
         approver_scope=approver_scope,
+        permissions=permissions,
     )

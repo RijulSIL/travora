@@ -1,8 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from app.core.database import get_db
-from app.core.rbac import get_current_claims, require_mfa, require_role
-from app.models.auth import Role
+from app.core.rbac import get_current_claims, require_mfa, require_permission
 from app.schemas.budget import (
     BudgetConfigIn,
     BudgetConfigOut,
@@ -27,11 +26,12 @@ from app.services.budget_service import (
 
 router = APIRouter(prefix="/admin/budgets", tags=["admin-budgets"])
 
-# Restricted to IT_ADMIN only for now — unlike the rest of the policy/config admin screens,
+# Restricted to IT_ADMIN only by default — unlike the rest of the policy/config admin screens,
 # which HRBP_HR/FINANCE/GROUP_HEAD_HR/PAYROLL can also read or edit via configure_policy /
-# view_admin_readonly. allow_delegate=False: budgets are config, not a "current queue" item.
-_READ = [Depends(require_role(Role.IT_ADMIN, allow_delegate=False))]
-_WRITE = [Depends(require_role(Role.IT_ADMIN, allow_delegate=False)), Depends(require_mfa)]
+# view_admin_readonly. manage_team_budgets is never marked delegatable in permission_config_
+# service.DELEGATION_ELIGIBLE_PERMISSIONS: budgets are config, not a "current queue" item.
+_READ = [Depends(require_permission("manage_team_budgets"))]
+_WRITE = [Depends(require_permission("manage_team_budgets")), Depends(require_mfa)]
 
 
 @router.get("/config", response_model=BudgetConfigOut, dependencies=_READ)

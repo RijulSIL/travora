@@ -4,12 +4,13 @@ import PageHeader from '../../components/ui/PageHeader';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
 import { adminApi } from '../../services/adminApi';
-import { selectResolvedRole, useAuthStore } from '../../store/authStore';
+import { hasPermission } from '../../services/permissions';
+import { useAuthStore } from '../../store/authStore';
 
 export default function NotificationTemplates() {
   useSetPageTitle('Notification Templates');
-  const role = useAuthStore(selectResolvedRole);
-  const canEdit = role === 'IT_ADMIN';
+  const permissions = useAuthStore((s) => s.profile?.permissions);
+  const canEdit = hasPermission(permissions, 'edit_notification_templates');
   const [templates, setTemplates] = useState([]);
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({ subject: '', body_text: '' });

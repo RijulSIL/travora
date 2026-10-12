@@ -1,12 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { FileText, PlusCircle, ReceiptIndianRupee, Plane, Briefcase, Building2, ArrowRight } from 'lucide-react';
+import { FileText, PlusCircle, ReceiptIndianRupee, Plane, Briefcase, ShieldCheck, ArrowRight } from 'lucide-react';
 
 import ClaimApprovalStepper from '../../components/claims/ClaimApprovalStepper';
+import MyLimitsModal from '../../components/dashboard/MyLimitsModal';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { hasPermission } from '../../services/permissions';
 import { reimbursementApi } from '../../services/reimbursementApi';
-import { selectResolvedRole, useAuthStore } from '../../store/authStore';
+import { useAuthStore } from '../../store/authStore';
 import { claimEditPath, claimNewPath } from '../../utils/claimRoutes';
 
 function money(value) {
@@ -29,14 +30,16 @@ const STATUS_LABELS = {
 
 export default function EmployeeDashboard() {
   useSetPageTitle('Home');
-  const role = useAuthStore(selectResolvedRole);
-  const canSubmit = hasPermission(role, 'submit_claim');
+  const permissions = useAuthStore((s) => s.profile?.permissions);
+  const canSubmit = hasPermission(permissions, 'submit_claim');
   const profile = useAuthStore((s) => s.profile);
   const user = useAuthStore((s) => s.user);
   const [claims, setClaims] = useState([]);
   const [chainData, setChainData] = useState(null);
   const [travelRequests, setTravelRequests] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [limitsOpen, setLimitsOpen] = useState(false);
+  const closeLimits = useCallback(() => setLimitsOpen(false), []);
 
   const displayName = profile?.full_name ?? user?.full_name ?? user?.email ?? 'User';
   const firstName = displayName.split(' ')[0];
@@ -129,16 +132,31 @@ export default function EmployeeDashboard() {
           </div>
         </div>
 
-        <div className="stat-card">
+        <button
+          type="button"
+          className="stat-card group text-left transition-shadow hover:shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"
+          onClick={() => setLimitsOpen(true)}
+        >
           <div className="stat-card-icon bg-sky-500">
-            <Building2 className="h-5 w-5" />
+            <ShieldCheck className="h-5 w-5" />
           </div>
-          <div className="stat-card-label">Hotel Cap (Group A)</div>
+          <div className="stat-card-label">Know Your Limits</div>
           <div className="stat-card-value text-xl">
-            {profile?.hotel_cap_group_a ? `₹${money(profile.hotel_cap_group_a)}` : '—'}
+            {profile?.hotel_cap_group_a ? (
+              <>
+                ₹{money(profile.hotel_cap_group_a)}
+                <span className="ml-2 text-sm font-normal text-slate-500">hotel cap, Group A</span>
+              </>
+            ) : (
+              <span className="text-base font-semibold text-slate-600">Caps, flights, trains &amp; more</span>
+            )}
           </div>
-        </div>
+          <span className="mt-3 inline-flex items-center gap-1 text-[13px] font-semibold text-brand group-hover:underline">
+            View all my limits <ArrowRight className="h-3.5 w-3.5" />
+          </span>
+        </button>
       </div>
+      <MyLimitsModal open={limitsOpen} onClose={closeLimits} />
 
       {/* Two-column: Latest Claim + Quick Actions */}
       <div className={`grid gap-6 ${canSubmit ? 'lg:grid-cols-[1fr_320px]' : 'lg:grid-cols-1'}`}>

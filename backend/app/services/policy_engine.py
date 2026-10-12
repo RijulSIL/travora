@@ -8,15 +8,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.policy import (
     CityGroup,
-    CityGroupType,
+    CityGroupTier,
     ExpenseLimit,
     ImpactLevel,
-    PolicyStatus,
     PolicyVersion,
 )
 
 
-async def resolve_city_group(city_name: str, travel_date: date, db: AsyncSession) -> CityGroupType:
+async def resolve_city_group(city_name: str, travel_date: date, db: AsyncSession) -> str:
+    """Returns a CityGroupTier `code` (never the tier's numeric id) — ExpenseLimit.city_group and
+    ClaimDraft.destination_city_group both store this same code as a plain string, so whatever
+    this returns matches them directly with no further lookup needed."""
     normalized_city = city_name.strip().lower()
     result = await db.execute(
         select(CityGroup).where(
@@ -28,7 +30,14 @@ async def resolve_city_group(city_name: str, travel_date: date, db: AsyncSession
         ).order_by(CityGroup.effective_from.desc(), CityGroup.id.desc())
     )
     city_group = result.scalars().first()
-    return city_group.group_type if city_group else CityGroupType.C
+    if city_group:
+        return city_group.group_type
+    # No classification matches this city — fall back to whichever tier is marked default
+    # (replaces the old hardcoded "default to group C"; see CityGroupTier's docstring).
+    default_tier = (await db.execute(select(CityGroupTier).where(CityGroupTier.is_default.is_(True)))).scalars().first()
+    if default_tier is None:
+        raise HTTPException(status_code=500, detail="No default city-group tier is configured")
+    return default_tier.code
 
 
 def normalize_city_name(city_name: str) -> str:
@@ -70,23 +79,32 @@ async def validate_city_group_overlap(
 
 
 async def get_active_policy_version(travel_date: date, db: AsyncSession) -> PolicyVersion:
+    """Deliberately NOT filtered by status == ACTIVE. A fully-approved version can have an
+    effective_from in the future (HRBP schedules it, see reschedule_policy_version) — while
+    it's "ACTIVE" in the admin-UI/workflow sense but its date hasn't arrived yet, the row that
+    should actually govern a given travel_date is whichever ARCHIVED-or-ACTIVE version's
+    [effective_from, effective_to) window contains it. This also means a scheduled version
+    takes over automatically the moment its date arrives — no cron/background job needed,
+    exactly like resolve_city_group's date-range resolution above, which this mirrors."""
     result = await db.execute(
-        select(PolicyVersion).where(
+        select(PolicyVersion)
+        .where(
             and_(
-                PolicyVersion.status == PolicyStatus.ACTIVE,
+                PolicyVersion.effective_from.is_not(None),
                 PolicyVersion.effective_from <= travel_date,
                 (PolicyVersion.effective_to.is_(None)) | (PolicyVersion.effective_to >= travel_date),
             )
         )
+        .order_by(PolicyVersion.effective_from.desc(), PolicyVersion.id.desc())
     )
-    policy = result.scalar_one_or_none()
+    policy = result.scalars().first()
     if policy is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No active policy version for travel date")
     return policy
 
 
 async def get_expense_limits(
-    policy_version_id: int, impact_level_id: int, city_group: CityGroupType, db: AsyncSession
+    policy_version_id: int, impact_level_id: int, city_group: str, db: AsyncSession
 ) -> ExpenseLimit | None:
     result = await db.execute(
         select(ExpenseLimit).where(
@@ -172,7 +190,7 @@ async def diff_policy_versions(v1_id: int, v2_id: int, db: AsyncSession) -> dict
     limits_v1_by_key = {(limit.impact_level_id, limit.city_group): limit for limit in v1_limits}
     limits_v2_by_key = {(limit.impact_level_id, limit.city_group): limit for limit in v2_limits}
     for key in sorted(
-        set(limits_v1_by_key) | set(limits_v2_by_key), key=lambda item: (item[0], item[1].value)
+        set(limits_v1_by_key) | set(limits_v2_by_key), key=lambda item: (item[0], item[1])
     ):
         previous = limits_v1_by_key.get(key)
         current = limits_v2_by_key.get(key)
@@ -194,7 +212,9 @@ async def diff_policy_versions(v1_id: int, v2_id: int, db: AsyncSession) -> dict
 
 async def enforce_immutability(version_id: int, db: AsyncSession) -> None:
     version = await db.get(PolicyVersion, version_id)
-    if version and version.effective_from <= date.today():
+    # effective_from is null for the entire DRAFT/PENDING_HRBP lifetime (assigned only at
+    # approval, see PolicyVersion's docstring) — nothing to lock yet.
+    if version and version.effective_from is not None and version.effective_from <= date.today():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Policy versions are immutable once their effective_from date is reached",

@@ -1,13 +1,13 @@
 from datetime import date
 
 from dateutil.relativedelta import relativedelta
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.rbac import get_current_claims
-from app.models.auth import Role, User
+from app.core.rbac import get_current_claims, require_permission
+from app.models.auth import User
 from app.models.employee import Employee
 from app.models.reimbursement import ClaimDraft, ClaimExpense
 from app.services.budget_service import get_effective_budget, is_budgets_enabled
@@ -25,19 +25,11 @@ def _empty_response(budgets_enabled: bool) -> dict:
     }
 
 
-@router.get("/team-spend")
+@router.get("/team-spend", dependencies=[Depends(require_permission("view_team_claims"))])
 async def get_team_spend(
     db: AsyncSession = Depends(get_db),
     claims: dict = Depends(get_current_claims),
 ):
-    try:
-        role = Role(claims.get("role"))
-    except ValueError:
-        role = Role.EMPLOYEE
-
-    if role != Role.REPORTING_MANAGER:
-        raise HTTPException(status_code=403, detail="Forbidden")
-
     current_user_id = int(claims["sub"])
     budgets_enabled = await is_budgets_enabled(db)
 

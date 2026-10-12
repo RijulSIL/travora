@@ -36,6 +36,7 @@ from app.models.reimbursement import (
     ReimbursementCategory,
 )
 from app.models.travel_booking import TravelMode, TravelTrip
+from app.models.travel_request import TravelOptionType, TravelRequestTravelType
 from app.schemas.reimbursement import ClaimDraftIn, InvoiceFieldsUpdateRequest
 from app.services.budget_alert_service import check_and_notify_budget_threshold
 from app.services.claim_submission_rules import validate_claim_submission
@@ -1772,6 +1773,23 @@ async def _create_or_update_claim_draft_impl(
             exclude_claim_id=claim.id,
             claim_category=payload.reimbursement_category,
         )
+
+    # Validated the same way _validate_request_details validates a travel request — the Travel
+    # Claim wizard offers the identical admin-managed dropdowns (GET /travel-requests/options),
+    # so a claim's travel_type/project_code/trip_purpose must resolve against the same active
+    # TravelRequestOption rows. General Reimbursement never sends travel_type=PROJECT or a
+    # trip_purpose, so this is a no-op for that wizard.
+    from app.services.travel_request_service import _require_active_option
+
+    type_val = (payload.travel_type or "NON_PROJECT").upper()
+    if type_val not in {t.value for t in TravelRequestTravelType}:
+        raise HTTPException(status_code=422, detail="Invalid travel_type")
+    if type_val == TravelRequestTravelType.PROJECT.value:
+        if not payload.project_code or not payload.project_code.strip():
+            raise HTTPException(status_code=422, detail="Project code is required for project travel")
+        await _require_active_option(TravelOptionType.PROJECT_CODE, payload.project_code, "Project code", db)
+    if payload.trip_purpose and payload.trip_purpose.strip():
+        await _require_active_option(TravelOptionType.TRIP_PURPOSE, payload.trip_purpose, "Trip purpose", db)
 
     # Set standard fields from payload
     exclude_keys = {"claim_id", "invoice_ids", "trip_ids"}

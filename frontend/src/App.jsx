@@ -41,12 +41,14 @@ const AuditLogs = lazy(() => import('./pages/admin/AuditLogs'));
 const ExpenseCategoryManager = lazy(() => import('./pages/admin/ExpenseCategoryManager'));
 const ExpenseLimitsMatrix = lazy(() => import('./pages/admin/ExpenseLimitsMatrix'));
 const ImpactLevelMaster = lazy(() => import('./pages/admin/ImpactLevelMaster'));
+const TravelOptions = lazy(() => import('./pages/admin/TravelOptions'));
 const PolicyVersionManager = lazy(() => import('./pages/admin/PolicyVersionManager'));
 const TeamBudgets = lazy(() => import('./pages/admin/TeamBudgets'));
 const UserManagement = lazy(() => import('./pages/admin/UserManagement'));
 const NotificationTemplates = lazy(() => import('./pages/admin/NotificationTemplates'));
 const WorkflowConfig = lazy(() => import('./pages/admin/WorkflowConfig'));
 const HolidayCalendar = lazy(() => import('./pages/admin/HolidayCalendar'));
+const PermissionMatrix = lazy(() => import('./pages/admin/PermissionMatrix'));
 const ComplianceDashboard = lazy(() => import('./pages/ComplianceDashboard'));
 const ExceptionRequestsPage = lazy(() => import('./pages/hr/ExceptionRequestsPage'));
 const TeamClaims = lazy(() => import('./pages/team/TeamClaims'));
@@ -81,7 +83,7 @@ export default function App() {
               <Route path="travel-requests" element={<TravelRequestsPage />} />
             </Route>
 
-            <Route element={<RoleGuard roles={['REPORTING_MANAGER']} />}>
+            <Route element={<RoleGuard permission="view_team_claims" />}>
               <Route path="team/claims" element={<TeamClaims />} />
               <Route path="team/spend" element={<TeamSpend />} />
             </Route>
@@ -90,14 +92,14 @@ export default function App() {
               <Route path="claims/:id" element={<ClaimDetail />} />
             </Route>
 
-            <Route element={<RoleGuard roles={['HRBP_HR', 'HRBP']} delegatableRoles={['HRBP_HR']} />}>
+            <Route element={<RoleGuard permission="view_travel_desk" />}>
               <Route path="travel-desk" element={<TravelDeskPage />} />
             </Route>
 
             <Route
               element={
                 <RoleGuard
-                  anyOf={['approve_stage_1', 'approve_stage_2', 'approve_stage_3', 'approve_stage_4', 'process_payments', 'approve_exception']}
+                  anyOf={['approve_claims', 'process_payments', 'approve_exception']}
                 />
               }
             >
@@ -113,42 +115,60 @@ export default function App() {
               <Route path="admin/users" element={<UserManagement />} />
             </Route>
 
+            {/* These each carry their own specific permission guard already, so they're
+                deliberately NOT nested under the configure_policy/view_admin_readonly gate
+                below — that nesting used to mean an IT_ADMIN who lost configure_policy (e.g. by
+                unchecking it in the Permission Matrix editor) lost access to every admin page
+                AT ONCE, including the Permission Matrix editor itself, with no self-service way
+                back in. Keeping these as independent top-level routes (same pattern as
+                admin/users above) means losing configure_policy only affects the pages that
+                actually need it — recovery via Role Permissions always stays reachable. */}
+            <Route
+              path="admin/team-budgets"
+              element={
+                <RoleGuard permission="manage_team_budgets">
+                  <TeamBudgets />
+                </RoleGuard>
+              }
+            />
+            <Route
+              path="admin/workflow-config"
+              element={
+                <RoleGuard anyOf={['view_workflow_config', 'edit_workflow_config']}>
+                  <WorkflowConfig />
+                </RoleGuard>
+              }
+            />
+            <Route
+              path="admin/notification-templates"
+              element={
+                <RoleGuard anyOf={['view_notification_templates', 'edit_notification_templates']}>
+                  <NotificationTemplates />
+                </RoleGuard>
+              }
+            />
+            <Route element={<RoleGuard permission="manage_holiday_calendar" />}>
+              <Route path="admin/holiday-calendar" element={<HolidayCalendar />} />
+            </Route>
+            <Route
+              path="admin/permission-matrix"
+              element={
+                <RoleGuard anyOf={['view_permission_matrix', 'edit_permission_matrix']}>
+                  <PermissionMatrix />
+                </RoleGuard>
+              }
+            />
+
             {/* Admin: generic read-only (workflow/policy viewers); bank details only with view_sensitive_admin */}
             <Route element={<RoleGuard anyOf={['configure_policy', 'view_admin_readonly']} />}>
               <Route path="admin" element={<Outlet />}>
                 <Route index element={<Dashboard />} />
                 <Route path="policy-versions" element={<PolicyVersionManager />} />
-                <Route
-                  path="team-budgets"
-                  element={
-                    <RoleGuard roles={['IT_ADMIN']}>
-                      <TeamBudgets />
-                    </RoleGuard>
-                  }
-                />
                 <Route path="expense-limits" element={<ExpenseLimitsMatrix />} />
                 <Route path="expense-categories" element={<ExpenseCategoryManager />} />
                 <Route path="impact-levels" element={<ImpactLevelMaster />} />
                 <Route path="city-groups" element={<CityGroupClassification />} />
-                <Route
-                  path="workflow-config"
-                  element={
-                    <RoleGuard anyOf={['view_workflow_config', 'edit_workflow_config']}>
-                      <WorkflowConfig />
-                    </RoleGuard>
-                  }
-                />
-                <Route
-                  path="notification-templates"
-                  element={
-                    <RoleGuard roles={['IT_ADMIN']}>
-                      <NotificationTemplates />
-                    </RoleGuard>
-                  }
-                />
-                <Route element={<RoleGuard roles={['IT_ADMIN']} />}>
-                  <Route path="holiday-calendar" element={<HolidayCalendar />} />
-                </Route>
+                <Route path="travel-options" element={<TravelOptions />} />
               </Route>
             </Route>
 
@@ -182,14 +202,14 @@ export default function App() {
             />
             <Route
               element={
-                <RoleGuard anyOf={['approve_stage_2', 'approve_stage_4', 'configure_policy', 'approve_exception']} />
+                <RoleGuard anyOf={['approve_claims', 'configure_policy', 'approve_exception']} />
               }
             >
               <Route element={<ApprovalScopeGuard area="exceptions" />}>
                 <Route path="hr/exceptions" element={<ExceptionRequestsPage />} />
               </Route>
             </Route>
-            <Route element={<RoleGuard roles={['HRBP_HR', 'HRBP', 'GROUP_HEAD_HR']} />}>
+            <Route element={<RoleGuard permission="view_reports" />}>
               <Route path="compliance" element={<ComplianceDashboard />} />
               <Route path="compliance/reports" element={<Navigate to="/compliance" replace />} />
             </Route>
@@ -206,7 +226,7 @@ export default function App() {
             </Route>
             {/* Advances are Finance-only, deliberately stricter than the other finance/
                 routes above (no view_reports fallback, no delegation) — see advances_api.py. */}
-            <Route element={<RoleGuard roles={['FINANCE']} />}>
+            <Route element={<RoleGuard permission="process_advances" />}>
               <Route path="finance/advances" element={<AdvancesPage />} />
             </Route>
           </Route>

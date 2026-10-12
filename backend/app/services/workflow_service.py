@@ -9,7 +9,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.rbac import PERMISSION_MATRIX, is_direct_report
+from app.core.rbac import is_direct_report
 from app.core.timezone import now_ist
 from app.models.auth import Delegation, Role, User
 from app.models.claim_workflow import (
@@ -69,6 +69,13 @@ EXCEPTION_APPROVAL_CHAINS: dict[str, list[str]] = {
     # exception_type isn't one of the named keys here, so it's the one editable control over
     # what happens to every "my claim breached a cap and there's no specific rule" case.
     "POLICY_EXCEPTION_GENERAL": ["REPORTING_MANAGER", "HRBP_HR"],
+    # Not actually an exception type — reuses this same configurable-chain storage (and the
+    # Approval Matrix's "Policy Approval" workflow type) for who approves a submitted
+    # PolicyVersion (see admin/policy.py's submit/approve/reject endpoints and
+    # app.models.policy.PolicyApproval). Single-role by default, matching today's behavior
+    # (HRBP_HR holds approve_policy) — but can be extended to a multi-stage sequential chain
+    # the same way an exception type's chain can.
+    "POLICY_APPROVAL": ["HRBP_HR"],
 }
 
 
@@ -1116,8 +1123,11 @@ async def assert_user_can_view_claim_workflow(claim_id: int, user_id: int, db: A
         
     if await is_direct_report(manager_user_id=user_id, target_user_id=claim.employee_user_id, db=db):
         return claim
-        
-    viewer_ok = PERMISSION_MATRIX.get(user.role, set()) & {"view_reports", "process_payments"}
+
+    from app.services.permission_config_service import get_effective_permission_matrix
+
+    matrix = await get_effective_permission_matrix(db)
+    viewer_ok = matrix.get(user.role, set()) & {"view_reports", "process_payments"}
     if viewer_ok:
         return claim
     stages = await _load_stages(claim_id, db)
@@ -2097,6 +2107,16 @@ async def _finalize_travel_request_approval(travel_request, db: AsyncSession) ->
             category="ACTION_REQUIRED",
             db=db,
         )
+
+    # Project stakeholders only get told once the request is actually happening — fully
+    # approved, right before it heads to the Travel Desk for ticketing — not at submission time,
+    # when it could still be rejected or sent back.
+    try:
+        from app.services.travel_request_service import notify_project_stakeholders_if_applicable
+
+        await notify_project_stakeholders_if_applicable(travel_request, db)
+    except Exception as e:
+        print(f"Failed to notify project stakeholders: {e}")
 
 
 async def approve_travel_request_stage(request_id: int, user_id: int, comment: str | None, db: AsyncSession):

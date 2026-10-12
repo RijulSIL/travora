@@ -37,7 +37,7 @@ router = APIRouter(prefix="/claims", tags=["claim-workflow"])
 
 @router.get("/pending-approvals")
 async def pending_approvals(
-    claims: dict = Depends(require_any_permission("approve_stage_1", "approve_stage_2", "approve_stage_3", "approve_stage_4", "process_payments", "approve_exception")),
+    claims: dict = Depends(require_any_permission("approve_claims", "process_payments", "approve_exception")),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
     return await list_pending_approvals(int(claims["sub"]), db)
@@ -107,7 +107,7 @@ async def claim_timeline(
 async def approve_stage(
     claim_id: int,
     payload: ApprovalActionBody | None = None,
-    claims: dict = Depends(require_any_permission("approve_stage_1", "approve_stage_2", "approve_stage_3")),
+    claims: dict = Depends(require_permission("approve_claims")),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     claim = await approve_claim_stage(claim_id, int(claims["sub"]), payload.comment if payload else None, db)
@@ -119,7 +119,7 @@ async def approve_stage(
 async def send_back(
     claim_id: int,
     payload: SendBackBody,
-    claims: dict = Depends(require_any_permission("approve_stage_1", "approve_stage_2", "approve_stage_3")),
+    claims: dict = Depends(require_permission("approve_claims")),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     claim = await send_back_claim(claim_id, int(claims["sub"]), payload.comment, db)
@@ -131,7 +131,7 @@ async def send_back(
 async def reject(
     claim_id: int,
     payload: RejectBody,
-    claims: dict = Depends(require_any_permission("approve_stage_1", "approve_stage_2", "approve_stage_3", "process_payments")),
+    claims: dict = Depends(require_any_permission("approve_claims", "process_payments")),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     claim = await reject_claim(claim_id, int(claims["sub"]), payload.reason, db)
@@ -143,7 +143,7 @@ async def reject(
 async def modify_amount(
     claim_id: int,
     payload: ModifyAmountBody,
-    claims: dict = Depends(require_any_permission("approve_stage_1", "approve_stage_2", "approve_stage_3")),
+    claims: dict = Depends(require_permission("approve_claims")),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     claim = await modify_claim_amount(claim_id, int(claims["sub"]), payload.new_amount, payload.comment, db)

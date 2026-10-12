@@ -3,8 +3,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.rbac import require_mfa, require_role
-from app.models.auth import Role
+from app.core.rbac import require_mfa, require_permission
 from app.schemas.holiday import CompanyHolidayCreateIn, CompanyHolidayOut, CompanyHolidayUpdateIn
 from app.services.holiday_service import (
     create_holiday,
@@ -15,7 +14,7 @@ from app.services.holiday_service import (
 
 router = APIRouter(prefix="/admin", tags=["holiday-calendar"])
 
-_IT_ADMIN_MFA = [Depends(require_role(Role.IT_ADMIN)), Depends(require_mfa)]
+_IT_ADMIN_MFA = [Depends(require_permission("manage_holiday_calendar")), Depends(require_mfa)]
 
 
 @router.get("/holidays", response_model=list[CompanyHolidayOut], dependencies=_IT_ADMIN_MFA)

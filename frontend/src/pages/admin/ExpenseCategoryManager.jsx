@@ -5,7 +5,7 @@ import PageHeader from '../../components/ui/PageHeader';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
 import { adminApi } from '../../services/adminApi';
-import { canEditPolicy } from '../../services/permissions';
+import { hasPermission } from '../../services/permissions';
 import { useAuthStore } from '../../store/authStore';
 
 const createEmptyForm = (policyVersionId = '') => ({
@@ -33,8 +33,9 @@ export default function ExpenseCategoryManager() {
   const [form, setForm] = useState(createEmptyForm());
   const [editingId, setEditingId] = useState(null);
   const [loadError, setLoadError] = useState(null);
-  const role = useAuthStore((state) => state.user?.role);
-  const isViewOnly = !canEditPolicy(role);
+  // The actual configure_policy permission, not a hardcoded role list — see ImpactLevelMaster.jsx.
+  const permissions = useAuthStore((state) => state.profile?.permissions);
+  const isViewOnly = !hasPermission(permissions, 'configure_policy');
 
   const load = async () => {
     try {

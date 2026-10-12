@@ -9,7 +9,7 @@ from app.models.policy import (
     AirClass,
     AirEligibility,
     CityGroup,
-    CityGroupType,
+    CityGroupTier,
     ExpenseLimit,
     ImpactLevel,
     PolicyStatus,
@@ -73,21 +73,25 @@ async def seed() -> None:
                 )
             )
 
+        tiers = [("A", "Group A", False), ("B", "Group B", False), ("C", "Group C", True)]
+        for code, display_name, is_default in tiers:
+            db.add(CityGroupTier(code=code, display_name=display_name, is_default=is_default))
+
         for city, group in [
-            ("Bengaluru", CityGroupType.A),
-            ("Chennai", CityGroupType.A),
-            ("Delhi NCR", CityGroupType.A),
-            ("Hyderabad", CityGroupType.A),
-            ("Kolkata", CityGroupType.A),
-            ("Mumbai", CityGroupType.A),
-            ("Pune", CityGroupType.A),
-            ("Ahmedabad", CityGroupType.A),
-            ("Chandigarh", CityGroupType.B),
-            ("Coimbatore", CityGroupType.B),
-            ("Indore", CityGroupType.B),
-            ("Jaipur", CityGroupType.B),
-            ("Kochi", CityGroupType.B),
-            ("Lucknow", CityGroupType.B),
+            ("Bengaluru", "A"),
+            ("Chennai", "A"),
+            ("Delhi NCR", "A"),
+            ("Hyderabad", "A"),
+            ("Kolkata", "A"),
+            ("Mumbai", "A"),
+            ("Pune", "A"),
+            ("Ahmedabad", "A"),
+            ("Chandigarh", "B"),
+            ("Coimbatore", "B"),
+            ("Indore", "B"),
+            ("Jaipur", "B"),
+            ("Kochi", "B"),
+            ("Lucknow", "B"),
         ]:
             db.add(
                 CityGroup(
@@ -97,7 +101,7 @@ async def seed() -> None:
                 )
             )
 
-        group_multiplier = {CityGroupType.A: 1.0, CityGroupType.B: 0.8, CityGroupType.C: 0.65}
+        group_multiplier = {"A": 1.0, "B": 0.8, "C": 0.65}
         base_by_level = {
             1: 12000,
             2: 10000,

@@ -7,6 +7,7 @@ export const reimbursementApi = {
   me: () => api.get('me'),
   updateAutoApproveThreshold: (threshold) => api.patch('me/auto-approve-threshold', { threshold }),
   getDelegations: () => api.get('me/delegations'),
+  myPolicyLimits: () => api.get('me/policy-limits'),
   createDelegation: (payload) => api.post('me/delegations', payload),
   deleteDelegation: (id) => api.delete(`me/delegations/${id}`),
   bookingTripsMy: (params) => api.get('booking/trips/my', { params }),
@@ -18,6 +19,9 @@ export const reimbursementApi = {
     api.post('travel-requests/request-with-exception', payload, config),
   travelRequestDelete: (id) => api.delete(`travel-requests/${id}`),
   travelEntitlementNote: () => api.get('travel-requests/entitlement-note'),
+  travelOptions: () => api.get('travel-requests/options'),
+  travelCityExpenseLimits: (city, travelDate) =>
+    api.get('travel-requests/expense-limits', { params: { city, travel_date: travelDate || undefined } }),
   travelCitySuggestions: (q, limit) =>
     api.get('travel-requests/city-suggestions', { params: { q, limit } }),
   travelDeskQueue: () => api.get('travel-requests/desk'),
@@ -31,6 +35,12 @@ export const reimbursementApi = {
     }),
   travelTicketFileBlob: (ticketId) =>
     api.get(`travel-requests/tickets/${ticketId}/file`, { responseType: 'blob' }),
+  travelUploadSupportingDocument: (id, formData) =>
+    api.post(`travel-requests/${id}/supporting-documents`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }),
+  travelSupportingDocumentBlob: (documentId) =>
+    api.get(`travel-requests/supporting-documents/${documentId}/file`, { responseType: 'blob' }),
 
   invoices: (params) => api.get('invoices', { params }),
   uploadInvoice: (formData) =>

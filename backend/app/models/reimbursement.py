@@ -19,7 +19,6 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
-from app.models.policy import CityGroupType
 
 
 class InvoiceStatus(str, enum.Enum):
@@ -154,13 +153,25 @@ class ClaimDraft(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     employee_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     employee_id: Mapped[str | None] = mapped_column(ForeignKey("employees.employee_id"), index=True)
+    # Same admin-managed TRIP_PURPOSE option values TravelRequest.purpose uses (validated in
+    # reimbursement_service against TravelRequestOption, same as _validate_request_details does
+    # for travel requests) — General Reimbursement claims leave this unvalidated free text since
+    # they never send travel_type/go through the Travel Claim wizard.
     trip_purpose: Mapped[str | None] = mapped_column(String(255))
+    travel_type: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="NON_PROJECT", server_default="NON_PROJECT"
+    )
+    # Value of the selected PROJECT_CODE option; only set when travel_type == PROJECT — mirrors
+    # TravelRequest.project_code exactly.
+    project_code: Mapped[str | None] = mapped_column(String(128))
     departure_date: Mapped[date | None] = mapped_column(Date)
     return_date: Mapped[date | None] = mapped_column(Date)
     office_location: Mapped[str | None] = mapped_column(String(255))
     from_city: Mapped[str | None] = mapped_column(String(128))
     destination_city: Mapped[str | None] = mapped_column(String(128), index=True)
-    destination_city_group: Mapped[CityGroupType | None] = mapped_column(Enum(CityGroupType))
+    # A CityGroupTier's `code`, stored as a plain string — see CityGroupTier's docstring
+    # (app/models/policy.py) for why this isn't a foreign key.
+    destination_city_group: Mapped[str | None] = mapped_column(String(32))
     # General Reimbursement claims have no trip, so this drives which wizard steps show and
     # which approval-matrix category applies — see workflow_service.get_workflow_config.
     # Derived from linked invoices when any is tagged REALLOCATION (see reimbursement_service

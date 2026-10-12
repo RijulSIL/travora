@@ -15,7 +15,7 @@ export default function MobileBottomNav({ role }) {
   const primary = useMemo(() => {
     return getFlatNavItems(role, profile).filter((item) => {
       if (!item.anyOf?.length) return true;
-      return hasAnyPermission(role, item.anyOf, profile?.delegated_roles);
+      return hasAnyPermission(profile?.permissions, item.anyOf);
     });
   }, [role]);
   const mobileItems = useMemo(

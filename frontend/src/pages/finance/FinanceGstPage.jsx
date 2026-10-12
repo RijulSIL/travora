@@ -1,24 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts';
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { reimbursementApi } from '../../services/reimbursementApi';
-
-const CATEGORY_COLORS = [
-  '#116149', '#3b82f6', '#f59e0b', '#8b5cf6', '#ef4444',
-  '#06b6d4', '#ec4899', '#84cc16', '#f97316', '#6366f1', '#94a3b8',
-];
 
 const pad = (n) => String(n).padStart(2, '0');
 const toISO = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -36,14 +20,13 @@ export default function FinanceGstPage() {
   useSetPageTitle('GST Dashboard');
   const [gst, setGst] = useState(null);
   const [monthly, setMonthly] = useState([]);
-  const [spendByCategory, setSpendByCategory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState({ ...monthBounds(0), department: '', expense_category: '', impact_level: '' });
 
   const run = async (payload) => {
     setLoading(true);
     try {
-      const [summaryRes, monthlyRes, categoryRes] = await Promise.all([
+      const [summaryRes, monthlyRes] = await Promise.all([
         reimbursementApi.gstSummary(payload),
         Promise.all(
           Array.from({ length: 6 }).map((_, i) => {
@@ -54,17 +37,12 @@ export default function FinanceGstPage() {
             }));
           }),
         ),
-        reimbursementApi.spendByCategory(payload),
       ]);
       setGst(summaryRes.data || null);
       setMonthly(monthlyRes || []);
-      // amount comes back as a Decimal, which FastAPI/Pydantic serialize as a JSON string
-      // (e.g. "3655.00") — recharts' Pie needs an actual number to compute slice angles from.
-      setSpendByCategory((categoryRes.data || []).map((row) => ({ ...row, amount: Number(row.amount) })));
     } catch {
       setGst(null);
       setMonthly([]);
-      setSpendByCategory([]);
     } finally {
       setLoading(false);
     }
@@ -150,53 +128,6 @@ export default function FinanceGstPage() {
             <Bar dataKey="totalTax" name="Total Tax" fill="#116149" radius={[0, 4, 4, 0]} barSize={18} animationDuration={600} />
           </BarChart>
         </ResponsiveContainer>
-      </section>
-
-      <section className="panel rounded-2xl p-5">
-        <h3 className="mb-1 text-[15px] font-bold text-ink">Spend by category</h3>
-        <p className="mb-4 text-xs text-slate-500">
-          What money is being spent on — Hotel, Software, Local Conveyance, etc. — classified from each invoice&apos;s
-          extracted content, not just the filename.
-        </p>
-        {spendByCategory.length ? (
-          <div className="grid gap-4 md:grid-cols-[1fr_260px]">
-            <ResponsiveContainer width="100%" height={280}>
-              <PieChart>
-                <Pie
-                  data={spendByCategory}
-                  dataKey="amount"
-                  nameKey="category"
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={60}
-                  outerRadius={100}
-                  paddingAngle={2}
-                >
-                  {spendByCategory.map((entry, index) => (
-                    <Cell key={entry.category} fill={CATEGORY_COLORS[index % CATEGORY_COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip formatter={(value) => `₹${fmtMoney(value)}`} contentStyle={{ borderRadius: 12, border: '1px solid #e2e8f0', fontSize: 12 }} />
-              </PieChart>
-            </ResponsiveContainer>
-            <div className="flex flex-col justify-center gap-2 text-sm">
-              {spendByCategory.map((row, index) => (
-                <div key={row.category} className="flex items-center justify-between gap-2">
-                  <span className="flex items-center gap-2 truncate text-slate-700">
-                    <span
-                      className="h-2.5 w-2.5 shrink-0 rounded-full"
-                      style={{ backgroundColor: CATEGORY_COLORS[index % CATEGORY_COLORS.length] }}
-                    />
-                    <span className="truncate">{row.category}</span>
-                  </span>
-                  <span className="shrink-0 font-mono font-semibold text-ink">₹{fmtMoney(row.amount)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : (
-          <p className="text-sm text-slate-600">No categorized spend for this slice.</p>
-        )}
       </section>
     </div>
   );

@@ -258,3 +258,60 @@ textarea {
 .toast-info {
   @apply bg-blue-600 text-white;
 }
+
+/* BounceLoader — ground contact at 0%/100% (squash), apex at 50%. */
+.bounce-loader { position: relative; width: 96px; height: 104px; }
+.bounce-loader-ball {
+  position: absolute; left: 50%; bottom: 10px;
+  width: 52px; height: 52px; margin-left: -26px;
+  border-radius: 50%;
+  background: #e4f2ec;
+  box-shadow: inset 0 0 0 1px rgba(17, 97, 73, 0.08);
+  transform-origin: 50% 100%;
+  transition: background-color 260ms ease;
+}
+.bounce-loader-shadow {
+  position: absolute; left: 50%; bottom: 4px;
+  width: 40px; height: 8px; margin-left: -20px;
+  border-radius: 50%;
+  background: rgba(17, 60, 45, 0.16);
+  filter: blur(1.5px);
+}
+.bounce-loader.is-bouncing .bounce-loader-ball { animation: bounce-loader-bounce 900ms infinite; }
+.bounce-loader.is-bouncing .bounce-loader-shadow { animation: bounce-loader-shadow 900ms infinite; }
+.bounce-loader.is-done .bounce-loader-ball { background-color: #116149; animation: bounce-loader-settle 320ms ease-out; }
+.bounce-loader-icon {
+  position: absolute; inset: 0;
+  margin: auto;
+  width: 24px; height: 24px;
+  color: #116149;
+  opacity: 0;
+  transform: scale(0.6);
+  filter: blur(2px);
+  transition: opacity 180ms ease, transform 220ms cubic-bezier(0.3, 1.4, 0.6, 1), filter 180ms ease;
+}
+.bounce-loader-icon.is-active { opacity: 1; transform: scale(1); filter: blur(0); }
+.bounce-loader-tick { color: #fff; width: 26px; height: 26px; }
+.bounce-loader-tick path { stroke-dasharray: 24; stroke-dashoffset: 24; }
+.bounce-loader.is-done .bounce-loader-tick path { animation: bounce-loader-draw 360ms 80ms ease-out forwards; }
+@keyframes bounce-loader-bounce {
+  0%   { transform: translateY(0) scale(1.12, 0.86); animation-timing-function: cubic-bezier(0.3, 0.7, 0.5, 1); }
+  10%  { transform: translateY(-6px) scale(0.96, 1.05); animation-timing-function: cubic-bezier(0.2, 0.6, 0.4, 1); }
+  50%  { transform: translateY(-36px) scale(1, 1); animation-timing-function: cubic-bezier(0.6, 0, 0.8, 0.4); }
+  90%  { transform: translateY(-4px) scale(0.97, 1.04); animation-timing-function: ease-out; }
+  100% { transform: translateY(0) scale(1.12, 0.86); }
+}
+@keyframes bounce-loader-shadow {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(0.6); opacity: 0.45; }
+}
+@keyframes bounce-loader-settle { 0% { transform: scale(1.12, 0.86); } 60% { transform: scale(0.97, 1.03); } 100% { transform: scale(1); } }
+@keyframes bounce-loader-draw { to { stroke-dashoffset: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .bounce-loader.is-bouncing .bounce-loader-ball,
+  .bounce-loader.is-bouncing .bounce-loader-shadow,
+  .bounce-loader.is-done .bounce-loader-ball { animation: none; }
+  .bounce-loader-icon { transform: none; filter: none; transition: opacity 300ms ease; }
+  .bounce-loader-tick path { stroke-dashoffset: 0; }
+  .bounce-loader.is-done .bounce-loader-tick path { animation: none; }
+}

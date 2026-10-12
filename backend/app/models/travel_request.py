@@ -2,7 +2,7 @@ import enum
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, Numeric, String, Text, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -30,6 +30,60 @@ class TripType(str, enum.Enum):
     MULTI_CITY = "MULTI_CITY"
 
 
+class TravelRequestTravelType(str, enum.Enum):
+    PROJECT = "PROJECT"
+    NON_PROJECT = "NON_PROJECT"
+
+
+class TravelOptionType(str, enum.Enum):
+    """Which admin-managed dropdown a TravelRequestOption row belongs to."""
+
+    PROJECT_CODE = "PROJECT_CODE"
+    TRIP_PURPOSE = "TRIP_PURPOSE"
+
+
+class TravelRequestOption(Base):
+    """Admin-managed dropdown entries for the travel request form (Project Code, Trip Purpose).
+
+    `value` is what a TravelRequest stores (project_code / purpose) as a plain string — same
+    pattern as CityGroupTier.code, no hard foreign key — so a historical request keeps reading
+    exactly as submitted even after its option is later renamed or deactivated. `value` is
+    immutable once created for the same reason; `label` is the editable display text. Options
+    are deactivated, never deleted."""
+
+    __tablename__ = "travel_request_options"
+    __table_args__ = (UniqueConstraint("option_type", "value", name="uq_travel_request_options_type_value"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    option_type: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    value: Mapped[str] = mapped_column(String(128), nullable=False)
+    label: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="1")
+    # Only meaningful on a TRIP_PURPOSE row: when a PROJECT-type request is submitted with this
+    # purpose selected, every email configured for its project_code (ProjectNotificationRecipient
+    # below) gets notified — see travel_request_service.notify_project_stakeholders_if_applicable.
+    notify_project_stakeholders: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
+
+
+class ProjectNotificationRecipient(Base):
+    """Admin-managed "who to email" list for a given project_code (a TravelRequestOption value,
+    stored the same unbound way — no FK, see that model's docstring: the value itself is
+    immutable once created, so this list never gets orphaned by a label rename). These people
+    don't need an account on the system at all — they're just plain email addresses
+    notify_project_stakeholders_if_applicable (travel_request_service.py) sends to."""
+
+    __tablename__ = "project_notification_recipients"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_code: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
+
+
 class TravelRequest(Base):
     __tablename__ = "travel_requests"
 
@@ -41,8 +95,24 @@ class TravelRequest(Base):
     to_city: Mapped[str | None] = mapped_column(String(128), nullable=True) # Optional for multi-city
     travel_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True) # Optional for multi-city
     return_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Value of the selected active TRIP_PURPOSE option (see TravelRequestOption); older rows may
+    # still hold the free text that was typed before this became a dropdown.
     purpose: Mapped[str | None] = mapped_column(Text)
+    travel_type: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=TravelRequestTravelType.NON_PROJECT.value, server_default="NON_PROJECT"
+    )
+    # Value of the selected PROJECT_CODE option; only set when travel_type == PROJECT.
+    project_code: Mapped[str | None] = mapped_column(String(128))
+    # Legacy: the Preferred Cabin Class input was removed from the form, the column is kept
+    # only so already-submitted requests keep their data.
     preferred_class: Mapped[str | None] = mapped_column(String(64))
+    needs_additional_booking: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+    # Legacy free-text version of the same ask — kept only so requests submitted before
+    # TravelRequestBookingItem existed keep their original wording; new submissions always use
+    # booking_items below instead and leave this null.
+    additional_booking_details: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default=TravelRequestStatus.PENDING.value, index=True)
     rejection_reason: Mapped[str | None] = mapped_column(Text)
@@ -64,6 +134,20 @@ class TravelRequest(Base):
     tickets = relationship(
         "TravelRequestTicket",
         order_by="TravelRequestTicket.leg_sequence, TravelRequestTicket.uploaded_at",
+        viewonly=True,
+    )
+    # selectin so every query that returns a TravelRequest (there are many, each with its own
+    # selectinload list) serializes safely under the async session without per-site opt-in.
+    supporting_documents = relationship(
+        "TravelRequestSupportingDocument",
+        order_by="TravelRequestSupportingDocument.uploaded_at",
+        lazy="selectin",
+        viewonly=True,
+    )
+    booking_items = relationship(
+        "TravelRequestBookingItem",
+        order_by="TravelRequestBookingItem.id",
+        lazy="selectin",
         viewonly=True,
     )
 
@@ -101,6 +185,51 @@ class TravelRequestTicket(Base):
     ticket_travel_class: Mapped[str | None] = mapped_column(String(64))
     external_booking_source: Mapped[str | None] = mapped_column(String(128))
     notes_for_employee: Mapped[str | None] = mapped_column(Text)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
+
+
+class TravelRequestBookingItem(Base):
+    """One "please also book X" need listed when the traveler checks "I need the company to
+    book anything else for this trip" — hotel, cab, visa, etc. Each need is its own row (not one
+    free-text blob, which additional_booking_details used to be — still kept on TravelRequest
+    for already-submitted requests' history, but no longer written to by new submissions) so the
+    Travel Desk can attach a distinct proof document to each specific item via
+    TravelRequestSupportingDocument.booking_item_id, instead of one undifferentiated pile of
+    files for the whole request."""
+
+    __tablename__ = "travel_request_booking_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    travel_request_id: Mapped[int] = mapped_column(
+        ForeignKey("travel_requests.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    description: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
+
+
+class TravelRequestSupportingDocument(Base):
+    """Documents the Travel Desk attaches to a request for the "book anything else" part of it
+    (hotel confirmation, visa receipt, ...). Separate from TravelRequestTicket, which is strictly
+    one ticket per itinerary leg."""
+
+    __tablename__ = "travel_request_supporting_documents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    travel_request_id: Mapped[int] = mapped_column(
+        ForeignKey("travel_requests.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # Which specific need (TravelRequestBookingItem) this proof is for — None only for documents
+    # uploaded before this feature existed, which had no item to attach to.
+    booking_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("travel_request_booking_items.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    uploaded_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    file_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    storage_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    file_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    description: Mapped[str | None] = mapped_column(String(255))
     uploaded_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
 
 

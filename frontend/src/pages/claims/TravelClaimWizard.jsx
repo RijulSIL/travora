@@ -62,6 +62,8 @@ export default function TravelClaimWizard() {
   const [claim, setClaim] = useState(null);
   const [form, setForm] = useState({
     trip_purpose: '',
+    travel_type: 'NON_PROJECT',
+    project_code: '',
     office_location: '',
     from_city: '',
     destination_city: '',
@@ -69,6 +71,9 @@ export default function TravelClaimWizard() {
     return_date: '',
   });
   const [officeLocations, setOfficeLocations] = useState([]);
+  const [travelOptions, setTravelOptions] = useState({ project_codes: [], trip_purposes: [] });
+  const [cityQ, setCityQ] = useState('');
+  const [cityOptions, setCityOptions] = useState([]);
   const [cityGroupHint, setCityGroupHint] = useState('');
   const [deadlineWarning, setDeadlineWarning] = useState('');
   const [validationErrors, setValidationErrors] = useState({});
@@ -91,10 +96,11 @@ export default function TravelClaimWizard() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [tripOutcome, invoiceOutcome, meOutcome] = await Promise.allSettled([
+      const [tripOutcome, invoiceOutcome, meOutcome, optionsOutcome] = await Promise.allSettled([
         reimbursementApi.bookingTripsMy({ unlinked_only: true }),
         reimbursementApi.invoices({ unlinked: true, editing_claim_id: effectiveEditId || undefined }),
         reimbursementApi.me(),
+        reimbursementApi.travelOptions(),
       ]);
       if (!cancelled) {
         if (tripOutcome.status === 'fulfilled') {
@@ -134,6 +140,11 @@ export default function TravelClaimWizard() {
         if (tripOutcome.status === 'rejected' || invoiceOutcome.status === 'rejected') {
           showToast('Could not load trips or invoices', 'error');
         }
+        if (optionsOutcome.status === 'fulfilled') {
+          setTravelOptions(optionsOutcome.value.data || { project_codes: [], trip_purposes: [] });
+        } else {
+          setTravelOptions({ project_codes: [], trip_purposes: [] });
+        }
       }
     })();
     return () => {
@@ -153,6 +164,8 @@ export default function TravelClaimWizard() {
         setForm((prev) => ({
           ...prev,
           trip_purpose: row.trip_purpose || '',
+          travel_type: row.travel_type || 'NON_PROJECT',
+          project_code: row.project_code || '',
           office_location: row.office_location || '',
           from_city: row.from_city || '',
           destination_city: row.destination_city || '',
@@ -169,6 +182,30 @@ export default function TravelClaimWizard() {
       cancelled = true;
     };
   }, [effectiveEditId, showToast]);
+
+  // From City / Destination City autocomplete — same debounced City Groups suggestion endpoint
+  // the Travel Request form already uses (city_suggestions / CityGroup.city_name), so both
+  // forms offer identical suggestions. Free text still works: a city missing here just falls
+  // back to the default tier (see resolve_city_group), it isn't a closed list.
+  useEffect(() => {
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        if (!cityQ.trim()) {
+          setCityOptions([]);
+          return;
+        }
+        const r = await reimbursementApi.travelCitySuggestions(cityQ, 40);
+        if (!cancelled) setCityOptions(r.data || []);
+      } catch {
+        if (!cancelled) setCityOptions([]);
+      }
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [cityQ]);
 
   // Draft Auto-Save: Load from localStorage on mount
   useEffect(() => {
@@ -294,8 +331,16 @@ export default function TravelClaimWizard() {
         next.return_date = returnValue;
         changed = true;
       }
-      if (!next.trip_purpose && (firstTrip.travel_purpose || firstTrip.purpose)) {
-        next.trip_purpose = firstTrip.travel_purpose || firstTrip.purpose;
+      if (firstTrip.purpose && next.trip_purpose !== firstTrip.purpose) {
+        next.trip_purpose = firstTrip.purpose;
+        changed = true;
+      }
+      if (firstTrip.travel_type && next.travel_type !== firstTrip.travel_type) {
+        next.travel_type = firstTrip.travel_type;
+        changed = true;
+      }
+      if (firstTrip.project_code && next.project_code !== firstTrip.project_code) {
+        next.project_code = firstTrip.project_code;
         changed = true;
       }
 
@@ -319,6 +364,9 @@ export default function TravelClaimWizard() {
       if (key === 'office_location' && value && !prev.from_city) {
         next.from_city = value;
       }
+      if (key === 'travel_type' && value !== 'PROJECT') {
+        next.project_code = '';
+      }
       return next;
     });
   };
@@ -326,6 +374,7 @@ export default function TravelClaimWizard() {
   const validateStep1 = () => {
     const next = {};
     if (!form.trip_purpose.trim()) next.trip_purpose = 'Trip purpose is required.';
+    if (form.travel_type === 'PROJECT' && !form.project_code.trim()) next.project_code = 'Project code is required.';
     if (!form.office_location.trim()) next.office_location = 'Office location is required.';
     if (!form.from_city.trim()) next.from_city = 'From city is required.';
     if (!form.destination_city.trim()) next.destination_city = 'Destination city is required.';
@@ -381,6 +430,8 @@ export default function TravelClaimWizard() {
         invoice_ids: selectedInvoiceIds,
         trip_ids: selectedTripIds,
         trip_purpose: form.trip_purpose || null,
+        travel_type: form.travel_type,
+        project_code: form.travel_type === 'PROJECT' ? form.project_code || null : null,
         departure_date: form.departure_date || null,
         return_date: form.return_date || null,
         office_location: form.office_location || null,
@@ -579,6 +630,9 @@ export default function TravelClaimWizard() {
           form={form}
           onChange={onChange}
           officeLocations={officeLocations}
+          travelOptions={travelOptions}
+          cityOptions={cityOptions}
+          onCityQueryChange={setCityQ}
           cityGroupHint={cityGroupHint}
           deadlineWarning={deadlineWarning}
           validationErrors={validationErrors}

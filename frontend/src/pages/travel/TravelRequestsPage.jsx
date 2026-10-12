@@ -4,7 +4,8 @@ import { Link } from 'react-router-dom';
 import {
   Plus, Plane, Train, Bus, FileText, ArrowRight,
   Clock, Info, ShieldAlert, ArrowUpRight,
-  X, ChevronDown, ChevronUp, GitBranch
+  X, ChevronDown, ChevronUp, GitBranch, Paperclip,
+  ArrowLeftRight, Briefcase, CalendarDays, CheckCircle2, ConciergeBell, Hash, MessageSquare, Target
 } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 
@@ -51,6 +52,125 @@ function getStatusDetails(status) {
   }
 }
 
+function emptyRequestForm() {
+  return {
+    trip_type: 'ONE_WAY',
+    travel_mode: 'FLIGHT',
+    from_city: '',
+    to_city: '',
+    travel_date: '',
+    return_date: '',
+    travel_type: 'NON_PROJECT',
+    project_code: '',
+    purpose: '',
+    needs_additional_booking: false,
+    additional_booking_items: [],
+    notes: '',
+    legs: [{ travel_mode: 'FLIGHT', from_city: '', to_city: '', travel_date: '', preferred_time: '' }]
+  };
+}
+
+const TRIP_TYPE_LABELS = { ONE_WAY: 'One Way', ROUND_TRIP: 'Round Trip', MULTI_CITY: 'Multi-City' };
+
+function DetailTile({ icon: Icon, label, value }) {
+  return (
+    <div className="rounded-md bg-slate-50 px-3 py-2">
+      <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-slate-400">
+        <Icon size={11} className="shrink-0" />
+        {label}
+      </div>
+      <div className="mt-0.5 break-words text-xs font-semibold text-slate-800">{value}</div>
+    </div>
+  );
+}
+
+function DocLink({ doc, onOpen }) {
+  return (
+    <button
+      type="button"
+      className="flex max-w-full items-center gap-1.5 text-left text-[11px] font-semibold text-brand hover:underline"
+      onClick={() => onOpen(doc)}
+    >
+      <Paperclip size={11} className="shrink-0" />
+      <span className="truncate">{doc.description || doc.original_filename}</span>
+    </button>
+  );
+}
+
+function NoteBlock({ icon: Icon, label, text, tone = 'plain' }) {
+  const toneClass = tone === 'warn' ? 'border-orange-100 bg-orange-50/40' : 'border-slate-100';
+  return (
+    <div className={`flex gap-2 rounded-lg border px-3 py-2.5 ${toneClass}`}>
+      <Icon size={13} className="mt-0.5 shrink-0 text-slate-400" />
+      <div className="min-w-0">
+        <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">{label}</div>
+        <p className="mt-0.5 whitespace-pre-wrap break-words text-xs text-slate-700">{text}</p>
+      </div>
+    </div>
+  );
+}
+
+/** "PRJ-1024 — Plant expansion"; just the value when the admin gave no separate description. */
+function optionText(option) {
+  return option.label && option.label !== option.value ? `${option.value} — ${option.label}` : option.value;
+}
+
+const LIMIT_FIELDS = [
+  { key: 'hotel', label: 'Hotel' },
+  { key: 'food', label: 'Food' },
+  { key: 'incidental', label: 'Incidentals' },
+  { key: 'day_visit', label: 'Day Visit' },
+];
+
+/** Travel-policy expense caps at each destination — shown when the traveler isn't asking the
+ * company to book anything extra, i.e. they'll be paying for these things themselves. */
+function ExpenseLimitsPanel({ limits, loading }) {
+  if (!loading && limits.length === 0) return null;
+  return (
+    <div className="space-y-2.5 rounded-lg border border-slate-200 bg-slate-50 p-3">
+      <div className="flex items-start gap-2 text-[11px] font-semibold text-slate-600">
+        <Info size={14} className="text-brand shrink-0 mt-0.5" />
+        <span>Expense limits at your destination under the travel policy</span>
+      </div>
+      {loading && limits.length === 0 ? (
+        <div className="flex items-center gap-1.5 text-[11px] font-bold text-slate-400">
+          <Clock className="animate-spin" size={12} /> Checking limits...
+        </div>
+      ) : null}
+      {limits.map((entry) => (
+        <div key={entry.city} className="rounded-lg border border-slate-200 bg-white p-3">
+          <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] font-bold text-slate-800">
+            <span>{entry.city}</span>
+            <span className="rounded-sm bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600">
+              {entry.city_group_name || `Group ${entry.city_group}`}
+            </span>
+            <span className="font-medium text-slate-400">· Impact level {entry.impact_level}</span>
+          </div>
+          {entry.has_limits ? (
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-[11px] sm:grid-cols-4">
+              {LIMIT_FIELDS.map(({ key, label }) => (
+                <div key={key}>
+                  <dt className="font-semibold text-slate-400">{label}</dt>
+                  <dd className="mt-0.5 font-bold text-slate-700">
+                    {entry[`${key}_cap`] != null ? formatCurrency(entry[`${key}_cap`]) : 'No limit'}
+                    {entry[`${key}_cap`] != null ? (
+                      <span className="ml-1 text-[9px] font-medium text-slate-400">
+                        {entry[`${key}_is_hard_block`] ? 'hard limit' : 'soft limit'}
+                      </span>
+                    ) : null}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          ) : (
+            <p className="text-[11px] italic text-slate-400">No expense limits are configured for this city under the current policy.</p>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function TravelRequestsPage() {
   useSetPageTitle('Travel Requests');
   const profile = useAuthStore((s) => s.profile);
@@ -60,23 +180,15 @@ export default function TravelRequestsPage() {
   const [trips, setTrips] = useState([]);
   const [loading, setLoading] = useState(true);
   const [entitlement, setEntitlement] = useState(null);
+  const [travelOptions, setTravelOptions] = useState({ project_codes: [], trip_purposes: [] });
+  const [cityLimits, setCityLimits] = useState([]);
+  const [limitsLoading, setLimitsLoading] = useState(false);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [submissionState, setSubmissionState] = useState({ active: false, status: 'idle', mode: null });
   useBodyScrollLock(modalOpen || submissionState.active);
-    const form = useFormValidation({
-    initialValues: {
-      trip_type: 'ONE_WAY',
-      travel_mode: 'FLIGHT',
-      from_city: '',
-      to_city: '',
-      travel_date: '',
-      return_date: '',
-      purpose: '',
-      preferred_class: '',
-      notes: '',
-      legs: [{ travel_mode: 'FLIGHT', from_city: '', to_city: '', travel_date: '', preferred_time: '' }]
-    },
+  const form = useFormValidation({
+    initialValues: emptyRequestForm(),
     rules: {
       trip_type: [required()],
       travel_mode: [required()],
@@ -84,13 +196,27 @@ export default function TravelRequestsPage() {
       to_city: [(val, values) => values.trip_type !== 'MULTI_CITY' ? required()(val) : null],
       travel_date: [(val, values) => values.trip_type !== 'MULTI_CITY' ? required()(val) : null],
       return_date: [(val, values) => values.trip_type === 'ROUND_TRIP' ? required()(val) : null],
+      travel_type: [required()],
+      project_code: [(val, values) => values.travel_type === 'PROJECT' ? required()(val) : null],
       purpose: [required()],
-      preferred_class: [],
+      additional_booking_items: [(val, values) => values.needs_additional_booking ? required()(val) : null],
       notes: [],
     },
   });
   const [cityQ, setCityQ] = useState('');
   const [cityOptions, setCityOptions] = useState([]);
+  const [bookingItemDraft, setBookingItemDraft] = useState('');
+
+  function addBookingItem() {
+    const text = bookingItemDraft.trim();
+    if (!text) return;
+    form.handleChange('additional_booking_items', [...form.values.additional_booking_items, text]);
+    setBookingItemDraft('');
+  }
+
+  function removeBookingItem(index) {
+    form.handleChange('additional_booking_items', form.values.additional_booking_items.filter((_, i) => i !== index));
+  }
   const [preview, setPreview] = useState({ open: false, blob: null, name: '', type: '', title: '' });
   const [confirmCancelId, setConfirmCancelId] = useState(null);
   const [expandedIds, setExpandedIds] = useState(() => new Set());
@@ -144,6 +270,68 @@ export default function TravelRequestsPage() {
       .then((r) => setEntitlement(r.data))
       .catch(() => setEntitlement(null));
   }, []);
+
+  // Admins manage these lists, so re-read them every time the form opens rather than caching
+  // for the whole session.
+  useEffect(() => {
+    if (!modalOpen) return;
+    reimbursementApi
+      .travelOptions()
+      .then((r) => setTravelOptions(r.data || { project_codes: [], trip_purposes: [] }))
+      .catch(() => setTravelOptions({ project_codes: [], trip_purposes: [] }));
+  }, [modalOpen]);
+
+  // Destinations the traveler's policy limits are shown for: the To City of a one-way / round
+  // trip, or each distinct leg destination (with that leg's date) for a multi-city trip.
+  const limitTargets = useMemo(() => {
+    const { trip_type: tripType, to_city: toCity, travel_date: travelDate, legs } = form.values;
+    const raw = tripType === 'MULTI_CITY'
+      ? legs.map((l) => ({ city: l.to_city, date: l.travel_date }))
+      : [{ city: toCity, date: travelDate }];
+    const seen = new Set();
+    return raw
+      .map((t) => ({ city: (t.city || '').trim(), date: t.date || '' }))
+      .filter((t) => {
+        if (!t.city || seen.has(t.city.toLowerCase())) return false;
+        seen.add(t.city.toLowerCase());
+        return true;
+      });
+  }, [form.values]);
+  const limitTargetsKey = JSON.stringify(limitTargets);
+  const showExpenseLimits = modalOpen && !form.values.needs_additional_booking;
+
+  useEffect(() => {
+    if (!showExpenseLimits || limitTargets.length === 0) {
+      setCityLimits([]);
+      setLimitsLoading(false);
+      return undefined;
+    }
+    let cancelled = false;
+    setLimitsLoading(true);
+    // Debounced so a half-typed city name isn't looked up on every keystroke.
+    const t = setTimeout(async () => {
+      try {
+        const results = await Promise.all(
+          limitTargets.map((target) =>
+            reimbursementApi
+              .travelCityExpenseLimits(target.city, target.date)
+              .then((r) => r.data)
+              .catch(() => null),
+          ),
+        );
+        if (!cancelled) setCityLimits(results.filter(Boolean));
+      } finally {
+        if (!cancelled) setLimitsLoading(false);
+      }
+    }, 600);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+    // limitTargets is derived from limitTargetsKey, so keying on the string avoids refetching
+    // on every unrelated keystroke elsewhere in the form.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showExpenseLimits, limitTargetsKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -224,8 +412,13 @@ export default function TravelRequestsPage() {
       to_city: form.values.trip_type !== 'MULTI_CITY' ? form.values.to_city : null,
       travel_date: form.values.trip_type !== 'MULTI_CITY' ? form.values.travel_date : null,
       return_date: form.values.trip_type === 'ROUND_TRIP' ? form.values.return_date || null : null,
+      travel_type: form.values.travel_type,
+      project_code: form.values.travel_type === 'PROJECT' ? form.values.project_code || null : null,
       purpose: form.values.purpose || null,
-      preferred_class: form.values.preferred_class || null,
+      needs_additional_booking: form.values.needs_additional_booking,
+      additional_booking_items: form.values.needs_additional_booking
+        ? form.values.additional_booking_items
+        : [],
       notes: form.values.notes || null,
       legs,
     };
@@ -250,18 +443,8 @@ export default function TravelRequestsPage() {
       const my = await reimbursementApi.travelRequestsMy();
       setRows(my.data || []);
 
-      form.setValues({
-        trip_type: 'ONE_WAY',
-        travel_mode: 'FLIGHT',
-        from_city: '',
-        to_city: '',
-        travel_date: '',
-        return_date: '',
-        purpose: '',
-        preferred_class: '',
-        notes: '',
-        legs: [{ travel_mode: 'FLIGHT', from_city: '', to_city: '', travel_date: '', preferred_time: '' }]
-      });
+      form.setValues(emptyRequestForm());
+      setBookingItemDraft('');
 
     } catch (err) {
       setIsSubmitting(false);
@@ -306,18 +489,8 @@ export default function TravelRequestsPage() {
       const my = await reimbursementApi.travelRequestsMy();
       setRows(my.data || []);
 
-      form.setValues({
-        trip_type: 'ONE_WAY',
-        travel_mode: 'FLIGHT',
-        from_city: '',
-        to_city: '',
-        travel_date: '',
-        return_date: '',
-        purpose: '',
-        preferred_class: '',
-        notes: '',
-        legs: [{ travel_mode: 'FLIGHT', from_city: '', to_city: '', travel_date: '', preferred_time: '' }]
-      });
+      form.setValues(emptyRequestForm());
+      setBookingItemDraft('');
     } catch (err) {
       setSubmissionState({ active: false, status: 'idle', mode: null });
       showToast(err.response?.data?.detail || err.message || 'Failed to submit exception', 'error');
@@ -358,6 +531,21 @@ export default function TravelRequestsPage() {
       });
     } catch (e) {
       showToast('Could not load ticket preview', 'error');
+    }
+  }
+
+  async function viewSupportingDocument(doc) {
+    try {
+      const resp = await reimbursementApi.travelSupportingDocumentBlob(doc.id);
+      setPreview({
+        open: true,
+        blob: resp.data,
+        name: doc.original_filename || 'document.pdf',
+        type: doc.content_type || resp.headers['content-type'] || '',
+        title: doc.description || doc.original_filename || 'Supporting document',
+      });
+    } catch (e) {
+      showToast('Could not load document preview', 'error');
     }
   }
 
@@ -472,6 +660,10 @@ export default function TravelRequestsPage() {
                     const isExpanded = expandedIds.has(request.id);
                     const ticketedSegments = (request.segments || []).filter((s) => s.ticket);
                     const isTicketMenuOpen = openTicketMenuId === request.id;
+                    // Docs uploaded before per-item linking existed (booking_item_id null) still show, just ungrouped.
+                    const unlinkedSupportingDocuments = (request.supporting_documents || []).filter((doc) => !doc.booking_item_id);
+                    const provenItemIds = new Set((request.supporting_documents || []).map((doc) => doc.booking_item_id).filter(Boolean));
+                    const bookedItemCount = (request.booking_items || []).filter((item) => provenItemIds.has(item.id)).length;
 
                     return (
                       <Fragment key={request.id}>
@@ -609,99 +801,131 @@ export default function TravelRequestsPage() {
                         {isExpanded ? (
                           <tr className="bg-slate-50/60">
                             <td colSpan={7} className="px-5 py-4 border-b border-slate-150">
-                              <div className="panel flex w-full flex-col gap-6 rounded-xl border border-slate-200 bg-white p-5 shadow-sm lg:flex-row lg:items-start">
-                                <div className="lg:max-w-md lg:shrink-0">
+                              {/* On phones the table scrolls sideways; pin the panel to the visible width so it isn't clipped. */}
+                              <div className="panel grid w-full gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm max-md:sticky max-md:left-3 max-md:w-[calc(100vw-3.5rem)] md:grid-cols-[minmax(0,14rem)_minmax(0,1fr)] xl:grid-cols-[minmax(0,15rem)_minmax(0,1fr)_minmax(0,17rem)]">
+                                <section className="rounded-lg border border-slate-100 p-4">
+                                  <h4 className="mb-3 text-[10px] font-bold uppercase tracking-wider text-slate-400">Progress</h4>
                                   <TravelRequestProgress request={request} />
-                                </div>
-                                <div className="flex w-full flex-wrap gap-4 lg:w-auto">
-                                  <div className="w-full shrink-0 rounded-lg bg-slate-50 p-4 sm:w-64">
-                                    <div className="mb-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                                      Trip Details
-                                    </div>
-                                    {request.purpose || request.preferred_class || request.notes || request.exception?.description || request.exception?.decision_comment || (request.trip_type === 'ROUND_TRIP' && request.return_date) ? (
-                                      <dl className="space-y-2.5 text-[11px]">
-                                        {request.purpose ? (
-                                          <div>
-                                            <dt className="font-semibold text-slate-400">Purpose</dt>
-                                            <dd className="mt-0.5 font-medium text-slate-700">{request.purpose}</dd>
-                                          </div>
-                                        ) : null}
-                                        {request.preferred_class ? (
-                                          <div>
-                                            <dt className="font-semibold text-slate-400">Preferred Class</dt>
-                                            <dd className="mt-0.5 font-medium text-slate-700">{request.preferred_class}</dd>
-                                          </div>
-                                        ) : null}
-                                        {request.trip_type === 'ROUND_TRIP' && request.return_date ? (
-                                          <div>
-                                            <dt className="font-semibold text-slate-400">Return Date</dt>
-                                            <dd className="mt-0.5 font-medium text-slate-700">{request.return_date}</dd>
-                                          </div>
-                                        ) : null}
-                                        {request.notes ? (
-                                          <div>
-                                            <dt className="font-semibold text-slate-400">Notes</dt>
-                                            <dd className="mt-0.5 font-medium text-slate-700 whitespace-pre-wrap">{request.notes}</dd>
-                                          </div>
-                                        ) : null}
-                                        {request.exception?.description ? (
-                                          <div>
-                                            <dt className="font-semibold text-slate-400">Exception Justification</dt>
-                                            <dd className="mt-0.5 font-medium text-slate-700 whitespace-pre-wrap">{request.exception.description}</dd>
-                                          </div>
-                                        ) : null}
-                                        {request.exception?.decision_comment ? (
-                                          <div>
-                                            <dt className="font-semibold text-slate-400">Decision Comment</dt>
-                                            <dd className="mt-0.5 font-medium text-slate-700 whitespace-pre-wrap">{request.exception.decision_comment}</dd>
-                                          </div>
-                                        ) : null}
-                                      </dl>
-                                    ) : (
-                                      <p className="text-[11px] italic text-slate-400">No additional details provided.</p>
-                                    )}
+                                </section>
+
+                                <section className="min-w-0 space-y-4 rounded-lg border border-slate-100 p-4">
+                                  <h4 className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Trip Details</h4>
+                                  <div className="grid grid-cols-2 gap-2 xl:grid-cols-3">
+                                    <DetailTile icon={Briefcase} label="Travel Type" value={request.travel_type === 'PROJECT' ? 'Project' : 'Non-project'} />
+                                    {request.project_code ? <DetailTile icon={Hash} label="Project Code" value={request.project_code} /> : null}
+                                    {request.purpose ? <DetailTile icon={Target} label="Purpose" value={request.purpose} /> : null}
+                                    <DetailTile icon={ArrowLeftRight} label="Trip Type" value={TRIP_TYPE_LABELS[request.trip_type] || request.trip_type} />
+                                    {request.trip_type === 'ROUND_TRIP' && request.return_date ? (
+                                      <DetailTile icon={CalendarDays} label="Return Date" value={request.return_date} />
+                                    ) : null}
                                   </div>
-                                  {(request.segments || []).length ? (
-                                    <div className="w-full shrink-0 rounded-lg bg-slate-50 p-4 sm:w-64">
-                                      <div className="mb-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                                        Itinerary
+
+                                  {request.needs_additional_booking ? (
+                                    <div className="rounded-lg border border-amber-200/80 bg-amber-50/50 p-3">
+                                      <div className="mb-2 flex items-center justify-between gap-2">
+                                        <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-amber-800">
+                                          <ConciergeBell size={12} /> Additional Bookings
+                                        </span>
+                                        {request.booking_items?.length ? (
+                                          <span className="text-[10px] font-bold text-amber-800">
+                                            {bookedItemCount} of {request.booking_items.length} booked
+                                          </span>
+                                        ) : null}
                                       </div>
-                                      <dl className="space-y-2.5 text-[11px]">
-                                        {request.segments.map((seg) => (
-                                          <div key={seg.seq}>
-                                            <dt className="flex items-center gap-1.5 font-semibold text-slate-400">
-                                              <ModeIcon mode={seg.mode || request.travel_mode} className="text-slate-400" />
-                                              {seg.label}
-                                            </dt>
-                                            <dd className="mt-0.5 font-medium text-slate-700">{seg.travel_date}</dd>
-                                          </div>
-                                        ))}
-                                      </dl>
+                                      {request.booking_items?.length ? (
+                                        <ul className="space-y-1.5">
+                                          {request.booking_items.map((item, i) => {
+                                            const itemDocs = (request.supporting_documents || []).filter((doc) => doc.booking_item_id === item.id);
+                                            return (
+                                              <li key={item.id} className="rounded-md bg-white px-2.5 py-2 ring-1 ring-amber-100">
+                                                <div className="flex items-start justify-between gap-2">
+                                                  <span className="flex min-w-0 items-start gap-2 text-xs font-medium text-slate-700">
+                                                    <span className="mt-px flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-amber-100 text-[9px] font-bold text-amber-800">
+                                                      {i + 1}
+                                                    </span>
+                                                    <span className="break-words">{item.description}</span>
+                                                  </span>
+                                                  {itemDocs.length ? (
+                                                    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
+                                                      <CheckCircle2 size={10} /> Booked
+                                                    </span>
+                                                  ) : (
+                                                    <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">Pending</span>
+                                                  )}
+                                                </div>
+                                                {itemDocs.length ? (
+                                                  <div className="mt-1.5 space-y-1 pl-6">
+                                                    {itemDocs.map((doc) => (
+                                                      <DocLink key={doc.id} doc={doc} onOpen={viewSupportingDocument} />
+                                                    ))}
+                                                  </div>
+                                                ) : null}
+                                              </li>
+                                            );
+                                          })}
+                                        </ul>
+                                      ) : (
+                                        <p className="whitespace-pre-wrap text-xs font-medium text-slate-700">{request.additional_booking_details}</p>
+                                      )}
                                     </div>
                                   ) : null}
-                                  {ticketedSegments.length ? (
-                                    <div className="w-full shrink-0 rounded-lg bg-slate-50 p-4 sm:w-64">
-                                      <div className="mb-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                                        Ticket Details
-                                      </div>
-                                      <dl className="space-y-3 text-[11px]">
-                                        {ticketedSegments.map((seg) => (
-                                          <div key={seg.seq}>
-                                            <dt className="font-semibold text-slate-400">{seg.label}</dt>
-                                            <dd className="mt-0.5 space-y-0.5 font-medium text-slate-700">
-                                              {seg.ticket.pnr_or_booking_ref ? <div>PNR: {seg.ticket.pnr_or_booking_ref}</div> : null}
-                                              {seg.ticket.ticket_amount != null ? <div>{formatCurrency(seg.ticket.ticket_amount)}</div> : null}
-                                              {seg.ticket.ticket_travel_class ? <div>{seg.ticket.ticket_travel_class}</div> : null}
-                                              {!seg.ticket.pnr_or_booking_ref && seg.ticket.ticket_amount == null && !seg.ticket.ticket_travel_class ? (
-                                                <span className="italic text-slate-400">{seg.ticket.original_filename}</span>
-                                              ) : null}
-                                            </dd>
-                                          </div>
+
+                                  {unlinkedSupportingDocuments.length ? (
+                                    <div>
+                                      <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-slate-400">Documents from Travel Desk</div>
+                                      <div className="space-y-1">
+                                        {unlinkedSupportingDocuments.map((doc) => (
+                                          <DocLink key={doc.id} doc={doc} onOpen={viewSupportingDocument} />
                                         ))}
-                                      </dl>
+                                      </div>
                                     </div>
                                   ) : null}
-                                </div>
+
+                                  {request.notes ? (
+                                    <NoteBlock icon={MessageSquare} label="Notes" text={request.notes} />
+                                  ) : null}
+                                  {request.exception?.description ? (
+                                    <NoteBlock icon={ShieldAlert} label="Exception Justification" text={request.exception.description} tone="warn" />
+                                  ) : null}
+                                  {request.exception?.decision_comment ? (
+                                    <NoteBlock icon={GitBranch} label="Decision Comment" text={request.exception.decision_comment} tone="warn" />
+                                  ) : null}
+                                </section>
+
+                                {(request.segments || []).length ? (
+                                  <section className="rounded-lg border border-slate-100 p-4 md:col-span-2 xl:col-span-1">
+                                    <h4 className="mb-3 text-[10px] font-bold uppercase tracking-wider text-slate-400">Itinerary</h4>
+                                    <ol className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
+                                      {request.segments.map((seg) => (
+                                        <li key={seg.seq} className="rounded-md bg-slate-50 px-3 py-2.5">
+                                          <div className="flex items-start gap-2">
+                                            <ModeIcon mode={seg.mode || request.travel_mode} className="mt-0.5 shrink-0 text-slate-400" />
+                                            <div className="min-w-0">
+                                              <div className="break-words text-xs font-semibold text-slate-800">{seg.label}</div>
+                                              <div className="mt-0.5 text-[11px] text-slate-500">{seg.travel_date}</div>
+                                            </div>
+                                          </div>
+                                          {seg.ticket ? (
+                                            <button
+                                              type="button"
+                                              className="mt-2 inline-flex max-w-full items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-700 hover:bg-emerald-200"
+                                              onClick={() => viewTicket(seg.ticket, `Ticket · ${seg.label}`)}
+                                            >
+                                              <CheckCircle2 size={10} className="shrink-0" />
+                                              <span className="truncate">
+                                                Ticketed{seg.ticket.pnr_or_booking_ref ? ` · PNR ${seg.ticket.pnr_or_booking_ref}` : ''}
+                                              </span>
+                                            </button>
+                                          ) : ['APPROVED', 'PARTIALLY_BOOKED'].includes(request.status) ? (
+                                            <span className="mt-2 inline-flex rounded-full bg-slate-200/70 px-2 py-0.5 text-[10px] font-bold text-slate-500">
+                                              Ticket pending
+                                            </span>
+                                          ) : null}
+                                        </li>
+                                      ))}
+                                    </ol>
+                                  </section>
+                                ) : null}
                               </div>
                             </td>
                           </tr>
@@ -766,7 +990,9 @@ export default function TravelRequestsPage() {
                         {t.reference_id && <span className="text-slate-400 text-[10px] ml-1">({t.reference_id})</span>}
                       </td>
                       <td className="px-5 py-3 text-center font-bold text-slate-800">
-                        ₹{Number(t.amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {t.booked_by_travel_desk
+                          ? '—'
+                          : `₹${Number(t.amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                       </td>
                       <td className="px-5 py-3 text-center">
                         {t.booked_by_travel_desk ? (
@@ -842,6 +1068,43 @@ export default function TravelRequestsPage() {
 
             <form className="flex min-h-0 flex-1 flex-col" onSubmit={onCreate}>
               <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
+              {/* Travel Type + Project Code */}
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1">
+                  <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Travel Type *</span>
+                  <select
+                    className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none bg-white transition-all"
+                    value={form.values.travel_type}
+                    onChange={(e) => form.setValues({ ...form.values, travel_type: e.target.value, project_code: '' })}
+                    onBlur={() => form.handleBlur('travel_type')}
+                  >
+                    <option value="NON_PROJECT">Non-project</option>
+                    <option value="PROJECT">Project</option>
+                  </select>
+                </div>
+
+                {form.values.travel_type === 'PROJECT' ? (
+                  <div className="space-y-1">
+                    <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Project Code *</span>
+                    <select
+                      className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none bg-white transition-all"
+                      value={form.values.project_code}
+                      onChange={(e) => form.handleChange('project_code', e.target.value)}
+                      onBlur={() => form.handleBlur('project_code')}
+                    >
+                      <option value="">Select project code</option>
+                      {travelOptions.project_codes.map((o) => (
+                        <option key={o.id} value={o.value}>{optionText(o)}</option>
+                      ))}
+                    </select>
+                    {travelOptions.project_codes.length === 0 ? (
+                      <p className="text-[10px] font-bold text-amber-700">No project codes are configured yet — ask an admin to add them.</p>
+                    ) : null}
+                    {form.errors.project_code ? <p className="text-[10px] font-bold text-rose-650">{form.errors.project_code}</p> : null}
+                  </div>
+                ) : null}
+              </div>
+
               {/* Travel Mode (multi-city sets this per leg instead) */}
               {form.values.trip_type !== 'MULTI_CITY' && (
                 <div className="space-y-1">
@@ -1051,40 +1314,98 @@ export default function TravelRequestsPage() {
               {/* Purpose */}
               <div className="space-y-1">
                 <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Trip Purpose *</span>
-                <input
-                  className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all"
+                <select
+                  className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none bg-white transition-all"
                   value={form.values.purpose}
                   onChange={(e) => form.handleChange('purpose', e.target.value)}
                   onBlur={() => form.handleBlur('purpose')}
                   required
-                />
+                >
+                  <option value="">Select trip purpose</option>
+                  {travelOptions.trip_purposes.map((o) => (
+                    <option key={o.id} value={o.value}>{optionText(o)}</option>
+                  ))}
+                </select>
+                {travelOptions.trip_purposes.length === 0 ? (
+                  <p className="text-[10px] font-bold text-amber-700">No trip purposes are configured yet — ask an admin to add them.</p>
+                ) : null}
                 {form.errors.purpose ? <p className="text-[10px] font-bold text-rose-650">{form.errors.purpose}</p> : null}
               </div>
 
-              {/* Class & Notes */}
-              <div className="grid gap-3 md:grid-cols-2">
-                <div className="space-y-1">
-                  <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Preferred Cabin Class</span>
-                  <input
-                    className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all"
-                    placeholder="e.g. Economy, AC 3-Tier"
-                    value={form.values.preferred_class}
-                    onChange={(e) => form.handleChange('preferred_class', e.target.value)}
-                    onBlur={() => form.handleBlur('preferred_class')}
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Additional Instructions</span>
-                  <input
-                    className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all"
-                    placeholder="Meal preferences, seat requirements"
-                    value={form.values.notes}
-                    onChange={(e) => form.handleChange('notes', e.target.value)}
-                    onBlur={() => form.handleBlur('notes')}
-                  />
-                </div>
+              {/* Notes */}
+              <div className="space-y-1">
+                <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Additional Instructions</span>
+                <input
+                  className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all"
+                  placeholder="Meal preferences, seat requirements"
+                  value={form.values.notes}
+                  onChange={(e) => form.handleChange('notes', e.target.value)}
+                  onBlur={() => form.handleBlur('notes')}
+                />
               </div>
+
+              {/* Anything else the company should book */}
+              <div className="space-y-2">
+                <label className="flex cursor-pointer items-start gap-2 text-xs font-semibold text-slate-600">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 rounded text-brand focus:ring-brand"
+                    checked={form.values.needs_additional_booking}
+                    onChange={(e) => form.handleChange('needs_additional_booking', e.target.checked)}
+                  />
+                  <span>
+                    I need the company to book anything else for this trip
+                    <span className="ml-1 font-medium text-slate-400">(optional — e.g. hotel, cab, visa)</span>
+                  </span>
+                </label>
+                {form.values.needs_additional_booking ? (
+                  <div className="space-y-2">
+                    <div className="flex gap-2">
+                      <input
+                        className="h-9 flex-1 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all"
+                        placeholder="e.g. 2 nights hotel near client office"
+                        value={bookingItemDraft}
+                        onChange={(e) => setBookingItemDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            addBookingItem();
+                          }
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="h-9 shrink-0 rounded-lg bg-slate-100 px-3 text-xs font-bold text-slate-600 transition-colors hover:bg-slate-200"
+                        onClick={addBookingItem}
+                      >
+                        Add
+                      </button>
+                    </div>
+                    {form.values.additional_booking_items.length ? (
+                      <ul className="space-y-1">
+                        {form.values.additional_booking_items.map((item, idx) => (
+                          <li
+                            key={idx}
+                            className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700"
+                          >
+                            <span className="truncate">{item}</span>
+                            <button
+                              type="button"
+                              className="shrink-0 text-slate-400 hover:text-rose-600"
+                              onClick={() => removeBookingItem(idx)}
+                            >
+                              <X size={13} />
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    {form.errors.additional_booking_items ? <p className="text-[10px] font-bold text-rose-650">{form.errors.additional_booking_items}</p> : null}
+                  </div>
+                ) : null}
+              </div>
+
+              {showExpenseLimits ? <ExpenseLimitsPanel limits={cityLimits} loading={limitsLoading} /> : null}
 
               {/* Exception Warning Block */}
               {policyError && (

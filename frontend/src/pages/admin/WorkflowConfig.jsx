@@ -87,6 +87,30 @@ const TRAVEL_REQUEST_DEFAULT_STAGES = [
 ];
 
 const ALLOWED_STAGE_ROLES = ['REPORTING_MANAGER', 'HRBP_HR', 'PAYROLL', 'FINANCE', 'CEO', 'GROUP_HEAD_HR', 'IT_ADMIN'];
+const STAGE_ROLE_LABELS = {
+  REPORTING_MANAGER: 'Reporting Manager',
+  HRBP_HR: 'HRBP / HR',
+  PAYROLL: 'Payroll',
+  FINANCE: 'Finance',
+  CEO: 'CEO',
+  GROUP_HEAD_HR: 'Group Head HR',
+  IT_ADMIN: 'IT Admin',
+};
+
+/** Which of ALLOWED_STAGE_ROLES to actually offer for a row's dropdown — `eligibleRoles` is
+ * whichever of claimApproverEligibleRoles/exceptionApproverEligibleRoles matches this row's
+ * workflow type (see Role Permissions page — approve_claims and approve_exception are two
+ * separate permissions, so a claim/travel-request stage and an exception chain entry each need
+ * their own eligibility set, not one shared list). Always also includes whatever this row is
+ * *currently* set to even if that role has since lost the permission, so an existing selection
+ * never silently vanishes out from under the admin. `eligibleRoles === null` means the
+ * eligibility fetch didn't come back (not authorized to read the Permission Matrix, or it
+ * failed) — show every role, same as before this feature existed, rather than block the page
+ * over a secondary nicety. */
+function stageRoleOptions(eligibleRoles, currentValue) {
+  if (!eligibleRoles) return ALLOWED_STAGE_ROLES;
+  return ALLOWED_STAGE_ROLES.filter((role) => eligibleRoles.has(role) || role === currentValue);
+}
 
 function sanitizeStageRoles(stageList) {
   return (stageList || []).map((s) => ({
@@ -137,8 +161,8 @@ function errorMessage(err) {
 
 export default function WorkflowConfig() {
   useSetPageTitle('Workflow Configuration');
-  const role = useAuthStore((s) => s.user?.role);
-  const isViewOnly = !canEditWorkflowConfig(role);
+  const permissions = useAuthStore((s) => s.profile?.permissions);
+  const isViewOnly = !canEditWorkflowConfig(permissions);
   const { showToast } = useToast();
   const [selectedWorkflow, setSelectedWorkflow] = useState('STANDARD');
   const [selectedCategory, setSelectedCategory] = useState('DEFAULT');
@@ -158,6 +182,11 @@ export default function WorkflowConfig() {
   // Type" instead of nested in the claim "Applies to" selector, so it behaves exactly like one
   // throughout the stage editor below, just keyed by 'TRAVEL_REQUEST' instead of selectedCategory.
   const isTravelRequestWorkflow = selectedWorkflow === 'TRAVEL_REQUEST';
+  // Not an exception type, but stored in the same exception_chains dict (see
+  // workflow_service.EXCEPTION_APPROVAL_CHAINS["POLICY_APPROVAL"]) and rendered through the
+  // exact same chain-editor path below as any exception type — only the dropdown placement,
+  // heading text, and which permission gates its role options differ.
+  const isPolicyApprovalWorkflow = selectedWorkflow === 'POLICY_APPROVAL';
   const isCategoryOverride = (selectedWorkflow === 'STANDARD' && selectedCategory !== 'DEFAULT') || isTravelRequestWorkflow;
   const overrideKey = isTravelRequestWorkflow ? 'TRAVEL_REQUEST' : selectedCategory;
   // Claim and Travel Request stages are full {label, route_role, sla_hours} objects with
@@ -174,6 +203,16 @@ export default function WorkflowConfig() {
   // Snapshot of the config exactly as last loaded from the server — diffed against what's
   // about to be saved so we can warn before a role silently drops out of the matrix entirely.
   const [lastLoadedConfig, setLastLoadedConfig] = useState(null);
+  // Which ALLOWED_STAGE_ROLES actually hold approve_claims / approve_exception / approve_policy
+  // right now (see Role Permissions) — null until loaded, meaning "unknown, show every role"
+  // (see stageRoleOptions). Three separate sets, one per permission: a claim/travel-request
+  // stage, an exception chain entry, and a policy-approval chain entry are each gated by a
+  // different permission — using one set for all three would e.g. offer Payroll (holds
+  // approve_claims) as a policy approver, or hide a role that holds approve_policy but not
+  // approve_exception from the Policy Approval chain.
+  const [claimApproverEligibleRoles, setClaimApproverEligibleRoles] = useState(null);
+  const [exceptionApproverEligibleRoles, setExceptionApproverEligibleRoles] = useState(null);
+  const [policyApproverEligibleRoles, setPolicyApproverEligibleRoles] = useState(null);
 
   const load = async () => {
     try {
@@ -181,6 +220,27 @@ export default function WorkflowConfig() {
       const res = await adminApi.workflowConfig();
       const cfg = res.data?.config || {};
       setLastLoadedConfig(cfg);
+
+      // Best-effort — a role that can edit the Approval Matrix but wasn't also granted
+      // view_permission_matrix simply won't see eligibility filtering on the role dropdown; it
+      // falls back to offering every role, exactly like before this feature existed.
+      try {
+        const permRes = await adminApi.permissionMatrix();
+        const permissionsByRole = permRes.data?.config?.permissions || {};
+        const rolesHolding = (perm) =>
+          new Set(
+            Object.entries(permissionsByRole)
+              .filter(([, perms]) => (perms || []).includes(perm))
+              .map(([role]) => role)
+          );
+        setClaimApproverEligibleRoles(rolesHolding('approve_claims'));
+        setExceptionApproverEligibleRoles(rolesHolding('approve_exception'));
+        setPolicyApproverEligibleRoles(rolesHolding('approve_policy'));
+      } catch {
+        setClaimApproverEligibleRoles(null);
+        setExceptionApproverEligibleRoles(null);
+        setPolicyApproverEligibleRoles(null);
+      }
 
 
       setStages(sanitizeStageRoles(cfg.stages || []));
@@ -312,6 +372,7 @@ export default function WorkflowConfig() {
           <select className="field min-w-64 bg-slate-50 py-1.5 text-sm" value={selectedWorkflow} onChange={(event) => setSelectedWorkflow(event.target.value)}>
             <option value="STANDARD">Claim Approval</option>
             <option value="TRAVEL_REQUEST">Travel Request Approval</option>
+            <option value="POLICY_APPROVAL">Policy Approval</option>
             <optgroup label="Exception Workflows — Claims">
               {Object.entries(EXCEPTION_TYPES)
                 .filter(([key]) => !TRAVEL_REQUEST_EXCEPTION_KEYS.has(key))
@@ -371,7 +432,10 @@ export default function WorkflowConfig() {
         </section>
       ) : null}
 
-      {!isStageBasedWorkflow ? (
+      {/* Policy approval isn't an optional, detectable condition the way an exception type
+          is — there's nothing to "disable", a policy version always needs approval before
+          going active — so it gets no on/off toggle even though it shares the chain editor. */}
+      {!isStageBasedWorkflow && !isPolicyApprovalWorkflow ? (
         <section className="panel mb-4 flex flex-wrap items-center justify-between gap-3 p-4">
           <div>
             <div className="text-sm font-semibold text-ink">
@@ -414,7 +478,9 @@ export default function WorkflowConfig() {
             ? `Approval Stages — ${STAGE_CATEGORIES.find((c) => c.value === selectedCategory)?.label}`
             : isTravelRequestWorkflow
               ? 'Approval Stages — Travel Requests'
-              : EXCEPTION_TYPES[selectedWorkflow]}
+              : isPolicyApprovalWorkflow
+                ? 'Approval Chain — Policy Versions'
+                : EXCEPTION_TYPES[selectedWorkflow]}
         </h2>
         <p className="mb-3 text-xs text-slate-500">
           {isTravelRequestWorkflow
@@ -507,13 +573,19 @@ export default function WorkflowConfig() {
                       updateCurrentStages(next);
                     }}
                   >
-                    <option value="REPORTING_MANAGER">Reporting Manager</option>
-                    <option value="HRBP_HR">HRBP / HR</option>
-                    <option value="PAYROLL">Payroll</option>
-                    <option value="FINANCE">Finance</option>
-                    <option value="CEO">CEO</option>
-                    <option value="GROUP_HEAD_HR">Group Head HR</option>
-                    <option value="IT_ADMIN">IT Admin</option>
+                    {(() => {
+                      const eligibleRoles = isStageBasedWorkflow
+                        ? claimApproverEligibleRoles
+                        : isPolicyApprovalWorkflow
+                          ? policyApproverEligibleRoles
+                          : exceptionApproverEligibleRoles;
+                      return stageRoleOptions(eligibleRoles, stage.route_role ?? 'HRBP_HR').map((role) => (
+                        <option key={role} value={role}>
+                          {STAGE_ROLE_LABELS[role]}
+                          {eligibleRoles && !eligibleRoles.has(role) ? ' (no longer eligible)' : ''}
+                        </option>
+                      ));
+                    })()}
                   </select>
                 </td>
                 <td className="px-4 py-3 text-center">

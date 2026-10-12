@@ -6,7 +6,7 @@ import PageHeader from '../../components/ui/PageHeader';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
 import { adminApi } from '../../services/adminApi';
-import { canEditPolicy } from '../../services/permissions';
+import { hasPermission } from '../../services/permissions';
 import { useAuthStore } from '../../store/authStore';
 
 const emptyForm = {
@@ -46,9 +46,12 @@ export default function ImpactLevelMaster() {
   const [conveyanceText, setConveyanceText] = useState(defaultConveyanceModes);
   const [editingId, setEditingId] = useState(null);
   const [loadError, setLoadError] = useState(null);
-  const role = useAuthStore((state) => state.user?.role);
+  // The actual configure_policy permission, not a hardcoded role list — matches the backend's
+  // real write gate (_WRITE_ADMIN_POLICY), so toggling it off in the Permission Matrix now
+  // correctly switches this page to read-only instead of showing edit controls that would 403.
+  const permissions = useAuthStore((state) => state.profile?.permissions);
   const selectedVersion = versions.find((v) => String(v.id) === String(selectedVersionId));
-  const isViewOnly = !canEditPolicy(role) || (selectedVersionId && selectedVersion?.status !== 'DRAFT');
+  const isViewOnly = !hasPermission(permissions, 'configure_policy') || (selectedVersionId && selectedVersion?.status !== 'DRAFT');
 
   const load = async () => {
     try {

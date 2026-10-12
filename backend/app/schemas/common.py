@@ -4,7 +4,7 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.auth import Role
-from app.models.policy import AirClass, AirEligibility, CityGroupType, PolicyStatus
+from app.models.policy import AirClass, AirEligibility, PolicyStatus
 
 
 class LoginRequest(BaseModel):
@@ -130,15 +130,24 @@ class AdminBulkImportSummaryOut(BaseModel):
 
 class PolicyVersionIn(BaseModel):
     version_number: str
-    effective_from: date
+    # effective_from is deliberately NOT here — it's never user-supplied at draft time. Even once
+    # approved, it stays unset until a separate schedule_policy_version call picks it — see
+    # PolicyVersion's docstring for the bug this design closes.
     effective_to: date | None = None
     status: PolicyStatus = PolicyStatus.DRAFT
+
+
+class PolicyScheduleIn(BaseModel):
+    effective_from: date
 
 
 class PolicyVersionOut(PolicyVersionIn):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    # None until explicitly scheduled (which can happen well after approval) — see the comment
+    # on PolicyVersionIn above.
+    effective_from: date | None = None
     approved_by: int | None = None
     approved_at: datetime | None = None
     created_by: int | None = None
@@ -168,7 +177,9 @@ class ImpactLevelOut(ImpactLevelIn):
 
 class CityGroupIn(BaseModel):
     city_name: str
-    group_type: CityGroupType
+    # A CityGroupTier's `code` — validated against the live tier list server-side (see
+    # admin/policy.py), not a fixed enum, since tiers are now admin-managed.
+    group_type: str
     effective_from: date
     effective_to: date | None = None
 
@@ -179,10 +190,35 @@ class CityGroupOut(CityGroupIn):
     id: int
 
 
+class CityGroupTierIn(BaseModel):
+    code: str
+    display_name: str
+    is_default: bool = False
+
+
+# code is deliberately absent here — it's immutable once created (see CityGroupTier's docstring
+# for why renaming it would silently orphan every row that already stores the old string).
+# is_deprecated is also absent — that's DELETE's job (soft-deprecate), matching ImpactLevel's
+# PUT-edits/DELETE-deprecates split.
+class CityGroupTierUpdateIn(BaseModel):
+    display_name: str
+    is_default: bool
+
+
+class CityGroupTierOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    code: str
+    display_name: str
+    is_default: bool
+    is_deprecated: bool
+
+
 class ExpenseLimitIn(BaseModel):
     policy_version_id: int
     impact_level_id: int
-    city_group: CityGroupType
+    city_group: str
     hotel_cap: Decimal | None = None
     hotel_is_hard_block: bool = False
     food_cap: Decimal | None = None

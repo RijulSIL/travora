@@ -122,6 +122,14 @@ class TripOut(BaseModel):
     # same pair of cities) apart from a genuine multi-city itinerary, which leg count alone
     # can't distinguish.
     trip_type: str | None = None
+    # The parent TravelRequest's purpose / travel_type / project_code — lets the Travel Claim
+    # wizard auto-fill these from a linked trip the same way it already does from_city/to_city/
+    # dates. None for a trip with no originating request (e.g. Travel Desk ad-hoc booking). Not
+    # to be confused with trip_type (ONE_WAY/ROUND_TRIP/MULTI_CITY) above — travel_type here is
+    # PROJECT/NON_PROJECT, a different TravelRequest column entirely.
+    purpose: str | None = None
+    travel_type: str | None = None
+    project_code: str | None = None
     created_at: datetime
 
 

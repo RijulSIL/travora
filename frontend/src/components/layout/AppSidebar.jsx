@@ -160,7 +160,7 @@ function SidebarBody({ onNavigate }) {
       {config.sections.map((section, sIdx) => {
         const items = (section.items || []).filter((item) => {
           if (!item.anyOf?.length) return true;
-          return hasAnyPermission(role, item.anyOf, profile?.delegated_roles);
+          return hasAnyPermission(profile?.permissions, item.anyOf);
         });
         if (!items.length) return null;
 

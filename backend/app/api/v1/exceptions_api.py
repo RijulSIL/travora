@@ -62,7 +62,7 @@ async def decide_exception(
     exception_id: int,
     payload: ExceptionDecisionBody,
     claims: dict = Depends(
-        require_any_permission("approve_stage_2", "approve_stage_4", "configure_policy", "approve_exception")
+        require_any_permission("approve_claims", "configure_policy", "approve_exception")
     ),
     db: AsyncSession = Depends(get_db),
 ) -> ExceptionRequestOut:

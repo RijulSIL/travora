@@ -3,8 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.rbac import get_current_claims, require_mfa, require_role
-from app.models.auth import Role
+from app.core.rbac import get_current_claims, require_any_permission, require_mfa, require_permission
 from app.models.claim_workflow import NotificationTemplate
 from app.schemas.workflow import (
     NotificationOut,
@@ -22,8 +21,11 @@ from app.services.notification_service import (
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
-_TEMPLATE_ADMIN = [Depends(require_role(Role.HRBP_HR, Role.IT_ADMIN)), Depends(require_mfa)]
-_TEMPLATE_UPDATE_ADMIN = [Depends(require_role(Role.IT_ADMIN)), Depends(require_mfa)]
+_TEMPLATE_ADMIN = [
+    Depends(require_any_permission("view_notification_templates", "edit_notification_templates")),
+    Depends(require_mfa),
+]
+_TEMPLATE_UPDATE_ADMIN = [Depends(require_permission("edit_notification_templates")), Depends(require_mfa)]
 
 
 @router.get("", response_model=list[NotificationOut])

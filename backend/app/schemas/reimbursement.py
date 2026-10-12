@@ -3,7 +3,6 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.policy import CityGroupType
 from app.models.reimbursement import ClaimStatus, GstinValidationStatus, InvoiceStatus, ReimbursementCategory
 
 
@@ -107,6 +106,11 @@ class ClaimDraftIn(BaseModel):
     invoice_ids: list[int] = Field(default_factory=list)
     trip_ids: list[int] = Field(default_factory=list)
     trip_purpose: str | None = None
+    # Same admin-managed options the Travel Request form uses (GET /travel-requests/options) —
+    # only validated when reimbursement_category == TRAVEL; General Reimbursement never sends
+    # these so travel_type just stays at its default.
+    travel_type: str = "NON_PROJECT"
+    project_code: str | None = None
     departure_date: date | None = None
     return_date: date | None = None
     office_location: str | None = None
@@ -160,12 +164,14 @@ class ClaimDraftOut(BaseModel):
     employee_user_id: int
     employee_id: str | None = None
     trip_purpose: str | None = None
+    travel_type: str = "NON_PROJECT"
+    project_code: str | None = None
     departure_date: date | None = None
     return_date: date | None = None
     office_location: str | None = None
     from_city: str | None = None
     destination_city: str | None = None
-    destination_city_group: CityGroupType | None = None
+    destination_city_group: str | None = None
     reimbursement_category: ReimbursementCategory = ReimbursementCategory.TRAVEL
     advance_received: Decimal
     status: ClaimStatus
@@ -187,7 +193,7 @@ class ClaimDraftOut(BaseModel):
 
 class PolicyCheckOut(BaseModel):
     id: int
-    city_group: CityGroupType | None = None
+    city_group: str | None = None
     total_claimed: Decimal
     advance_received: Decimal
     net_payable: Decimal

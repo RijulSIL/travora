@@ -6,7 +6,7 @@ import PageHeader from '../../components/ui/PageHeader';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
 import { adminApi } from '../../services/adminApi';
-import { canEditPolicy } from '../../services/permissions';
+import { hasPermission } from '../../services/permissions';
 import { useAuthStore } from '../../store/authStore';
 
 const fields = ['hotel', 'food', 'incidental', 'day_visit'];
@@ -17,17 +17,25 @@ export default function ExpenseLimitsMatrix() {
   const [levels, setLevels] = useState([]);
   const [limits, setLimits] = useState([]);
   const [versions, setVersions] = useState([]);
+  const [tiers, setTiers] = useState([]);
   const [selectedVersionId, setSelectedVersionId] = useState('');
   const [drafts, setDrafts] = useState({});
   const [loadError, setLoadError] = useState(null);
-  const role = useAuthStore((state) => state.user?.role);
+  // The actual configure_policy permission, not a hardcoded role list — matches the backend's
+  // real write gate (_WRITE_ADMIN_POLICY), so toggling it off in the Permission Matrix now
+  // correctly switches this page to read-only instead of showing edit controls that would 403.
+  const permissions = useAuthStore((state) => state.profile?.permissions);
   const selectedVersion = versions.find((v) => String(v.id) === String(selectedVersionId));
-  const isViewOnly = !canEditPolicy(role) || (selectedVersionId && selectedVersion?.status !== 'DRAFT');
+  const isViewOnly = !hasPermission(permissions, 'configure_policy') || (selectedVersionId && selectedVersion?.status !== 'DRAFT');
+  // All tiers, deprecated included — same reasoning as ImpactLevelMaster showing deprecated
+  // levels: a code that's no longer offered for new assignments may still have historical caps
+  // worth seeing/editing on an older or in-progress draft.
+  const tierCodes = tiers.map((tier) => tier.code);
 
   const load = async () => {
     try {
       setLoadError(null);
-      const [versionResponse, levelResponse, limitResponse] = await Promise.all([
+      const [versionResponse, levelResponse, limitResponse, tierResponse] = await Promise.all([
         adminApi.policyVersions(),
         selectedVersionId
           ? adminApi.impactLevels({ policy_version_id: Number(selectedVersionId) })
@@ -35,10 +43,12 @@ export default function ExpenseLimitsMatrix() {
         selectedVersionId
           ? adminApi.expenseLimits({ policy_version_id: Number(selectedVersionId) })
           : adminApi.expenseLimits(),
+        adminApi.cityGroupTiers(),
       ]);
       setVersions(versionResponse.data);
       setLevels(levelResponse.data);
       setLimits(limitResponse.data);
+      setTiers(tierResponse.data);
       if (!selectedVersionId) {
         const firstDraft = versionResponse.data.find((version) => version.status === 'DRAFT');
         if (firstDraft) {
@@ -136,15 +146,15 @@ export default function ExpenseLimitsMatrix() {
           <thead className="bg-slate-50 text-[11px] font-bold uppercase tracking-wider text-slate-500">
             <tr>
               <th rowSpan={2} className="sticky left-0 z-20 bg-slate-50 px-4 py-3 text-center align-bottom border-b border-r border-slate-200 shadow-[4px_0_10px_-4px_rgba(0,0,0,0.1)]">Impact Level</th>
-              {['A', 'B', 'C'].map((group, idx) => (
-                <th key={group} colSpan={4} className={`border-b border-l border-slate-200 px-3 py-2 text-center bg-slate-100/50 ${idx < 2 ? 'border-r-2 border-r-slate-300' : ''}`}>
-                  City Group {group}
+              {tierCodes.map((code, idx) => (
+                <th key={code} colSpan={4} className={`border-b border-l border-slate-200 px-3 py-2 text-center bg-slate-100/50 ${idx < tierCodes.length - 1 ? 'border-r-2 border-r-slate-300' : ''}`}>
+                  City Group {code}
                 </th>
               ))}
             </tr>
             <tr>
-              {['A', 'B', 'C'].flatMap((group, gIdx) => fields.map((field) => (
-                <th key={`${group}-${field}`} className={`px-2 py-2 text-center border-b border-slate-200 bg-slate-50 ${field === 'hotel' ? 'border-l border-slate-200' : ''} ${field === 'day_visit' && gIdx < 2 ? 'border-r-2 border-r-slate-300' : ''}`}>
+              {tierCodes.flatMap((code, gIdx) => fields.map((field) => (
+                <th key={`${code}-${field}`} className={`px-2 py-2 text-center border-b border-slate-200 bg-slate-50 ${field === 'hotel' ? 'border-l border-slate-200' : ''} ${field === 'day_visit' && gIdx < tierCodes.length - 1 ? 'border-r-2 border-r-slate-300' : ''}`}>
                   {field.replace('_', ' ')}
                 </th>
               )))}
@@ -154,18 +164,18 @@ export default function ExpenseLimitsMatrix() {
             {levels.map((level) => (
               <tr key={level.id} className="border-t border-line hover:bg-slate-50/50 transition-colors group">
                 <td className="sticky left-0 z-10 bg-white group-hover:bg-slate-50 px-4 py-2 text-center font-medium border-r border-slate-200 text-slate-700 shadow-[4px_0_10px_-4px_rgba(0,0,0,0.1)] transition-colors">{level.level_code}</td>
-                {['A', 'B', 'C'].flatMap((group) => {
-                  const key = `${level.id}:${group}`;
+                {tierCodes.flatMap((code, gIdx) => {
+                  const key = `${level.id}:${code}`;
                   const limit =
                     drafts[key] ||
                     byKey.get(key) ||
                     {
                       policy_version_id: Number(selectedVersionId || level.policy_version_id),
                       impact_level_id: level.id,
-                      city_group: group,
+                      city_group: code,
                     };
                   return fields.map((field) => (
-                    <td key={`${key}-${field}`} className={`px-2 py-1.5 ${field === 'hotel' ? 'border-l border-slate-100' : ''} ${field === 'day_visit' && group !== 'C' ? 'border-r-2 border-r-slate-300' : ''}`}>
+                    <td key={`${key}-${field}`} className={`px-2 py-1.5 ${field === 'hotel' ? 'border-l border-slate-100' : ''} ${field === 'day_visit' && gIdx < tierCodes.length - 1 ? 'border-r-2 border-r-slate-300' : ''}`}>
                       <div className="flex items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1.5 focus-within:border-brand focus-within:ring-1 focus-within:ring-brand/30 hover:border-slate-300 transition-colors shadow-sm">
                         <span className="text-[10px] font-semibold text-slate-400">₹</span>
                         <input 

@@ -1,4 +1,4 @@
-import { Armchair, Calendar, CheckCircle2, FileText, Info, Layers, MapPin, MessageSquare, Search } from 'lucide-react';
+import { Calendar, CheckCircle2, FileText, Info, Layers, MapPin, MessageSquare, Search } from 'lucide-react';
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
@@ -282,7 +282,8 @@ export default function ExceptionRequestsPage() {
                                 { icon: Layers, label: 'Mode', value: titleCase(row.travel_request.travel_mode) },
                                 { icon: Calendar, label: 'Travel Date', value: row.travel_request.travel_date },
                                 { icon: Calendar, label: 'Return Date', value: row.travel_request.return_date },
-                                { icon: Armchair, label: 'Preferred Class', value: row.travel_request.preferred_class },
+                                { icon: Layers, label: 'Travel Type', value: row.travel_request.travel_type === 'PROJECT' ? 'Project' : 'Non-project' },
+                                { icon: FileText, label: 'Project Code', value: row.travel_request.project_code },
                                 { icon: FileText, label: 'Purpose', value: row.travel_request.purpose },
                                 { icon: MessageSquare, label: 'Notes', value: row.travel_request.notes },
                               ]

@@ -4,7 +4,7 @@ import { selectResolvedRole, useAuthStore } from '../store/authStore';
 
 /**
  * RoleGuard's `anyOf`/`permission` checks are a coarse, static allowlist — "this role COULD
- * approve something" (e.g. every REPORTING_MANAGER has `approve_stage_1`). This guard is the
+ * approve something" (e.g. every REPORTING_MANAGER has `approve_claims`). This guard is the
  * finer, live check on top of that: "is it actually configured that way right now" per the
  * Approval Matrix (profile.approver_scope, computed server-side by
  * workflow_service.get_approver_scope). Without this, a Reporting Manager could open the

@@ -20,27 +20,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
-from app.core.rbac import PERMISSION_MATRIX
 from app.core.timezone import now_ist, today_ist
 from app.models.auth import Delegation, Role, User
 from app.models.employee import Employee
-from app.models.policy import CityGroup, ImpactLevel
+from app.models.policy import CityGroup, CityGroupTier, ImpactLevel
 from app.models.reimbursement import ClaimTrip
 from app.models.travel_booking import TravelMode, TravelTrip, TripStatus
 from app.models.travel_request import (
+    ProjectNotificationRecipient,
+    TravelOptionType,
     TravelRequest,
+    TravelRequestBookingItem,
     TravelRequestLeg,
     TravelRequestMode,
+    TravelRequestOption,
     TravelRequestStatus,
+    TravelRequestSupportingDocument,
     TravelRequestTicket,
+    TravelRequestTravelType,
     TripType,
 )
 
 # Re-use entitlement lookups from booking service
 from app.services.travel_booking_service import (
     FLIGHT_ALLOWED_CLASSES,
-    _canonical_train_class,
-    _get_configured_train_classes,
     LEVELS_REQUIRING_AIR_UNLOCK,
     TRAIN_ALLOWED_CLASSES,
     _get_user_impact_level_code,
@@ -75,15 +78,17 @@ def earliest_travel_date_allowed(today: date, min_lead_working_days: int) -> dat
     return d
 
 
-def _validate_ticket_file(filename: str, content_type: str, content: bytes) -> tuple[str, str]:
+def _validate_ticket_file(
+    filename: str, content_type: str, content: bytes, *, kind: str = "Ticket"
+) -> tuple[str, str]:
     suffix = Path(filename).suffix.lower()
     if suffix not in _TICKET_EXTENSIONS or content_type not in _TICKET_CONTENT_TYPES:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail="Supported ticket formats are JPEG, PNG, HEIC and PDF",
+            detail=f"Supported {kind.lower()} formats are JPEG, PNG, HEIC and PDF",
         )
     if len(content) > MAX_TICKET_BYTES:
-        raise HTTPException(status_code=413, detail="Ticket file exceeds 10 MB")
+        raise HTTPException(status_code=413, detail=f"{kind} file exceeds 10 MB")
     digest = hashlib.sha256(content).hexdigest()
     return digest, suffix
 
@@ -99,6 +104,218 @@ async def entitlement_note_for_user(user_id: int, db: AsyncSession) -> dict[str,
         f"Eligible train classes: {', '.join(sorted(train_allowed))}",
     ]
     return {"impact_level": level, "text": "; ".join(parts) + "."}
+
+
+async def list_travel_options(db: AsyncSession, *, include_inactive: bool = False) -> list[TravelRequestOption]:
+    stmt = select(TravelRequestOption).order_by(
+        TravelRequestOption.option_type.asc(), func.lower(TravelRequestOption.label).asc(), TravelRequestOption.id.asc()
+    )
+    if not include_inactive:
+        stmt = stmt.where(TravelRequestOption.is_active.is_(True))
+    return list((await db.execute(stmt)).scalars().all())
+
+
+async def _require_active_option(option_type: TravelOptionType, value: str, field_label: str, db: AsyncSession) -> str:
+    """Returns the option's stored `value`; 422 when it isn't an active admin-configured option."""
+    stored = value.strip()
+    row = (
+        await db.execute(
+            select(TravelRequestOption).where(
+                TravelRequestOption.option_type == option_type.value,
+                TravelRequestOption.value == stored,
+                TravelRequestOption.is_active.is_(True),
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=422, detail=f"{field_label} '{stored}' is not an available option")
+    return row.value
+
+
+async def _validate_request_details(
+    *,
+    travel_type: TravelRequestTravelType | str | None,
+    project_code: str | None,
+    purpose: str | None,
+    needs_additional_booking: bool,
+    additional_booking_items: list[str] | None,
+    db: AsyncSession,
+) -> dict:
+    """Validates the project / purpose / additional-booking part of a request against the
+    admin-managed options and returns the normalized column values to persist."""
+    type_val = (
+        travel_type.value if isinstance(travel_type, TravelRequestTravelType) else str(travel_type or "").upper()
+    ) or TravelRequestTravelType.NON_PROJECT.value
+    if type_val not in {t.value for t in TravelRequestTravelType}:
+        raise HTTPException(status_code=422, detail="Invalid travel_type")
+
+    resolved_project: str | None = None
+    if type_val == TravelRequestTravelType.PROJECT.value:
+        if not project_code or not project_code.strip():
+            raise HTTPException(status_code=422, detail="Project code is required for project travel")
+        resolved_project = await _require_active_option(TravelOptionType.PROJECT_CODE, project_code, "Project code", db)
+
+    if not purpose or not purpose.strip():
+        raise HTTPException(status_code=422, detail="Trip purpose is required")
+    resolved_purpose = await _require_active_option(TravelOptionType.TRIP_PURPOSE, purpose, "Trip purpose", db)
+
+    items = [item.strip() for item in (additional_booking_items or []) if item and item.strip()]
+    if needs_additional_booking and not items:
+        raise HTTPException(status_code=422, detail="List at least one thing you need the company to book")
+
+    return {
+        "travel_type": type_val,
+        "project_code": resolved_project,
+        "purpose": resolved_purpose,
+        "needs_additional_booking": bool(needs_additional_booking),
+        "additional_booking_items": items if needs_additional_booking else [],
+    }
+
+
+def _trip_route_and_dates(request: TravelRequest) -> tuple[str, str, date | None, date | None]:
+    """(from_city, to_city, start_date, end_date) across ONE_WAY/ROUND_TRIP (plain columns) and
+    MULTI_CITY (per-leg) shapes — the single range a stakeholder notification can show."""
+    legs = list(request.legs or [])
+    if legs:
+        leg_dates = [leg.travel_date for leg in legs if leg.travel_date]
+        return (
+            legs[0].from_city,
+            legs[-1].to_city,
+            min(leg_dates) if leg_dates else None,
+            max(leg_dates) if leg_dates else None,
+        )
+    return (
+        request.from_city or "",
+        request.to_city or "",
+        request.travel_date,
+        request.return_date or request.travel_date,
+    )
+
+
+def _render_template_text(text: str, context: dict[str, str]) -> str:
+    for key, value in context.items():
+        text = text.replace("{{" + key + "}}", value)
+    return text
+
+
+async def notify_project_stakeholders_if_applicable(request: TravelRequest, db: AsyncSession) -> None:
+    """Fires once a PROJECT-type request is submitted with a trip purpose that's been marked
+    notify_project_stakeholders (admin-configured per TRIP_PURPOSE option — on by default for the
+    seeded "Project Site Visit" purpose). Emails every address configured for this request's
+    project_code (ProjectNotificationRecipient, admin-managed in Admin -> Travel Options) — plain
+    emails, no account required on either end. Content comes from the "project_site_visit"
+    NotificationTemplate row (Admin -> Notification Templates), with a hardcoded fallback if that
+    row is ever missing. Caller wraps this in try/except — a notification failure must never
+    block the travel request itself from being created."""
+    if request.travel_type != TravelRequestTravelType.PROJECT.value or not request.project_code:
+        return
+
+    option = await db.scalar(
+        select(TravelRequestOption).where(
+            TravelRequestOption.option_type == TravelOptionType.TRIP_PURPOSE.value,
+            TravelRequestOption.value == request.purpose,
+        )
+    )
+    if option is None or not option.notify_project_stakeholders:
+        return
+
+    recipients = (
+        await db.execute(
+            select(ProjectNotificationRecipient).where(
+                ProjectNotificationRecipient.project_code == request.project_code
+            )
+        )
+    ).scalars().all()
+    if not recipients:
+        return
+
+    from app.models.claim_workflow import NotificationTemplate
+    from app.services.notification_service import send_email_async
+
+    employee = await db.get(User, request.employee_user_id)
+    employee_name = (employee.full_name if employee else None) or (employee.email if employee else "An employee")
+
+    from_city, to_city, start_date, end_date = _trip_route_and_dates(request)
+    context = {
+        "employee_name": employee_name,
+        "project_code": request.project_code,
+        "from_city": from_city or "—",
+        "to_city": to_city or "—",
+        "start_date": start_date.isoformat() if start_date else "—",
+        "end_date": end_date.isoformat() if end_date else "—",
+        "purpose": option.label or option.value,
+    }
+
+    template = await db.scalar(
+        select(NotificationTemplate).where(NotificationTemplate.template_key == "project_site_visit")
+    )
+    subject_tpl = template.subject if template else "Upcoming site visit — {{project_code}}"
+    body_tpl = (
+        template.body_text
+        if template
+        else (
+            "{{employee_name}} is visiting {{to_city}} for project {{project_code}} "
+            "from {{start_date}} to {{end_date}}."
+        )
+    )
+    subject = _render_template_text(subject_tpl, context)
+    body = _render_template_text(body_tpl, context)
+
+    for recipient in recipients:
+        try:
+            await send_email_async(to_email=recipient.email, subject=f"[Travora] {subject}", body_text=body)
+        except Exception as e:
+            print(f"Failed to notify project stakeholder {recipient.email}: {e}")
+
+
+async def expense_limits_for_city(
+    user_id: int, city: str, travel_date: date | None, db: AsyncSession
+) -> dict:
+    """The travel policy's expense caps for `city` at the requester's impact level — the same
+    city-group + policy-version resolution claims use, so what a traveler sees here is what the
+    claim check will later enforce. `has_limits` is False when no policy version covers the date
+    or no limit row is configured for this level / city-group."""
+    from app.services.policy_engine import get_active_policy_version, get_expense_limits, resolve_city_group
+
+    on_date = travel_date or _today_ist()
+    group_code = await resolve_city_group(city_name=city, travel_date=on_date, db=db)
+    tier = (await db.execute(select(CityGroupTier).where(CityGroupTier.code == group_code))).scalar_one_or_none()
+    level_code = await _get_user_impact_level_code(user_id, db)
+
+    out: dict = {
+        "city": city.strip(),
+        "city_group": group_code,
+        "city_group_name": tier.display_name if tier else None,
+        "impact_level": level_code,
+        "has_limits": False,
+    }
+    try:
+        policy = await get_active_policy_version(on_date, db)
+    except HTTPException:
+        return out
+
+    # ImpactLevel rows are cloned per policy version (new ids), so the employee's own
+    # impact_level_id may point at an older version's row — match on level_code within the
+    # version that governs this date instead.
+    level = (
+        await db.execute(
+            select(ImpactLevel).where(
+                ImpactLevel.policy_version_id == policy.id,
+                func.upper(ImpactLevel.level_code) == level_code.upper(),
+            )
+        )
+    ).scalars().first()
+    if level is None:
+        return out
+    limit_row = await get_expense_limits(policy.id, level.id, group_code, db)
+    if limit_row is None:
+        return out
+
+    for field in ("hotel", "food", "incidental", "day_visit"):
+        out[f"{field}_cap"] = getattr(limit_row, f"{field}_cap")
+        out[f"{field}_is_hard_block"] = getattr(limit_row, f"{field}_is_hard_block")
+    out["has_limits"] = True
+    return out
 
 
 async def city_suggestions(prefix: str, limit: int, db: AsyncSession) -> list[str]:
@@ -244,14 +461,25 @@ async def create_travel_request(
     to_city: str | None,
     travel_date: date | None,
     return_date: date | None,
+    travel_type: TravelRequestTravelType | str | None,
+    project_code: str | None,
     purpose: str | None,
-    preferred_class: str | None,
+    needs_additional_booking: bool,
+    additional_booking_items: list[str] | None,
     notes: str | None,
     legs: list | None,
     db: AsyncSession,
 ) -> TravelRequest:
     user, mode_val = await _validate_common_travel_request_fields(
         user_id=user_id, travel_mode=travel_mode, travel_date=travel_date, legs=legs, db=db
+    )
+    details = await _validate_request_details(
+        travel_type=travel_type,
+        project_code=project_code,
+        purpose=purpose,
+        needs_additional_booking=needs_additional_booking,
+        additional_booking_items=additional_booking_items,
+        db=db,
     )
 
     impact_level = await _get_user_impact_level_code(user_id, db)
@@ -271,23 +499,6 @@ async def create_travel_request(
         )
         raise HTTPException(status_code=status_code, detail=combined_message)
 
-    if preferred_class:
-        if mode_val == "FLIGHT":
-            allowed = FLIGHT_ALLOWED_CLASSES.get(impact_level, {"ECONOMY"})
-            if preferred_class.upper() not in allowed:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Preferred class {preferred_class} is not allowed for your impact level ({impact_level}).",
-                )
-        elif mode_val == "TRAIN":
-            configured = await _get_configured_train_classes(user_id, db)
-            allowed = configured if configured is not None else TRAIN_ALLOWED_CLASSES.get(impact_level)
-            if allowed and _canonical_train_class(preferred_class) not in allowed:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Preferred class {preferred_class} is not allowed for your impact level ({impact_level}).",
-                )
-
     row = await _insert_travel_request_row(
         user_id=user_id,
         trip_type=trip_type,
@@ -296,12 +507,11 @@ async def create_travel_request(
         to_city=to_city,
         travel_date=travel_date,
         return_date=return_date,
-        purpose=purpose,
-        preferred_class=preferred_class,
         notes=notes,
         legs=legs,
         status_value=TravelRequestStatus.PENDING.value,
         db=db,
+        **details,
     )
 
     # Build the (possibly multi-stage, admin-configured) approval chain and notify its first
@@ -314,6 +524,9 @@ async def create_travel_request(
     except Exception as e:
         print(f"Failed to initialize approval chain: {e}")
 
+    # notify_project_stakeholders_if_applicable fires on full approval instead (see
+    # workflow_service._finalize_travel_request_approval) — not here at submission, since the
+    # request might still get rejected or sent back before it's actually happening.
     return await _reload_travel_request_with_legs(row.id, db)
 
 
@@ -326,8 +539,11 @@ async def _insert_travel_request_row(
     to_city: str | None,
     travel_date: date | None,
     return_date: date | None,
+    travel_type: str,
+    project_code: str | None,
     purpose: str | None,
-    preferred_class: str | None,
+    needs_additional_booking: bool,
+    additional_booking_items: list[str],
     notes: str | None,
     legs: list | None,
     status_value: str,
@@ -341,8 +557,10 @@ async def _insert_travel_request_row(
         to_city=(to_city.strip() if to_city else None),
         travel_date=travel_date,
         return_date=return_date,
+        travel_type=travel_type,
+        project_code=project_code,
         purpose=purpose,
-        preferred_class=preferred_class,
+        needs_additional_booking=needs_additional_booking,
         notes=notes,
         status=status_value,
     )
@@ -364,6 +582,12 @@ async def _insert_travel_request_row(
         await db.commit()
         await db.refresh(row)
 
+    if additional_booking_items:
+        for item_text in additional_booking_items:
+            db.add(TravelRequestBookingItem(travel_request_id=row.id, description=item_text))
+        await db.commit()
+        await db.refresh(row)
+
     return row
 
 
@@ -381,8 +605,11 @@ async def create_travel_request_with_exception(
     to_city: str | None,
     travel_date: date | None,
     return_date: date | None,
+    travel_type: TravelRequestTravelType | str | None,
+    project_code: str | None,
     purpose: str | None,
-    preferred_class: str | None,
+    needs_additional_booking: bool,
+    additional_booking_items: list[str] | None,
     notes: str | None,
     legs: list | None,
     justification: str,
@@ -395,6 +622,14 @@ async def create_travel_request_with_exception(
         user_id=user_id, travel_mode=travel_mode, travel_date=travel_date, legs=legs, db=db
     )
     mode_val = travel_mode.value if isinstance(travel_mode, TravelRequestMode) else str(travel_mode).upper()
+    details = await _validate_request_details(
+        travel_type=travel_type,
+        project_code=project_code,
+        purpose=purpose,
+        needs_additional_booking=needs_additional_booking,
+        additional_booking_items=additional_booking_items,
+        db=db,
+    )
 
     impact_level = await _get_user_impact_level_code(user_id, db)
     blocking = await _determine_blocking_exceptions(
@@ -411,8 +646,11 @@ async def create_travel_request_with_exception(
             to_city=to_city,
             travel_date=travel_date,
             return_date=return_date,
+            travel_type=travel_type,
+            project_code=project_code,
             purpose=purpose,
-            preferred_class=preferred_class,
+            needs_additional_booking=needs_additional_booking,
+            additional_booking_items=additional_booking_items,
             notes=notes,
             legs=legs,
             db=db,
@@ -428,12 +666,11 @@ async def create_travel_request_with_exception(
         to_city=to_city,
         travel_date=travel_date,
         return_date=return_date,
-        purpose=purpose,
-        preferred_class=preferred_class,
         notes=notes,
         legs=legs,
         status_value=TravelRequestStatus.PENDING_EXCEPTION.value,
         db=db,
+        **details,
     )
 
     from app.services.workflow_service import create_travel_exception_request
@@ -442,10 +679,42 @@ async def create_travel_request_with_exception(
     # its approval chain is the union of each type's required-approver roles.
     await create_travel_exception_request(row.id, user_id, exception_types, justification, db)
 
+    # notify_project_stakeholders_if_applicable fires on full approval instead (see
+    # workflow_service._finalize_travel_request_approval) — once this exception clears, this
+    # request re-enters the normal chain via init_travel_request_approval_chain and reaches that
+    # same hook, same as any other request.
     return await _reload_travel_request_with_legs(row.id, db)
 
 
 _TICKETED_STATUSES = (TravelRequestStatus.BOOKED.value, TravelRequestStatus.PARTIALLY_BOOKED.value)
+
+
+def _compute_booking_status(
+    req: TravelRequest, *, newly_ticketed_seq: int | None = None, newly_proven_item_id: int | None = None
+) -> tuple[str, int, int]:
+    """BOOKED once every segment has a ticket AND every booking item has at least one proof;
+    PARTIALLY_BOOKED once any of those is done. Returns (status, legs_pending, items_pending).
+
+    The newly_* args cover the row just added in this session, which req's viewonly
+    relationships don't see until commit."""
+    segment_seqs = {s["seq"] for s in _segments_for_request(req)}
+    ticketed = {t.leg_sequence for t in (req.tickets or [])}
+    if newly_ticketed_seq is not None:
+        ticketed.add(newly_ticketed_seq)
+    item_ids = {item.id for item in (req.booking_items or [])}
+    proven = {d.booking_item_id for d in (req.supporting_documents or []) if d.booking_item_id is not None}
+    if newly_proven_item_id is not None:
+        proven.add(newly_proven_item_id)
+
+    legs_pending = len(segment_seqs - ticketed)
+    items_pending = len(item_ids - proven)
+    if not legs_pending and not items_pending:
+        status = TravelRequestStatus.BOOKED.value
+    elif (segment_seqs & ticketed) or (item_ids & proven):
+        status = TravelRequestStatus.PARTIALLY_BOOKED.value
+    else:
+        status = TravelRequestStatus.APPROVED.value
+    return status, legs_pending, items_pending
 
 
 def _latest_ticket(req: TravelRequest) -> TravelRequestTicket | None:
@@ -584,7 +853,11 @@ async def viewer_can_download_ticket(
         return False
     if req.employee_user_id == viewer_user_id or viewer_role == Role.HRBP_HR:
         return True
-    allowed = PERMISSION_MATRIX.get(viewer_role, set())
+
+    from app.services.permission_config_service import get_effective_permission_matrix
+
+    matrix = await get_effective_permission_matrix(db)
+    allowed = matrix.get(viewer_role, set())
     if {"view_reports", "process_payments"} & allowed:
         return await _ticket_linked_to_viewable_claim(ticket, viewer_user_id, db)
     if viewer_role != Role.REPORTING_MANAGER:
@@ -1012,17 +1285,7 @@ async def upload_ticket_for_request(
     path.write_bytes(content)
 
     pnr = payload.get("pnr_or_booking_ref")
-    amt_raw = payload.get("ticket_amount")
-    tclass = payload.get("ticket_travel_class")
-    ext_src = payload.get("external_booking_source")
     notes_emp = payload.get("notes_for_employee")
-
-    amt: Decimal | None = None
-    if amt_raw is not None and str(amt_raw).strip():
-        try:
-            amt = Decimal(str(amt_raw)).quantize(Decimal("0.01"))
-        except Exception as exc:
-            raise HTTPException(status_code=422, detail="ticket_amount invalid") from exc
 
     mode_str = segment["mode"] or req.travel_mode
     try:
@@ -1030,10 +1293,8 @@ async def upload_ticket_for_request(
     except KeyError as exc:
         raise HTTPException(status_code=500, detail="Invalid travel_mode on request") from exc
 
-    reference_id = payload.get("reference_id") or f"DESK-{request_id}-{leg_sequence}-{uuid4().hex[:8].upper()}"
+    reference_id = f"DESK-{request_id}-{leg_sequence}-{uuid4().hex[:8].upper()}"
     provider = str(payload.get("provider") or "Travel Desk")
-
-    amt_final = amt if amt is not None else Decimal("0.00")
 
     meta = {"travel_request_id": request_id, "leg_sequence": leg_sequence, "source": "travel_desk_upload", "parsed": payload}
 
@@ -1050,8 +1311,8 @@ async def upload_ticket_for_request(
         travel_date=segment["travel_date"],
         provider=provider[:64],
         reference_id=str(reference_id)[:64],
-        travel_class=tclass,
-        amount=amt_final,
+        travel_class=None,
+        amount=Decimal("0.00"),
         gst_invoice_requested=False,
         booking_metadata=meta,
         status=TripStatus.CONFIRMED,
@@ -1071,31 +1332,29 @@ async def upload_ticket_for_request(
         content_type=(file.content_type or "application/octet-stream")[:128],
         file_size_bytes=len(content),
         pnr_or_booking_ref=pnr.strip()[:128] if isinstance(pnr, str) and pnr.strip() else None,
-        ticket_amount=amt,
-        ticket_travel_class=tclass.strip()[:64] if isinstance(tclass, str) and tclass.strip() else None,
-        external_booking_source=ext_src.strip()[:128] if isinstance(ext_src, str) and ext_src.strip() else None,
         notes_for_employee=notes_emp if isinstance(notes_emp, str) else None,
     )
     db.add(ticket_row)
 
-    ticketed_seqs = {t.leg_sequence for t in (req.tickets or [])} | {leg_sequence}
-    all_ticketed = ticketed_seqs.issuperset({s["seq"] for s in segments})
-    req.status = TravelRequestStatus.BOOKED.value if all_ticketed else TravelRequestStatus.PARTIALLY_BOOKED.value
+    req.status, legs_pending, items_pending = _compute_booking_status(req, newly_ticketed_seq=leg_sequence)
+    fully_booked = req.status == TravelRequestStatus.BOOKED.value
 
     # Create notification for employee
     try:
         from app.services.notification_service import create_notification
-        if all_ticketed:
+        if fully_booked:
             body = (
                 f"Your ticket for {req.from_city} -> {req.to_city} has been booked and uploaded by the Travel Desk."
                 if len(segments) == 1
                 else "All legs of your trip have been ticketed and uploaded by the Travel Desk."
             )
+        elif legs_pending == 0:
+            body = f"All tickets are booked. {items_pending} additional booking(s) still pending."
         else:
-            body = f"{segment['label']} has been ticketed. {len(segments) - len(ticketed_seqs)} leg(s) still pending."
+            body = f"{segment['label']} has been ticketed. {legs_pending} leg(s) still pending."
         await create_notification(
             user_id=req.employee_user_id,
-            title="Travel Booked" if all_ticketed else "Travel Partially Booked",
+            title="Travel Booked" if fully_booked else "Travel Partially Booked",
             body=body,
             link="/travel-requests",
             category="CLAIM_UPDATE",
@@ -1109,6 +1368,125 @@ async def upload_ticket_for_request(
     await db.refresh(ticket_row)
     await db.refresh(trip)
     return req, ticket_row, trip
+
+
+_SUPPORTING_DOC_STATUSES = (
+    TravelRequestStatus.APPROVED.value,
+    TravelRequestStatus.PARTIALLY_BOOKED.value,
+    TravelRequestStatus.BOOKED.value,
+)
+
+
+async def upload_supporting_document(
+    *,
+    request_id: int,
+    uploader_user_id: int,
+    file: UploadFile,
+    description: str | None,
+    booking_item_id: int | None = None,
+    db: AsyncSession,
+) -> tuple[TravelRequestSupportingDocument, str]:
+    """Travel Desk attaches a supporting document (hotel confirmation, visa receipt, ...) to a
+    request whose traveler asked for the company to book something beyond the itinerary —
+    booking_item_id ties it to the specific need (TravelRequestBookingItem) it's proof for, and
+    a proof marks that item booked. Returns (document, request status after the upload)."""
+    req = (
+        await db.execute(
+            select(TravelRequest)
+            .options(selectinload(TravelRequest.legs), selectinload(TravelRequest.tickets))
+            .where(TravelRequest.id == request_id)
+        )
+    ).scalar_one_or_none()
+    if req is None:
+        raise HTTPException(status_code=404, detail="Travel request not found")
+    if not req.needs_additional_booking:
+        raise HTTPException(status_code=409, detail="This request has no additional booking to attach documents to")
+    if req.status not in _SUPPORTING_DOC_STATUSES:
+        raise HTTPException(status_code=409, detail="Travel request must be APPROVED before documents can be uploaded")
+
+    item = None
+    if booking_item_id is not None:
+        item = await db.get(TravelRequestBookingItem, booking_item_id)
+        if item is None or item.travel_request_id != request_id:
+            raise HTTPException(status_code=404, detail="Booking item not found on this request")
+
+    content = await file.read()
+    digest, suffix = _validate_ticket_file(
+        file.filename or "document.pdf", file.content_type or "application/octet-stream", content, kind="Document"
+    )
+
+    storage_root = Path(settings.travel_ticket_storage_dir) / str(request_id) / "supporting"
+    storage_root.mkdir(parents=True, exist_ok=True)
+    path = storage_root / f"{digest}{suffix}"
+    path.write_bytes(content)
+
+    note = description.strip()[:255] if isinstance(description, str) and description.strip() else None
+    doc = TravelRequestSupportingDocument(
+        travel_request_id=request_id,
+        booking_item_id=booking_item_id,
+        uploaded_by_user_id=uploader_user_id,
+        file_sha256=digest,
+        original_filename=(file.filename or "document.bin")[:255],
+        storage_path=str(path),
+        content_type=(file.content_type or "application/octet-stream")[:128],
+        file_size_bytes=len(content),
+        description=note,
+    )
+    db.add(doc)
+
+    was_booked = req.status == TravelRequestStatus.BOOKED.value
+    new_status, _, items_pending = _compute_booking_status(req, newly_proven_item_id=booking_item_id)
+    req.status = new_status
+    fully_booked = new_status == TravelRequestStatus.BOOKED.value and not was_booked
+
+    try:
+        from app.services.notification_service import create_notification
+
+        if fully_booked:
+            title, body = "Travel Booked", "Everything for your trip is now booked — tickets and additional bookings."
+        elif item is not None:
+            title = "Travel Desk Added a Document"
+            body = f"The Travel Desk uploaded proof for \"{item.description}\"."
+            if items_pending:
+                body += f" {items_pending} additional booking(s) still pending."
+        else:
+            title = "Travel Desk Added a Document"
+            body = "The Travel Desk attached a supporting document to your travel request."
+        await create_notification(
+            user_id=req.employee_user_id,
+            title=title,
+            body=body,
+            link="/travel-requests",
+            category="CLAIM_UPDATE",
+            db=db,
+        )
+    except Exception as e:
+        print(f"Failed to create notification: {e}")
+
+    await db.commit()
+    await db.refresh(doc)
+    return doc, new_status
+
+
+async def assert_can_download_supporting_document(
+    viewer_user_id: int, viewer_role: Role, doc: TravelRequestSupportingDocument, db: AsyncSession
+) -> None:
+    """Owner, HRBP, anyone with Travel Desk access, or the owner's reporting manager."""
+    req = await db.get(TravelRequest, doc.travel_request_id)
+    if req is not None:
+        if req.employee_user_id == viewer_user_id or viewer_role == Role.HRBP_HR:
+            return
+
+        from app.services.permission_config_service import get_effective_permission_matrix
+
+        matrix = await get_effective_permission_matrix(db)
+        if "view_travel_desk" in matrix.get(viewer_role, set()):
+            return
+        if viewer_role == Role.REPORTING_MANAGER and await _actor_is_reporting_manager_for(
+            manager_user_id=viewer_user_id, subordinate_user_id=req.employee_user_id, db=db
+        ):
+            return
+    raise HTTPException(status_code=403, detail="Not allowed to download this document")
 
 
 async def assert_can_download_ticket(

@@ -9,8 +9,9 @@ import Skeleton from '../../components/ui/Skeleton';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import useBodyScrollLock from '../../hooks/useBodyScrollLock';
 import { usePagination } from '../../hooks/usePagination';
+import { hasPermission } from '../../services/permissions';
 import { reimbursementApi } from '../../services/reimbursementApi';
-import { selectResolvedRole, useAuthStore } from '../../store/authStore';
+import { useAuthStore } from '../../store/authStore';
 
 const money = (v) =>
   Number(v || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -23,15 +24,16 @@ function slaClass(bucket) {
 
 export default function PaymentQueuePage() {
   useSetPageTitle('Payment Queue');
-  const role = useAuthStore(selectResolvedRole);
+  const permissions = useAuthStore((s) => s.profile?.permissions);
+  // Tied to whoever can actually record the payment (process_payments), not a hardcoded
+  // Finance check — see advances_api.py and ClaimReviewModal.jsx's matching check.
+  const canProcessPayments = hasPermission(permissions, 'process_payments');
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [active, setActive] = useState(null);
   const [utr, setUtr] = useState('');
   const [tdsDeduction, setTdsDeduction] = useState('0.00');
-  // Outstanding advance is a Finance-only figure (see advances_api.py) — never fetched for
-  // any other role that can land on this shared payment queue.
   const [outstandingAdvance, setOutstandingAdvance] = useState(0);
   const [advanceDeducted, setAdvanceDeducted] = useState('0.00');
   const [saving, setSaving] = useState(false);
@@ -63,7 +65,7 @@ export default function PaymentQueuePage() {
     setTdsDeduction('0.00');
     setOutstandingAdvance(0);
     setAdvanceDeducted('0.00');
-    if (role === 'FINANCE' && row.employee_user_id) {
+    if (canProcessPayments && row.employee_user_id) {
       try {
         const res = await reimbursementApi.outstandingAdvanceFor(row.employee_user_id);
         setOutstandingAdvance(Number(res.data?.outstanding_advance || 0));
@@ -268,7 +270,7 @@ export default function PaymentQueuePage() {
                         onChange={(e) => setTdsDeduction(e.target.value)}
                       />
                     </div>
-                    {role === 'FINANCE' && outstandingAdvance > 0 ? (
+                    {canProcessPayments && outstandingAdvance > 0 ? (
                       <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                         <div className="flex items-center justify-between text-xs">
                           <span className="font-semibold text-slate-600">Outstanding Advance</span>

@@ -18,9 +18,11 @@ PERMISSION_MATRIX: dict[Role, set[str]] = {
     Role.REPORTING_MANAGER: {
         "submit_claim",
         "view_self",
-        "approve_stage_1",
+        "approve_claims",
         "view_admin_readonly",
         "approve_exception",
+        "view_team_claims",
+        "view_team_calendar",
     },
     Role.HRBP_HR: {
         "submit_claim",
@@ -28,15 +30,17 @@ PERMISSION_MATRIX: dict[Role, set[str]] = {
         "configure_policy",
         "approve_policy",
         "view_reports",
-        "approve_stage_2",
+        "approve_claims",
         "view_sensitive_admin",
+        "view_travel_desk",
+        "view_notification_templates",
     },
     Role.PAYROLL: {
         "submit_claim",
         "view_self",
         "view_reports",
         "process_payments",
-        "approve_stage_3",
+        "approve_claims",
         "view_admin_readonly",
     },
     Role.FINANCE: {
@@ -47,26 +51,38 @@ PERMISSION_MATRIX: dict[Role, set[str]] = {
         "view_reports",
         "export_audit",
         "process_payments",
-        "approve_stage_4",
+        "approve_claims",
         "view_sensitive_admin",
+        "process_advances",
     },
     Role.IT_ADMIN: {
         "submit_claim",
         "view_self",
         "manage_users",
         "configure_policy",
+        # Decoupled from configure_policy on purpose — the same read/edit split
+        # REPORTING_MANAGER and PAYROLL already have. Losing configure_policy (e.g. an admin
+        # toggling it off in the Permission Matrix editor) must not also take down read-only
+        # visibility like the dashboard's KPI widget; that's a view concern, not an edit one.
+        "view_admin_readonly",
         "view_reports",
         "export_audit",
         "view_sensitive_admin",
         "view_workflow_config",
         "edit_workflow_config",
+        "manage_team_budgets",
+        "view_notification_templates",
+        "edit_notification_templates",
+        "manage_holiday_calendar",
+        "view_permission_matrix",
+        "edit_permission_matrix",
     },
     Role.CEO: {
         "submit_claim",
         "view_self",
         "view_reports",
         "approve_exception",
-        "approve_stage_4",
+        "approve_claims",
     },
     Role.GROUP_HEAD_HR: {
         "submit_claim",
@@ -86,12 +102,12 @@ SENSITIVE_MFA_ROLES = {Role.HRBP_HR, Role.FINANCE, Role.IT_ADMIN}
 # delegator could otherwise see or change.
 DELEGATABLE_PERMISSIONS: dict[Role, set[str]] = {
     Role.EMPLOYEE: set(),
-    Role.REPORTING_MANAGER: {"approve_stage_1", "approve_exception"},
-    Role.HRBP_HR: {"approve_stage_2"},
-    Role.PAYROLL: {"approve_stage_3"},
-    Role.FINANCE: {"approve_stage_4"},
+    Role.REPORTING_MANAGER: {"approve_claims", "approve_exception"},
+    Role.HRBP_HR: {"approve_claims"},
+    Role.PAYROLL: {"approve_claims"},
+    Role.FINANCE: {"approve_claims"},
     Role.IT_ADMIN: set(),
-    Role.CEO: {"approve_stage_4", "approve_exception"},
+    Role.CEO: {"approve_claims", "approve_exception"},
     Role.GROUP_HEAD_HR: {"approve_exception"},
 }
 
@@ -127,9 +143,15 @@ async def _active_delegator_roles(user_id: int, db: AsyncSession) -> set[Role]:
 
 async def get_delegated_permissions(user_id: int, db: AsyncSession) -> set[str]:
     delegator_roles = await _active_delegator_roles(user_id, db)
+    if not delegator_roles:
+        return set()
+
+    from app.services.permission_config_service import get_effective_delegatable_permissions
+
+    delegatable = await get_effective_delegatable_permissions(db)
     allowed: set[str] = set()
     for role in delegator_roles:
-        allowed |= DELEGATABLE_PERMISSIONS.get(role, set())
+        allowed |= delegatable.get(role, set())
     return allowed
 
 
@@ -204,7 +226,11 @@ def require_permission(action: str) -> Callable:
         except ValueError as exc:
             _log_admin_users_access_denied(request, claims, f"invalid_role_for_action:{action}")
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden") from exc
-        allowed = PERMISSION_MATRIX.get(role, set())
+
+        from app.services.permission_config_service import get_effective_permission_matrix
+
+        matrix = await get_effective_permission_matrix(db)
+        allowed = matrix.get(role, set())
         if action not in allowed:
             user_id = int(claims.get("sub", 0))
             if action not in await get_delegated_permissions(user_id, db):
@@ -222,7 +248,10 @@ def require_any_permission(*actions: str) -> Callable:
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden") from exc
 
-        allowed = PERMISSION_MATRIX.get(role, set())
+        from app.services.permission_config_service import get_effective_permission_matrix
+
+        matrix = await get_effective_permission_matrix(db)
+        allowed = matrix.get(role, set())
         if not any(action in allowed for action in actions):
             user_id = int(claims.get("sub", 0))
             allowed = allowed | await get_delegated_permissions(user_id, db)
@@ -235,7 +264,7 @@ def require_any_permission(*actions: str) -> Callable:
 
 def require_role(*allowed_roles: Role, allow_delegate: bool = True) -> Callable:
     """`allow_delegate=False` is for role checks that are NOT "clear the current queue"
-    actions (e.g. approving a policy version) — delegation should never extend to those."""
+    actions — delegation should never extend to those."""
 
     async def dependency(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)) -> dict:
         try:
@@ -253,12 +282,6 @@ def require_role(*allowed_roles: Role, allow_delegate: bool = True) -> Callable:
         return claims
 
     return dependency
-
-
-def require_hrbp_role() -> Callable:
-    # Policy-version approval is admin/config work, not a "current queue" action — never
-    # delegable, unlike the travel-desk / approval-queue uses of require_role(HRBP_HR).
-    return require_role(Role.HRBP_HR, allow_delegate=False)
 
 
 async def require_mfa(request: Request, claims: dict = Depends(get_current_claims)) -> dict:

@@ -6,7 +6,7 @@ import { useSetPageTitle } from '../../context/PageTitleContext';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
 import useToast from '../../hooks/useToast';
 import { adminApi } from '../../services/adminApi';
-import { canEditPolicy } from '../../services/permissions';
+import { hasPermission } from '../../services/permissions';
 import { useAuthStore } from '../../store/authStore';
 
 function ToggleSwitch({ checked, onChange, disabled }) {
@@ -32,8 +32,11 @@ function ToggleSwitch({ checked, onChange, disabled }) {
 
 export default function TeamBudgets() {
   useSetPageTitle('Team Budgets');
-  const role = useAuthStore((state) => state.user?.role);
-  const isViewOnly = !canEditPolicy(role);
+  // manage_team_budgets, not a hardcoded role list — matches the backend's actual gate (same
+  // permission for both read and write, so this is mostly always false, but it's the correct
+  // check rather than a stale role list that could drift from the real permission).
+  const permissions = useAuthStore((state) => state.profile?.permissions);
+  const isViewOnly = !hasPermission(permissions, 'manage_team_budgets');
 
   const [enabled, setEnabled] = useState(false);
   const [departments, setDepartments] = useState([]);

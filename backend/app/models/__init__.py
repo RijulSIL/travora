@@ -25,7 +25,7 @@ from app.models.policy import (
     AirClass,
     AirEligibility,
     CityGroup,
-    CityGroupType,
+    CityGroupTier,
     ExpenseLimit,
     ImpactLevel,
     PolicyStatus,
@@ -51,7 +51,15 @@ from app.models.travel_booking import (
     TravelTrip,
     TripStatus,
 )
-from app.models.travel_request import TravelRequest, TravelRequestApprovalStage, TravelRequestTicket
+from app.models.travel_request import (
+    ProjectNotificationRecipient,
+    TravelRequest,
+    TravelRequestApprovalStage,
+    TravelRequestBookingItem,
+    TravelRequestOption,
+    TravelRequestSupportingDocument,
+    TravelRequestTicket,
+)
 
 __all__ = [
     "AdvanceRequest",
@@ -67,7 +75,7 @@ __all__ = [
     "ExceptionApproval",
     "ClaimStatus",
     "CityGroup",
-    "CityGroupType",
+    "CityGroupTier",
     "CompanyHoliday",
     "CompanyProfile",
     "DepartmentBudget",
@@ -85,6 +93,7 @@ __all__ = [
     "Notification",
     "NotificationCategory",
     "NotificationTemplate",
+    "ProjectNotificationRecipient",
     "InvoiceField",
     "InvoiceLineItem",
     "InvoiceStatus",
@@ -100,6 +109,9 @@ __all__ = [
     "LocalConveyanceStatus",
     "TravelMode",
     "TravelRequest",
+    "TravelRequestBookingItem",
+    "TravelRequestOption",
+    "TravelRequestSupportingDocument",
     "TravelRequestTicket",
     "TravelTrip",
     "TripStatus",

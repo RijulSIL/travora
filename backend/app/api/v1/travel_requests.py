@@ -1,6 +1,7 @@
 """Authenticated travel-request + Travel Desk endpoints (Phase 1)."""
 
 from datetime import date
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
@@ -16,15 +17,20 @@ from app.core.rbac import (
 )
 from app.models.auth import Role
 from app.schemas.travel_request import (
+    CityExpenseLimitOut,
     DeskQueueItemOut,
     EntitlementNoteOut,
+    SupportingDocumentUploadOut,
     TravelExceptionSummaryOut,
+    TravelOptionOut,
+    TravelOptionsOut,
     TravelRejectIn,
     TravelRequestCreate,
     TravelRequestExceptionCreate,
     TravelRequestListItemOut,
     TravelRequestOut,
     TravelRequestSegmentOut,
+    TravelRequestSupportingDocumentOut,
     TravelRequestTicketAttachmentOut,
 )
 from app.services import travel_request_service as svc
@@ -78,8 +84,11 @@ async def create_request(
         to_city=body.to_city,
         travel_date=body.travel_date,
         return_date=body.return_date,
+        travel_type=body.travel_type,
+        project_code=body.project_code,
         purpose=body.purpose,
-        preferred_class=body.preferred_class,
+        needs_additional_booking=body.needs_additional_booking,
+        additional_booking_items=body.additional_booking_items,
         notes=body.notes,
         legs=body.legs,
         db=db,
@@ -105,8 +114,11 @@ async def create_request_with_exception(
         to_city=body.to_city,
         travel_date=body.travel_date,
         return_date=body.return_date,
+        travel_type=body.travel_type,
+        project_code=body.project_code,
         purpose=body.purpose,
-        preferred_class=body.preferred_class,
+        needs_additional_booking=body.needs_additional_booking,
+        additional_booking_items=body.additional_booking_items,
         notes=body.notes,
         legs=body.legs,
         justification=body.justification,
@@ -183,7 +195,7 @@ async def manager_pending_requests(
 @router.get(
     "/manager/team-calendar",
     response_model=list[dict],
-    dependencies=[Depends(require_role(Role.REPORTING_MANAGER))],
+    dependencies=[Depends(require_permission("view_team_calendar"))],
 )
 async def manager_team_calendar(
     claims: dict = Depends(get_current_claims),
@@ -195,7 +207,7 @@ async def manager_team_calendar(
 @router.get(
     "/desk",
     response_model=list[DeskQueueItemOut],
-    dependencies=[Depends(require_role(Role.HRBP_HR))],
+    dependencies=[Depends(require_permission("view_travel_desk"))],
 )
 async def desk_queue(
     db: AsyncSession = Depends(get_db),
@@ -214,7 +226,7 @@ async def desk_queue(
 @router.get(
     "/desk/all",
     response_model=list[DeskQueueItemOut],
-    dependencies=[Depends(require_role(Role.HRBP_HR))],
+    dependencies=[Depends(require_permission("view_travel_desk"))],
 )
 async def desk_all_requests(
     status: str | None = Query(None, description="Filter by travel_requests.status"),
@@ -256,6 +268,36 @@ async def entitlement_note(
 
 
 @router.get(
+    "/options",
+    response_model=TravelOptionsOut,
+    dependencies=[Depends(require_permission("submit_claim"))],
+)
+async def travel_options(db: AsyncSession = Depends(get_db)) -> TravelOptionsOut:
+    """Active Project Code / Trip Purpose choices for the travel request form (admins manage
+    them under Admin → Travel Options)."""
+    rows = await svc.list_travel_options(db)
+    return TravelOptionsOut(
+        project_codes=[TravelOptionOut.model_validate(r) for r in rows if r.option_type == "PROJECT_CODE"],
+        trip_purposes=[TravelOptionOut.model_validate(r) for r in rows if r.option_type == "TRIP_PURPOSE"],
+    )
+
+
+@router.get(
+    "/expense-limits",
+    response_model=CityExpenseLimitOut,
+    dependencies=[Depends(require_permission("submit_claim"))],
+)
+async def city_expense_limits(
+    city: str = Query(..., min_length=1, max_length=128),
+    travel_date: date | None = Query(None, description="Defaults to today (IST)"),
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> CityExpenseLimitOut:
+    """Travel-policy expense caps for a destination city at the caller's own impact level."""
+    return CityExpenseLimitOut(**await svc.expense_limits_for_city(int(claims["sub"]), city, travel_date, db))
+
+
+@router.get(
     "/city-suggestions",
     response_model=list[str],
     dependencies=[Depends(require_permission("submit_claim"))],
@@ -290,6 +332,35 @@ async def download_ticket_file(
         content=content,
         media_type=ctype,
         headers={"Content-Disposition": f'inline; filename="{ticket.original_filename}"'},
+    )
+
+
+@router.get(
+    "/supporting-documents/{document_id}/file",
+    dependencies=[
+        Depends(
+            require_any_permission("submit_claim", "view_travel_desk", "view_reports", "process_payments")
+        )
+    ],
+)
+async def download_supporting_document(
+    document_id: int,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    from app.models.travel_request import TravelRequestSupportingDocument
+
+    doc = await db.get(TravelRequestSupportingDocument, document_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    await svc.assert_can_download_supporting_document(int(claims["sub"]), _role(claims), doc, db)
+    path = Path(doc.storage_path)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Document file missing on server")
+    return Response(
+        content=path.read_bytes(),
+        media_type=doc.content_type,
+        headers={"Content-Disposition": f'inline; filename="{doc.original_filename}"'},
     )
 
 
@@ -395,29 +466,21 @@ async def reject_request(
 
 @router.post(
     "/{request_id}/upload-ticket",
-    dependencies=[Depends(require_role(Role.HRBP_HR))],
+    dependencies=[Depends(require_permission("view_travel_desk"))],
 )
 async def upload_ticket(
     request_id: int,
     file: Annotated[UploadFile, File(...)],
     leg_sequence: Annotated[int, Form()] = 1,
     pnr_or_booking_ref: Annotated[str | None, Form()] = None,
-    ticket_amount: Annotated[str | None, Form()] = None,
-    ticket_travel_class: Annotated[str | None, Form()] = None,
     provider: Annotated[str | None, Form()] = None,
-    reference_id: Annotated[str | None, Form()] = None,
-    external_booking_source: Annotated[str | None, Form()] = None,
     notes_for_employee: Annotated[str | None, Form()] = None,
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     payload = {
         "pnr_or_booking_ref": pnr_or_booking_ref,
-        "ticket_amount": ticket_amount,
-        "ticket_travel_class": ticket_travel_class,
         "provider": provider,
-        "reference_id": reference_id,
-        "external_booking_source": external_booking_source,
         "notes_for_employee": notes_for_employee,
     }
     req, ticket, trip = await svc.upload_ticket_for_request(
@@ -433,3 +496,29 @@ async def upload_ticket(
         "ticket": TravelRequestTicketAttachmentOut.model_validate(ticket).model_dump(),
         "trip_id": trip.id,
     }
+
+
+@router.post(
+    "/{request_id}/supporting-documents",
+    response_model=SupportingDocumentUploadOut,
+    dependencies=[Depends(require_permission("view_travel_desk"))],
+)
+async def upload_supporting_document(
+    request_id: int,
+    file: Annotated[UploadFile, File(...)],
+    description: Annotated[str | None, Form()] = None,
+    booking_item_id: Annotated[int | None, Form()] = None,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> SupportingDocumentUploadOut:
+    doc, request_status = await svc.upload_supporting_document(
+        request_id=request_id,
+        uploader_user_id=int(claims["sub"]),
+        file=file,
+        description=description,
+        booking_item_id=booking_item_id,
+        db=db,
+    )
+    return SupportingDocumentUploadOut(
+        **TravelRequestSupportingDocumentOut.model_validate(doc).model_dump(), request_status=request_status
+    )

@@ -780,8 +780,9 @@ async def list_exception_requests_log(
                         "to_city": travel_request.to_city,
                         "travel_date": travel_request.travel_date,
                         "return_date": travel_request.return_date,
+                        "travel_type": travel_request.travel_type,
+                        "project_code": travel_request.project_code,
                         "purpose": travel_request.purpose,
-                        "preferred_class": travel_request.preferred_class,
                         "notes": travel_request.notes,
                         "requested_at": travel_request.requested_at,
                         "legs": [

@@ -165,8 +165,9 @@ class ExceptionTravelRequestOut(BaseModel):
     to_city: str | None = None
     travel_date: date | None = None
     return_date: date | None = None
+    travel_type: str | None = None
+    project_code: str | None = None
     purpose: str | None = None
-    preferred_class: str | None = None
     notes: str | None = None
     requested_at: datetime
     legs: list[ExceptionTravelRequestLegOut] = Field(default_factory=list)

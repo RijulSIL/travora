@@ -1,19 +1,22 @@
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import {
-  Armchair,
+  ArrowLeftRight,
+  Briefcase,
   Bus,
   Calendar,
   Check,
   ChevronDown,
   Clock,
+  ConciergeBell,
   Eye,
   FileText,
   Filter,
   GitBranch,
-  Layers,
+  Hash,
   MessageSquare,
   Plane,
   RotateCcw,
+  Target,
   TrainFront,
   X,
 } from 'lucide-react';
@@ -401,18 +404,22 @@ export default function PendingApprovals() {
                   ? [...new Set(request.legs.map((leg) => leg.travel_mode || request.travel_mode))].join(', ')
                   : request.travel_mode;
                 const ModeIcon = !isMultiCity ? TRAVEL_MODE_ICONS[request.travel_mode] : null;
-                const detailFields = [
-                  { icon: FileText, label: 'Purpose', value: request.purpose },
-                  {
-                    icon: Layers,
-                    label: 'Trip Type',
-                    value: request.trip_type ? titleCase(request.trip_type) : null,
-                  },
-                  { icon: Armchair, label: 'Preferred Class', value: request.preferred_class },
+                const factFields = [
+                  { icon: Target, label: 'Purpose', value: request.purpose },
+                  { icon: ArrowLeftRight, label: 'Trip Type', value: request.trip_type ? titleCase(request.trip_type) : null },
+                  { icon: Briefcase, label: 'Travel Type', value: request.travel_type === 'PROJECT' ? 'Project' : 'Non-project' },
+                  { icon: Hash, label: 'Project Code', value: request.project_code },
                   { icon: Calendar, label: 'Return Date', value: request.return_date },
-                  { icon: MessageSquare, label: 'Notes', value: request.notes },
-                  { icon: Clock, label: 'Requested On', value: formatRequestedAt(request.requested_at) },
                 ].filter((f) => f.value);
+                // Legacy requests (before itemised booking) only have the free-text blob.
+                const bookingNeeds = request.needs_additional_booking
+                  ? (request.booking_items?.length
+                      ? request.booking_items.map((item) => ({ key: item.id, text: item.description }))
+                      : request.additional_booking_details
+                        ? [{ key: 'legacy', text: request.additional_booking_details }]
+                        : [])
+                  : [];
+                const requestedAt = formatRequestedAt(request.requested_at);
 
                 return (
                 <Fragment key={request.id}>
@@ -506,31 +513,75 @@ export default function PendingApprovals() {
                       <td colSpan={7} className="px-5 py-4">
                         <div className={`flex flex-col gap-4 ${request.exception ? 'lg:flex-row' : ''}`}>
                           <div
-                            className={`rounded-xl border border-slate-200/70 bg-white p-4 shadow-sm ${
-                              request.exception ? 'flex-1' : 'w-full max-w-2xl'
+                            className={`overflow-hidden rounded-xl border border-slate-200/70 bg-white shadow-sm ${
+                              request.exception ? 'flex-1' : 'w-full max-w-3xl'
                             }`}
                           >
-                            <div className="mb-3 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-400">
-                              <FileText size={13} className="text-slate-400" />
-                              Trip Details
+                            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-3">
+                              <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">
+                                <FileText size={13} className="text-slate-400" />
+                                Trip Details
+                              </div>
+                              {requestedAt ? (
+                                <div className="flex items-center gap-1 text-[11px] text-slate-400">
+                                  <Clock size={12} />
+                                  Requested {requestedAt}
+                                </div>
+                              ) : null}
                             </div>
-                            {detailFields.length ? (
-                              <div className="grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-3">
-                                {detailFields.map((f) => (
-                                  <div key={f.label} className="flex items-start gap-2">
-                                    <f.icon size={14} className="mt-0.5 shrink-0 text-slate-400" />
-                                    <div>
-                                      <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+
+                            <div className="space-y-4 p-4">
+                              {factFields.length ? (
+                                <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+                                  {factFields.map((f) => (
+                                    <div key={f.label} className="rounded-lg bg-slate-50 px-3 py-2.5">
+                                      <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                                        <f.icon size={11} className="shrink-0" />
                                         {f.label}
                                       </div>
-                                      <div className="text-xs font-medium text-slate-700">{f.value}</div>
+                                      <div className="mt-1 break-words text-xs font-semibold text-slate-800">{f.value}</div>
                                     </div>
+                                  ))}
+                                </div>
+                              ) : null}
+
+                              {bookingNeeds.length ? (
+                                <div className="rounded-lg border border-amber-200/80 bg-amber-50/60 p-3">
+                                  <div className="mb-2 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-amber-800">
+                                    <ConciergeBell size={12} />
+                                    Also needs the company to book
+                                    <span className="rounded-full bg-amber-200/70 px-1.5 text-[10px] text-amber-900">{bookingNeeds.length}</span>
                                   </div>
-                                ))}
-                              </div>
-                            ) : (
-                              <p className="text-xs text-slate-400">No additional trip details provided.</p>
-                            )}
+                                  <ul className="flex flex-wrap gap-1.5">
+                                    {bookingNeeds.map((need, i) => (
+                                      <li
+                                        key={need.key}
+                                        className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-amber-200 bg-white py-1 pl-1 pr-3 text-xs font-medium text-slate-700"
+                                      >
+                                        <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-amber-100 text-[9px] font-bold text-amber-800">
+                                          {i + 1}
+                                        </span>
+                                        <span className="whitespace-pre-wrap break-words">{need.text}</span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              ) : null}
+
+                              {request.notes ? (
+                                <div className="flex gap-2 rounded-lg border border-slate-100 px-3 py-2.5">
+                                  <MessageSquare size={13} className="mt-0.5 shrink-0 text-slate-400" />
+                                  <div className="min-w-0">
+                                    <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Notes</div>
+                                    <p className="mt-0.5 whitespace-pre-wrap break-words text-xs text-slate-700">{request.notes}</p>
+                                  </div>
+                                </div>
+                              ) : null}
+
+                              {!factFields.length && !bookingNeeds.length && !request.notes ? (
+                                <p className="text-xs text-slate-400">No additional trip details provided.</p>
+                              ) : null}
+                            </div>
                           </div>
                           {request.exception ? (
                             <div className="flex-1 rounded-xl border border-slate-200/70 bg-white p-4 shadow-sm">

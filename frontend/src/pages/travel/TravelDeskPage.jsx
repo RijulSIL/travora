@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import {
   Search, Plane, Train, Bus, FileText, CheckCircle2,
   ArrowRight, UploadCloud,
-  Clock, AlertCircle
+  Clock, AlertCircle, Paperclip, ChevronDown, ChevronUp
 } from 'lucide-react';
 
+import TicketPreviewDrawer from '../../components/ui/TicketPreviewDrawer';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import useToast from '../../hooks/useToast';
 import { reimbursementApi } from '../../services/reimbursementApi';
@@ -19,11 +20,7 @@ function ModeIcon({ mode, className }) {
 const EMPTY_UPLOAD_FIELDS = {
   file: null,
   pnr_or_booking_ref: '',
-  ticket_amount: '',
-  ticket_travel_class: '',
   provider: '',
-  reference_id: '',
-  external_booking_source: '',
   notes_for_employee: '',
 };
 
@@ -57,30 +54,6 @@ function SegmentUploadForm({ seg, fields, onChange, onSubmit, busy, isOnlySegmen
         />
       </div>
 
-      <div className="grid gap-3 md:grid-cols-2">
-        <div className="space-y-1">
-          <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Ticket Amount (₹) *</span>
-          <input
-            className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all bg-white"
-            placeholder="e.g. 8500"
-            value={fields.ticket_amount}
-            onChange={(e) => onChange({ ticket_amount: e.target.value })}
-            required
-          />
-        </div>
-
-        <div className="space-y-1">
-          <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Cabin / Travel Class Booked *</span>
-          <input
-            className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all bg-white"
-            placeholder="e.g. Economy (Classic), Train AC-3T"
-            value={fields.ticket_travel_class}
-            onChange={(e) => onChange({ ticket_travel_class: e.target.value })}
-            required
-          />
-        </div>
-      </div>
-
       <div className="space-y-1">
         <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Provider (Airline / Transporter) *</span>
         <input
@@ -90,28 +63,6 @@ function SegmentUploadForm({ seg, fields, onChange, onSubmit, busy, isOnlySegmen
           onChange={(e) => onChange({ provider: e.target.value })}
           required
         />
-      </div>
-
-      <div className="grid gap-3 md:grid-cols-2">
-        <div className="space-y-1">
-          <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Internal Desk Reference (Optional)</span>
-          <input
-            className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all bg-white"
-            placeholder="Internal ID override"
-            value={fields.reference_id}
-            onChange={(e) => onChange({ reference_id: e.target.value })}
-          />
-        </div>
-
-        <div className="space-y-1">
-          <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">External Source (e.g. MMT)</span>
-          <input
-            className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all bg-white"
-            placeholder="Agent source portal"
-            value={fields.external_booking_source}
-            onChange={(e) => onChange({ external_booking_source: e.target.value })}
-          />
-        </div>
       </div>
 
       <div className="space-y-1">
@@ -132,6 +83,232 @@ function SegmentUploadForm({ seg, fields, onChange, onSubmit, busy, isOnlySegmen
         <CheckCircle2 size={13} /> {isOnlySegment ? 'Complete Ticketing & Notify Employee' : `Save Ticket — ${seg.label}`}
       </button>
     </form>
+  );
+}
+
+const SUPPORTING_DOC_STATUSES = ['APPROVED', 'PARTIALLY_BOOKED', 'BOOKED'];
+
+/** One "please also book X" need plus its own isolated proof-upload — each booking item gets
+ * its own documents and its own upload form, so a hotel confirmation never lands under cab. */
+function BookingItemCard({ request, item, documents, canUpload, onUploaded, onViewDocument }) {
+  const { showToast } = useToast();
+  const [file, setFile] = useState(null);
+  const [description, setDescription] = useState('');
+  const [busy, setBusy] = useState(false);
+  // Bumped after each upload to remount the file input — React can't clear a file input's value.
+  const [inputKey, setInputKey] = useState(0);
+
+  async function onSubmit(e) {
+    e.preventDefault();
+    if (!file) {
+      showToast('Choose a document to upload', 'error');
+      return;
+    }
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('description', description);
+    fd.append('booking_item_id', String(item.id));
+    setBusy(true);
+    try {
+      const resp = await reimbursementApi.travelUploadSupportingDocument(request.id, fd);
+      showToast(
+        resp.data?.request_status === 'BOOKED' ? 'Everything booked; employee notified' : `"${item.description}" marked as booked`,
+        'success',
+      );
+      setFile(null);
+      setDescription('');
+      setInputKey((k) => k + 1);
+      await onUploaded();
+    } catch (err) {
+      const d = err.response?.data?.detail;
+      showToast(typeof d === 'string' ? d : 'Upload failed', 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-2 rounded-lg border border-amber-200/70 bg-white/70 p-3">
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-xs font-semibold text-slate-700">{item.description}</p>
+        {documents.length ? (
+          <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
+            <CheckCircle2 size={10} /> Booked
+          </span>
+        ) : (
+          <span className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">Pending</span>
+        )}
+      </div>
+
+      {documents.length ? (
+        <div className="space-y-1">
+          {documents.map((doc) => (
+            <button
+              key={doc.id}
+              type="button"
+              className="flex max-w-full items-center gap-1.5 text-left text-[11px] font-semibold text-brand hover:underline"
+              onClick={() => onViewDocument(doc)}
+            >
+              <Paperclip size={11} className="shrink-0" />
+              <span className="truncate">{doc.description || doc.original_filename}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {canUpload ? (
+        <form className="space-y-2 border-t border-amber-200/50 pt-2" onSubmit={onSubmit}>
+          <input
+            key={inputKey}
+            type="file"
+            accept=".pdf,.png,.jpg,.jpeg,.heic"
+            className="block w-full text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-[11px] file:font-bold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
+            onChange={(e) => setFile(e.target.files?.[0] || null)}
+          />
+          <input
+            className="w-full h-8 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all bg-white"
+            placeholder="Short description (e.g. Hotel confirmation)"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+          />
+          <button
+            type="submit"
+            className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white text-[11px] font-bold text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50"
+            disabled={busy || !file}
+          >
+            <UploadCloud size={12} /> {busy ? 'Uploading…' : 'Upload Proof'}
+          </button>
+        </form>
+      ) : null}
+    </div>
+  );
+}
+
+/** Legacy fallback for requests submitted before per-item booking existed (no booking_items rows
+ * — just the old free-text blob) — single description, single undifferentiated upload form. */
+function LegacyAdditionalBookingSection({ request, documents, canUpload, onUploaded, onViewDocument }) {
+  const { showToast } = useToast();
+  const [file, setFile] = useState(null);
+  const [description, setDescription] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [inputKey, setInputKey] = useState(0);
+
+  async function onSubmit(e) {
+    e.preventDefault();
+    if (!file) {
+      showToast('Choose a document to upload', 'error');
+      return;
+    }
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('description', description);
+    setBusy(true);
+    try {
+      await reimbursementApi.travelUploadSupportingDocument(request.id, fd);
+      showToast('Document uploaded', 'success');
+      setFile(null);
+      setDescription('');
+      setInputKey((k) => k + 1);
+      await onUploaded();
+    } catch (err) {
+      const d = err.response?.data?.detail;
+      showToast(typeof d === 'string' ? d : 'Upload failed', 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50/50 p-3.5">
+      <div className="space-y-1">
+        <span className="block text-[10px] font-bold text-amber-800 uppercase tracking-wide">Additional Booking Requested</span>
+        <p className="whitespace-pre-wrap text-xs font-medium text-slate-700">{request.additional_booking_details}</p>
+      </div>
+
+      {documents.length ? (
+        <div className="space-y-1">
+          <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Supporting Documents</span>
+          {documents.map((doc) => (
+            <button
+              key={doc.id}
+              type="button"
+              className="flex max-w-full items-center gap-1.5 text-left text-[11px] font-semibold text-brand hover:underline"
+              onClick={() => onViewDocument(doc)}
+            >
+              <Paperclip size={11} className="shrink-0" />
+              <span className="truncate">{doc.description || doc.original_filename}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {canUpload ? (
+        <form className="space-y-2 border-t border-amber-200/70 pt-3" onSubmit={onSubmit}>
+          <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Upload Supporting Document</span>
+          <input
+            key={inputKey}
+            type="file"
+            accept=".pdf,.png,.jpg,.jpeg,.heic"
+            className="block w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
+            onChange={(e) => setFile(e.target.files?.[0] || null)}
+          />
+          <input
+            className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all bg-white"
+            placeholder="Short description (e.g. Hotel confirmation)"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+          />
+          <button
+            type="submit"
+            className="inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white text-xs font-bold text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50"
+            disabled={busy || !file}
+          >
+            <UploadCloud size={13} /> {busy ? 'Uploading…' : 'Upload Document'}
+          </button>
+        </form>
+      ) : null}
+    </div>
+  );
+}
+
+/** What the traveler asked the company to book beyond the itinerary, plus the Travel Desk's own
+ * supporting documents for it. Rendered only for requests with needs_additional_booking. Each
+ * booking item (hotel, cab, visa, ...) gets its own card with its own linked documents and its
+ * own upload form, so proofs never get mixed up between different needs on the same request. */
+function AdditionalBookingSection({ request, onUploaded, onViewDocument }) {
+  const documents = request.supporting_documents || [];
+  const items = request.booking_items || [];
+  const canUpload = SUPPORTING_DOC_STATUSES.includes(request.status);
+
+  if (!items.length) {
+    return (
+      <LegacyAdditionalBookingSection
+        request={request}
+        documents={documents}
+        canUpload={canUpload}
+        onUploaded={onUploaded}
+        onViewDocument={onViewDocument}
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50/50 p-3.5">
+      <span className="block text-[10px] font-bold text-amber-800 uppercase tracking-wide">Additional Booking Requested</span>
+      <div className="space-y-2">
+        {items.map((item) => (
+          <BookingItemCard
+            key={item.id}
+            request={request}
+            item={item}
+            documents={documents.filter((doc) => doc.booking_item_id === item.id)}
+            canUpload={canUpload}
+            onUploaded={onUploaded}
+            onViewDocument={onViewDocument}
+          />
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -222,6 +399,8 @@ export default function TravelDeskPage() {
   const [allImpactLevel, setAllImpactLevel] = useState('');
   const [allSortBy, setAllSortBy] = useState('');
   const [allPage, setAllPage] = useState(1);
+  const [expandedAllId, setExpandedAllId] = useState(null);
+  const [preview, setPreview] = useState({ open: false, blob: null, name: '', type: '', title: '' });
 
   const selectedRow = useMemo(() => queue.find((e) => e.request.id === selectedKey) || null, [queue, selectedKey]);
 
@@ -342,6 +521,27 @@ export default function TravelDeskPage() {
     return () => clearTimeout(t);
   }, [mode, allQ, statusFilter, allDateFrom, allDateTo, allImpactLevel]);
 
+  async function viewSupportingDocument(doc) {
+    try {
+      const resp = await reimbursementApi.travelSupportingDocumentBlob(doc.id);
+      setPreview({
+        open: true,
+        blob: resp.data,
+        name: doc.original_filename || 'document.pdf',
+        type: doc.content_type || resp.headers['content-type'] || '',
+        title: doc.description || doc.original_filename || 'Supporting document',
+      });
+    } catch (e) {
+      showToast('Could not load document preview', 'error');
+    }
+  }
+
+  // Refresh whichever list is on screen so a freshly uploaded document appears right away.
+  async function refreshAfterDocumentUpload() {
+    if (mode === 'queue') await loadQueue();
+    else await loadAll();
+  }
+
   async function onUpload(e, seq) {
     e.preventDefault();
     if (!selectedRow || (selectedRow.request.status !== 'APPROVED' && selectedRow.request.status !== 'PARTIALLY_BOOKED')) return;
@@ -354,17 +554,14 @@ export default function TravelDeskPage() {
     fd.append('file', fields.file);
     fd.append('leg_sequence', String(seq));
     fd.append('pnr_or_booking_ref', fields.pnr_or_booking_ref || '');
-    fd.append('ticket_amount', fields.ticket_amount || '');
-    fd.append('ticket_travel_class', fields.ticket_travel_class || '');
     fd.append('provider', fields.provider || '');
-    fd.append('reference_id', fields.reference_id || '');
-    fd.append('external_booking_source', fields.external_booking_source || '');
     fd.append('notes_for_employee', fields.notes_for_employee || '');
     setBusy(true);
     try {
       const bookedFor = selectedRow.employee_display_name;
       const resp = await reimbursementApi.travelUploadTicket(selectedRow.request.id, fd);
       const allDone = resp.data?.request?.status === 'BOOKED';
+      const allLegsTicketed = (resp.data?.request?.segments || []).every((s) => s.ticket);
       setUploadsBySeq((prev) => {
         const next = { ...prev };
         delete next[seq];
@@ -378,6 +575,8 @@ export default function TravelDeskPage() {
           setBookedSuccess(null);
           setSelectedKey(null);
         }, 1900);
+      } else if (allLegsTicketed) {
+        showToast('All legs ticketed — upload proofs for the additional bookings to finish', 'success');
       } else {
         showToast('Leg ticketed — continue with the remaining leg(s)', 'success');
       }
@@ -556,6 +755,14 @@ export default function TravelDeskPage() {
                           <span className="bg-slate-100 rounded px-1.5 py-0.5">{row.request.travel_date}</span>
                           <span>•</span>
                           <span>Impact: <strong className="text-slate-700">{row.impact_level_code}</strong></span>
+                          {row.request.needs_additional_booking ? (
+                            <>
+                              <span>•</span>
+                              <span className="inline-flex items-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-tight text-amber-800">
+                                Extra booking
+                              </span>
+                            </>
+                          ) : null}
                         </div>
                       </div>
 
@@ -675,8 +882,12 @@ export default function TravelDeskPage() {
                       </div>
                     )}
                     <div>
-                      <span className="text-slate-400 font-semibold block uppercase text-[9px]">Preferred Cabin</span>
-                      <span className="font-bold text-slate-700">{selectedRow.request.preferred_class || 'Economy'}</span>
+                      <span className="text-slate-400 font-semibold block uppercase text-[9px]">Travel Type</span>
+                      <span className="font-bold text-slate-700">
+                        {selectedRow.request.travel_type === 'PROJECT'
+                          ? `Project${selectedRow.request.project_code ? ` · ${selectedRow.request.project_code}` : ''}`
+                          : 'Non-project'}
+                      </span>
                     </div>
                     <div>
                       <span className="text-slate-400 font-semibold block uppercase text-[9px]">Requested Mode</span>
@@ -703,6 +914,14 @@ export default function TravelDeskPage() {
                   </div>
                 )}
 
+                {selectedRow.request.needs_additional_booking ? (
+                  <AdditionalBookingSection
+                    request={selectedRow.request}
+                    onUploaded={refreshAfterDocumentUpload}
+                    onViewDocument={viewSupportingDocument}
+                  />
+                ) : null}
+
                 {/* Status APPROVED / PARTIALLY_BOOKED: per-segment ticketing */}
                 {selectedRow.request.status === 'APPROVED' || selectedRow.request.status === 'PARTIALLY_BOOKED' ? (
                   <div className="mt-5 border-t border-slate-150 pt-4 space-y-3">
@@ -728,7 +947,7 @@ export default function TravelDeskPage() {
                             <div className="text-[11px] text-emerald-800">
                               <div className="font-bold">{seg.label}</div>
                               <div className="text-emerald-700/80">
-                                PNR {seg.ticket.pnr_or_booking_ref || '—'} · ₹{seg.ticket.ticket_amount ?? '—'} · {seg.ticket.ticket_travel_class || 'Class n/a'}
+                                PNR {seg.ticket.pnr_or_booking_ref || '—'}
                               </div>
                             </div>
                           </div>
@@ -880,21 +1099,24 @@ export default function TravelDeskPage() {
                   <th className="px-5 py-3">Mode</th>
                   <th className="px-5 py-3">Impact Level</th>
                   <th className="px-5 py-3">Status</th>
+                  <th className="w-10 px-2 py-3" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-150 font-medium text-slate-700">
                 {(allRows || []).length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="px-5 py-8 text-center text-slate-400 italic">
+                    <td colSpan={9} className="px-5 py-8 text-center text-slate-400 italic">
                       No matching records located.
                     </td>
                   </tr>
                 ) : (
                   pagedAllRows.map(({ request: r, employee_display_name, impact_level_code }, index) => {
                     const statusDetails = getStatusDetails(r.status);
+                    const isExpanded = expandedAllId === r.id;
 
                     return (
-                      <tr key={r.id} className="hover:bg-slate-50/50 transition-colors">
+                      <Fragment key={r.id}>
+                      <tr className="hover:bg-slate-50/50 transition-colors">
                         <td className="px-5 py-3 text-center text-slate-500">
                           {(allPage - 1) * QUEUE_PAGE_SIZE + index + 1}
                         </td>
@@ -958,7 +1180,34 @@ export default function TravelDeskPage() {
                             {statusDetails.label}
                           </span>
                         </td>
+                        <td className="px-2 py-3 text-center">
+                          {r.needs_additional_booking ? (
+                            <button
+                              type="button"
+                              className="flex h-6 w-6 items-center justify-center rounded-lg text-amber-600 hover:bg-amber-50 transition-colors"
+                              onClick={() => setExpandedAllId(isExpanded ? null : r.id)}
+                              aria-label={isExpanded ? 'Hide additional booking' : 'Show additional booking'}
+                              title="Additional booking requested"
+                            >
+                              {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                            </button>
+                          ) : null}
+                        </td>
                       </tr>
+                      {isExpanded && r.needs_additional_booking ? (
+                        <tr className="bg-slate-50/60">
+                          <td colSpan={9} className="px-5 py-4">
+                            <div className="max-w-xl">
+                              <AdditionalBookingSection
+                                request={r}
+                                onUploaded={refreshAfterDocumentUpload}
+                                onViewDocument={viewSupportingDocument}
+                              />
+                            </div>
+                          </td>
+                        </tr>
+                      ) : null}
+                      </Fragment>
                     );
                   })
                 )}
@@ -995,6 +1244,15 @@ export default function TravelDeskPage() {
           ) : null}
         </div>
       ) : null}
+
+      <TicketPreviewDrawer
+        open={preview.open}
+        onClose={() => setPreview((p) => ({ ...p, open: false }))}
+        blob={preview.blob}
+        contentType={preview.type}
+        filename={preview.name}
+        title={preview.title}
+      />
     </section>
   );
 }

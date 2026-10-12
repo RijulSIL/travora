@@ -29,9 +29,9 @@ import { useAsyncAction } from '../../hooks/useAsyncAction';
 import useToast from '../../hooks/useToast';
 import { normalizeApiError } from '../../utils/apiErrors';
 import { formatDate } from '../../utils/formatters';
-import { hasAnyPermission } from '../../services/permissions';
+import { hasAnyPermission, hasPermission } from '../../services/permissions';
 import { reimbursementApi } from '../../services/reimbursementApi';
-import { selectResolvedRole, useAuthStore } from '../../store/authStore';
+import { useAuthStore } from '../../store/authStore';
 
 const POLICY_STYLES = {
   OK: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20',
@@ -65,10 +65,13 @@ function PolicyPill({ status }) {
  * mounting/unmounting it.
  */
 export default function ClaimReviewModal({ claimId, onClose }) {
-  const role = useAuthStore(selectResolvedRole);
-  const delegatedRoles = useAuthStore((s) => s.profile?.delegated_roles);
-  const approverPerms = ['approve_stage_1', 'approve_stage_2', 'approve_stage_3', 'process_payments'];
-  const isApprover = hasAnyPermission(role, approverPerms, delegatedRoles);
+  const permissions = useAuthStore((s) => s.profile?.permissions);
+  const approverPerms = ['approve_claims', 'process_payments'];
+  const isApprover = hasAnyPermission(permissions, approverPerms);
+  // The outstanding-advance netting feature below is tied to whoever can actually record the
+  // payment (process_payments), not a hardcoded Finance check — so a role an admin grants this
+  // permission to (see the Role Permissions page) sees it too, not just the literal FINANCE role.
+  const canProcessPayments = hasPermission(permissions, 'process_payments');
   const { showToast } = useToast();
   useBodyScrollLock(true);
 
@@ -77,8 +80,8 @@ export default function ClaimReviewModal({ claimId, onClose }) {
   const [rejectReason, setRejectReason] = useState('');
   const [utr, setUtr] = useState('');
   const [tdsDeduction, setTdsDeduction] = useState('0.00');
-  // Outstanding advance is a Finance-only figure (see advances_api.py) — never fetched for
-  // any other role that can review/act on this claim.
+  // Outstanding advance is only relevant to whoever can record the payment (see advances_api.py)
+  // — never fetched for a viewer who merely approves an earlier stage.
   const [outstandingAdvance, setOutstandingAdvance] = useState(0);
   const [advanceDeducted, setAdvanceDeducted] = useState('0.00');
   const [payableAmount, setPayableAmount] = useState('');
@@ -112,7 +115,7 @@ export default function ClaimReviewModal({ claimId, onClose }) {
         setTdsDeduction('0.00');
         setAdvanceDeducted('0.00');
         setOutstandingAdvance(0);
-        if (role === 'FINANCE' && c.data?.status === 'READY_FOR_PAYMENT' && c.data?.employee_user_id) {
+        if (canProcessPayments && c.data?.status === 'READY_FOR_PAYMENT' && c.data?.employee_user_id) {
           try {
             const adv = await reimbursementApi.outstandingAdvanceFor(c.data.employee_user_id);
             if (!cancelled) setOutstandingAdvance(Number(adv.data?.outstanding_advance || 0));
@@ -621,7 +624,7 @@ export default function ClaimReviewModal({ claimId, onClose }) {
                           onChange={(e) => setTdsDeduction(e.target.value)}
                         />
                       </label>
-                      {role === 'FINANCE' && outstandingAdvance > 0 ? (
+                      {canProcessPayments && outstandingAdvance > 0 ? (
                         <div className="mt-2.5 rounded-lg border border-slate-200 bg-slate-50 p-3">
                           <div className="flex items-center justify-between text-xs">
                             <span className="font-semibold text-slate-600">Outstanding Advance</span>
