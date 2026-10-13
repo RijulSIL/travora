@@ -87,7 +87,7 @@ export default function AllClaimsPage() {
             <option value="">All categories</option>
             <option value="TRAVEL">Travel</option>
             <option value="GENERAL">General</option>
-            <option value="REALLOCATION">Reallocation</option>
+            <option value="RELOCATION">Relocation</option>
           </select>
           <input
             className="field"

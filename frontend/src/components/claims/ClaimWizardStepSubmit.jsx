@@ -19,13 +19,9 @@ export default function ClaimWizardStepSubmit({
 }) {
   const selectedTrips = trips.filter((trip) => selectedTripIds.includes(trip.id));
   const selectedInvoices = invoices.filter((invoice) => selectedInvoiceIds.includes(invoice.id));
-  // Matches the Policy Check step's own gate (hasUnresolvedDeviations): a hard-blocked expense
-  // only has to stay resolved via a filed exception, not cleared back to OK — once that
-  // exception is requested, the step before this one already let the employee proceed, so this
-  // step must not re-block submission on the same still-HARD_BLOCK status.
-  const hardBlocks = (claim?.expenses || []).some(
-    (expense) => expense.policy_status === 'HARD_BLOCK' && !expense.exception_requested
-  );
+  // Flagged expenses don't block this button — Submit opens the exceptions modal (one tab per
+  // flagged expense) and only sends the claim once every reason is filled in.
+  const exceptionCount = (claim?.expenses || []).filter((expense) => expense.exception_reason_required).length;
 
   return (
     <div className="space-y-6">
@@ -161,8 +157,9 @@ export default function ClaimWizardStepSubmit({
         <button 
           type="button" 
           className="inline-flex h-10 items-center justify-center gap-1.5 rounded-lg bg-brand px-5 text-sm font-bold text-white hover:bg-brand/90 transition-all duration-200 shadow-md disabled:bg-slate-100 disabled:text-slate-400 disabled:shadow-none" 
-          onClick={onSubmit} 
-          disabled={submitting || !declarationChecked || hardBlocks}
+          onClick={onSubmit}
+          disabled={submitting || !declarationChecked}
+          title={exceptionCount ? `You'll give a reason for ${exceptionCount} policy exception${exceptionCount > 1 ? 's' : ''} next` : undefined}
         >
           <Send size={14} /> {submitting ? 'Submitting...' : 'Submit Claim'}
         </button>

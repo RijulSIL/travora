@@ -54,7 +54,7 @@ class ReimbursementCategory(str, enum.Enum):
 
     TRAVEL = "TRAVEL"
     GENERAL = "GENERAL"
-    REALLOCATION = "REALLOCATION"
+    RELOCATION = "RELOCATION"
 
 
 class Invoice(Base):
@@ -174,7 +174,7 @@ class ClaimDraft(Base):
     destination_city_group: Mapped[str | None] = mapped_column(String(32))
     # General Reimbursement claims have no trip, so this drives which wizard steps show and
     # which approval-matrix category applies — see workflow_service.get_workflow_config.
-    # Derived from linked invoices when any is tagged REALLOCATION (see reimbursement_service
+    # Derived from linked invoices when any is tagged RELOCATION (see reimbursement_service
     # ._resolve_claim_reimbursement_category) — it isn't just whatever the wizard entry point set.
     reimbursement_category: Mapped[ReimbursementCategory] = mapped_column(
         Enum(ReimbursementCategory, native_enum=False, length=32),
@@ -237,3 +237,7 @@ class ClaimExpense(Base):
     cap_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     policy_status: Mapped[str] = mapped_column(String(32), nullable=False, default="OK")
     exception_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # The exception type this flagged expense needs (None when it's within policy) — computed
+    # once in _build_claim_expenses, where the invoice/level checks that decide it live, and
+    # stored so submit and every later read agree on it instead of re-deriving a guess.
+    exception_type: Mapped[str | None] = mapped_column(String(128))

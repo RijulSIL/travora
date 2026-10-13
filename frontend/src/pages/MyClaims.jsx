@@ -158,7 +158,7 @@ export default function MyClaims() {
                       <div className="text-sm font-bold text-ink">
                         {claim.claim_reference || `Claim #${claim.id}`}
                       </div>
-                      {claim.reimbursement_category !== 'GENERAL' && claim.reimbursement_category !== 'REALLOCATION' ? (
+                      {claim.reimbursement_category !== 'GENERAL' && claim.reimbursement_category !== 'RELOCATION' ? (
                         <div className="mt-1 text-xs text-slate-500">
                           {[claim.office_location, claim.destination_city].filter(Boolean).join(' → ') ||
                             'Trip details pending'}
@@ -189,7 +189,7 @@ export default function MyClaims() {
                 ) : claim.status === 'PENDING_EXCEPTION' ? (
                   <ClaimApprovalStepper
                     stages={[]}
-                    emptyHint="Awaiting policy exception review before approval can begin."
+                    claimStatus="PENDING_EXCEPTION"
                   />
                 ) : claim.status !== 'DRAFT' ? (
                   <ClaimApprovalStepper stages={[]} emptyHint="Approval details unavailable." />

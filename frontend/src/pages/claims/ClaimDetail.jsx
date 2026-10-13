@@ -86,7 +86,7 @@ export default function ClaimDetail() {
             <div className="flex flex-wrap items-center justify-between gap-4 px-5 py-4 bg-slate-50/50 border-b border-line/60">
               <div>
                 <h1 className="text-xl font-bold text-slate-900 tracking-tight">{claim.claim_reference || `Claim #${claim.id}`}</h1>
-                {claim.reimbursement_category !== 'GENERAL' && claim.reimbursement_category !== 'REALLOCATION' ? (
+                {claim.reimbursement_category !== 'GENERAL' && claim.reimbursement_category !== 'RELOCATION' ? (
                   <p className="mt-1 text-xs font-medium text-slate-500 flex items-center gap-1.5">
                     <Plane size={13} className="text-slate-400" />
                     <span>{[claim.office_location, claim.destination_city].filter(Boolean).join(' → ') || 'Trip route pending'}</span>
@@ -227,10 +227,10 @@ export default function ClaimDetail() {
             </div>
           </div>
 
-          {/* Linked Trips — General/Reallocation claims are never trip-linked (see
+          {/* Linked Trips — General/Relocation claims are never trip-linked (see
               GeneralReimbursementWizard.jsx, which both share), so this panel has nothing to
               show for either. */}
-          {claim.reimbursement_category !== 'GENERAL' && claim.reimbursement_category !== 'REALLOCATION' ? (
+          {claim.reimbursement_category !== 'GENERAL' && claim.reimbursement_category !== 'RELOCATION' ? (
             <div className="panel overflow-hidden">
               <div className="border-b border-line/60 bg-slate-50/50 px-5 py-4">
                 <h2 className="text-sm font-bold text-ink uppercase tracking-wider">Linked Trips</h2>

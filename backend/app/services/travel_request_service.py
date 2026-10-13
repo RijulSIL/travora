@@ -8,6 +8,7 @@ Minimum lead: first travel date >= today + N working days (exclusive of today: w
 from __future__ import annotations
 
 import hashlib
+import logging
 from collections.abc import Sequence
 from datetime import date, timedelta
 from decimal import Decimal
@@ -47,7 +48,6 @@ from app.services.travel_booking_service import (
     LEVELS_REQUIRING_AIR_UNLOCK,
     TRAIN_ALLOWED_CLASSES,
     _get_user_impact_level_code,
-    _has_completed_exception_chain,
     _normalize_level,
 )
 
@@ -198,15 +198,36 @@ def _render_template_text(text: str, context: dict[str, str]) -> str:
     return text
 
 
+logger = logging.getLogger(__name__)
+
+
+async def _notify_stakeholders_once_booked(request: TravelRequest, db: AsyncSession) -> None:
+    """Site visit email, sent once the request has just become fully BOOKED (every ticket and
+    additional booking done) — so stakeholders only hear about trips that are definitely
+    happening. Called after the booking is committed; a failure here never undoes the booking."""
+    try:
+        # Reload with legs eagerly: the email's route/dates come from them, and a lazy load here
+        # would fail under async (silently, since this is wrapped) after the caller's refresh.
+        fresh = (
+            await db.execute(
+                select(TravelRequest).options(selectinload(TravelRequest.legs)).where(TravelRequest.id == request.id)
+            )
+        ).scalar_one()
+        await notify_project_stakeholders_if_applicable(fresh, db)
+    except Exception as e:  # noqa: BLE001 — notification failures must never surface as booking errors
+        logger.exception("Failed to notify project stakeholders for travel request %s: %s", request.id, e)
+
+
 async def notify_project_stakeholders_if_applicable(request: TravelRequest, db: AsyncSession) -> None:
-    """Fires once a PROJECT-type request is submitted with a trip purpose that's been marked
+    """Fires once a PROJECT-type request is fully booked by the Travel Desk (see
+    _notify_stakeholders_once_booked) with a trip purpose that's been marked
     notify_project_stakeholders (admin-configured per TRIP_PURPOSE option — on by default for the
     seeded "Project Site Visit" purpose). Emails every address configured for this request's
     project_code (ProjectNotificationRecipient, admin-managed in Admin -> Travel Options) — plain
     emails, no account required on either end. Content comes from the "project_site_visit"
     NotificationTemplate row (Admin -> Notification Templates), with a hardcoded fallback if that
     row is ever missing. Caller wraps this in try/except — a notification failure must never
-    block the travel request itself from being created."""
+    block the booking itself."""
     if request.travel_type != TravelRequestTravelType.PROJECT.value or not request.project_code:
         return
 
@@ -388,16 +409,14 @@ async def _determine_blocking_exceptions(
 
     cfg = await get_workflow_config(db)
     blocking: list[tuple[str, str]] = []
+    # Every check here is scoped to THIS request: an exception approved for an earlier trip
+    # never exempts a new one (each short-notice / air-locked request needs its own approval).
 
     if flight_dates and is_exception_enabled(cfg, "FLIGHT_ADVANCE_BOOKING_OVERRIDE"):
         earliest_flight_date = min(flight_dates)
         min_days = settings.flight_advance_booking_min_days
         days_in_advance = (earliest_flight_date - date.today()).days
-        min_advance_enforced = days_in_advance < min_days
-        has_advance_override = await _has_completed_exception_chain(
-            user_id, "FLIGHT_ADVANCE_BOOKING_OVERRIDE", db
-        )
-        if min_advance_enforced and not has_advance_override:
+        if days_in_advance < min_days:
             blocking.append((
                 "FLIGHT_ADVANCE_BOOKING_OVERRIDE",
                 f"Minimum {min_days}-day advance booking window for flights is enforced.",
@@ -411,11 +430,7 @@ async def _determine_blocking_exceptions(
         earliest_train_date = min(train_dates)
         min_train_days = settings.train_advance_booking_min_days
         train_days_in_advance = (earliest_train_date - date.today()).days
-        min_train_advance_enforced = train_days_in_advance <= min_train_days
-        has_train_advance_override = await _has_completed_exception_chain(
-            user_id, "TRAIN_ADVANCE_BOOKING_OVERRIDE", db
-        )
-        if min_train_advance_enforced and not has_train_advance_override:
+        if train_days_in_advance <= min_train_days:
             blocking.append((
                 "TRAIN_ADVANCE_BOOKING_OVERRIDE",
                 f"Trains departing within {min_train_days} day(s) of booking require exception approval.",
@@ -427,11 +442,7 @@ async def _determine_blocking_exceptions(
         min_lead_days = settings.travel_request_min_lead_working_days
         earliest_allowed = earliest_travel_date_allowed(_today_ist(), min_lead_days)
         earliest_other_date = min(other_dates)
-        min_lead_enforced = earliest_other_date < earliest_allowed
-        has_lead_time_override = await _has_completed_exception_chain(
-            user_id, "TRAVEL_REQUEST_LEAD_TIME_OVERRIDE", db
-        )
-        if min_lead_enforced and not has_lead_time_override:
+        if earliest_other_date < earliest_allowed:
             blocking.append((
                 "TRAVEL_REQUEST_LEAD_TIME_OVERRIDE",
                 f"Travel must be booked at least {min_lead_days} working day(s) in advance. "
@@ -524,9 +535,8 @@ async def create_travel_request(
     except Exception as e:
         print(f"Failed to initialize approval chain: {e}")
 
-    # notify_project_stakeholders_if_applicable fires on full approval instead (see
-    # workflow_service._finalize_travel_request_approval) — not here at submission, since the
-    # request might still get rejected or sent back before it's actually happening.
+    # The site visit email (notify_project_stakeholders_if_applicable) goes out once the Travel
+    # Desk has fully booked the trip — not here at submission, while it could still be rejected.
     return await _reload_travel_request_with_legs(row.id, db)
 
 
@@ -679,10 +689,8 @@ async def create_travel_request_with_exception(
     # its approval chain is the union of each type's required-approver roles.
     await create_travel_exception_request(row.id, user_id, exception_types, justification, db)
 
-    # notify_project_stakeholders_if_applicable fires on full approval instead (see
-    # workflow_service._finalize_travel_request_approval) — once this exception clears, this
-    # request re-enters the normal chain via init_travel_request_approval_chain and reaches that
-    # same hook, same as any other request.
+    # Once every exception approver signs off, this request is approved straight away (no normal
+    # approval stages after the exception chain); the site visit email goes out once it's booked.
     return await _reload_travel_request_with_legs(row.id, db)
 
 
@@ -1367,6 +1375,8 @@ async def upload_ticket_for_request(
     await db.refresh(req)
     await db.refresh(ticket_row)
     await db.refresh(trip)
+    if fully_booked:
+        await _notify_stakeholders_once_booked(req, db)
     return req, ticket_row, trip
 
 
@@ -1465,6 +1475,8 @@ async def upload_supporting_document(
 
     await db.commit()
     await db.refresh(doc)
+    if fully_booked:
+        await _notify_stakeholders_once_booked(req, db)
     return doc, new_status
 
 

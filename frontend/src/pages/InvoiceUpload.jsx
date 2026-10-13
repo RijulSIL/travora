@@ -30,7 +30,7 @@ const MAX_INVOICES = 30;
 const UPLOAD_CATEGORIES = [
   { value: 'TRAVEL', label: 'Travel reimbursement', description: 'Linked to a trip' },
   { value: 'GENERAL', label: 'General reimbursement', description: 'Office expense, no trip' },
-  { value: 'REALLOCATION', label: 'Reallocation', description: 'Trip-linked, reallocated spend' },
+  { value: 'RELOCATION', label: 'Relocation', description: 'Moving to a new posting — packing, shifting, temporary stay' },
 ];
 
 function statusClass(status) {
@@ -170,7 +170,7 @@ export default function InvoiceUpload() {
     (invoice) => !String(invoice.id).startsWith('temp-') && !invoice.is_archived,
   );
   // Each wizard's invoice picker only ever shows invoices of its own type (Travel wizard:
-  // TRAVEL only; General wizard: GENERAL + REALLOCATION) — pre-selecting a mix used to smuggle
+  // TRAVEL only; General wizard: GENERAL + RELOCATION) — pre-selecting a mix used to smuggle
   // invalid invoice ids into whichever wizard got picked, invisible in the UI until submission
   // failed with a confusing error. Grouping by type here and asking when more than one type is
   // present means only ever one, correct type's invoices get sent to a given wizard.

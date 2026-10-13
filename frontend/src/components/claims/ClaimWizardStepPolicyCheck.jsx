@@ -5,12 +5,41 @@ function money(value) {
   return Number(value || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+// What happens to a flagged expense at submit — shown in place of a per-expense request button:
+// exceptions are raised together from the submit step's modal, never one by one here.
+function ExceptionPill({ expense }) {
+  const isHard = expense.policy_status === 'HARD_BLOCK';
+  if (!expense.exception_reason_required) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded bg-emerald-100 px-2 py-0.5 text-[9px] font-bold text-emerald-800">
+        <CheckCircle2 size={9} /> Exception approved
+      </span>
+    );
+  }
+  if (expense.exception_mode === 'BLOCK') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded bg-rose-100 px-2.5 py-1 text-[10px] font-bold text-rose-800">
+        <AlertCircle size={10} /> Not allowed by policy
+      </span>
+    );
+  }
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded px-2.5 py-1 text-[10px] font-bold ${
+        isHard ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
+      }`}
+    >
+      {isHard ? <AlertCircle size={10} /> : <AlertTriangle size={10} />}
+      Reason needed at submit
+    </span>
+  );
+}
+
 export default function ClaimWizardStepPolicyCheck({
   claim,
   isGeneral,
   onBack,
   onNext,
-  onRequestException,
 }) {
   const [expandedTotal, setExpandedTotal] = useState(null); // 'base' | 'tax' | null
   const [expandedExpenseId, setExpandedExpenseId] = useState(null);
@@ -22,13 +51,10 @@ export default function ClaimWizardStepPolicyCheck({
     Number(gst.cgst || 0) + Number(gst.sgst || 0) + Number(gst.igst || 0) + Number(gst.other_tax || 0);
   const totalPayable = baseAmount + totalTax;
   const exceptions = report.exceptions || [];
-  const hardBlocks = expenses.filter((expense) => expense.policy_status === 'HARD_BLOCK').length;
-  const softFlags = exceptions.length - hardBlocks;
-  // Any flagged expense — hard block or soft deviation — must have an exception on file
-  // before you can move on; there's no other way to resolve a deviation from this screen.
-  const hasUnresolvedDeviations = expenses.some(
-    (expense) => expense.policy_status !== 'OK' && !expense.exception_requested
-  );
+  const needingReason = expenses.filter((expense) => expense.exception_reason_required);
+  const blocked = needingReason.filter((expense) => expense.exception_mode === 'BLOCK');
+  const hardBlocks = blocked.length;
+  const softFlags = needingReason.length - blocked.length;
 
   return (
     <div className="space-y-6">
@@ -84,21 +110,8 @@ export default function ClaimWizardStepPolicyCheck({
                       <div className="text-right space-y-1.5">
                         <div className="text-xs font-bold text-slate-800">₹{money(expense.amount)}</div>
 
-                        {!isOk ? (
-                          <button
-                            type="button"
-                            className={`inline-flex items-center gap-1 px-2.5 py-1 rounded text-[10px] font-bold transition-all ${
-                              expense.exception_requested
-                                ? 'bg-slate-100 text-slate-500 cursor-default'
-                                : isHard
-                                  ? 'bg-rose-100 text-rose-800 hover:bg-rose-200'
-                                  : 'bg-amber-100 text-amber-800 hover:bg-amber-200'
-                            }`}
-                            onClick={() => !expense.exception_requested && onRequestException(expense)}
-                          >
-                            {isHard ? <AlertCircle size={10} /> : <AlertTriangle size={10} />}
-                            <span>{expense.exception_requested ? 'Exception Requested' : 'Request Exception'}</span>
-                          </button>
+                        {expense.exception_type ? (
+                          <ExceptionPill expense={expense} />
                         ) : (
                           <span className="inline-flex items-center gap-1 rounded bg-emerald-100 px-2 py-0.5 text-[9px] font-bold text-emerald-800">
                             <CheckCircle2 size={9} /> Verified
@@ -256,16 +269,16 @@ export default function ClaimWizardStepPolicyCheck({
 
       {/* Compliance Warning Banner */}
       <div className={`rounded-xl border p-4 text-xs font-bold flex items-start gap-3 shadow-sm ${
-        hardBlocks 
-          ? 'border-rose-200 bg-rose-50 text-rose-800' 
-          : exceptions.length 
-            ? 'border-amber-200 bg-amber-50 text-amber-900' 
+        hardBlocks
+          ? 'border-rose-200 bg-rose-50 text-rose-800'
+          : softFlags
+            ? 'border-amber-200 bg-amber-50 text-amber-900'
             : 'border-emerald-250 bg-emerald-50 text-emerald-800'
       }`}>
         <div className="mt-0.5">
           {hardBlocks ? (
             <AlertCircle className="text-rose-600" size={16} />
-          ) : exceptions.length ? (
+          ) : softFlags ? (
             <AlertTriangle className="text-amber-600" size={16} />
           ) : (
             <ShieldCheck className="text-emerald-600" size={16} />
@@ -273,14 +286,18 @@ export default function ClaimWizardStepPolicyCheck({
         </div>
         <div className="space-y-0.5">
           <div>
-            {!exceptions.length &&
-              `Compliance Verified: All expenses conform to internal ${isGeneral ? 'reimbursement' : 'travel'} policies.`}
-            {!!softFlags && !hardBlocks && `Action Required: ${softFlags} policy deviation(s) identified. Request an exception for each flagged item to proceed.`}
-            {!!hardBlocks && `Action Required: ${hardBlocks} hard policy restriction(s) detected. You must submit exception request details to proceed.`}
+            {!softFlags && !hardBlocks &&
+              (exceptions.length
+                ? 'Policy deviations on this claim already have approved exceptions.'
+                : `Compliance Verified: All expenses conform to internal ${isGeneral ? 'reimbursement' : 'travel'} policies.`)}
+            {!!softFlags &&
+              `${softFlags} expense${softFlags > 1 ? 's are' : ' is'} outside policy. You'll give a reason for each when you submit, and each goes to its exception approvers.`}
+            {!!hardBlocks &&
+              ` Policy doesn't allow submitting ${blocked.map((expense) => expense.category_name).join(', ')}, even with an exception. Remove those invoices to submit.`}
           </div>
-          {exceptions.length > 0 && (
-            <div className="text-[10px] font-medium text-rose-700 mt-1">
-              * Ensure you select &apos;Request Exception&apos; and provide justification for the flagged line items.
+          {!!softFlags && (
+            <div className="text-[10px] font-medium text-amber-800 mt-1">
+              A claim with exceptions is approved by its exception approvers instead of the normal ones, then goes to Finance for payment.
             </div>
           )}
         </div>
@@ -299,7 +316,6 @@ export default function ClaimWizardStepPolicyCheck({
           type="button" 
           className="inline-flex h-10 items-center justify-center gap-1.5 rounded-lg bg-brand px-5 text-sm font-bold text-white hover:bg-brand/90 transition-all duration-200 shadow-md disabled:bg-slate-100 disabled:text-slate-400 disabled:shadow-none" 
           onClick={onNext}
-          disabled={hasUnresolvedDeviations}
         >
           Next: Review & Submit <ArrowRight size={15} />
         </button>

@@ -1,13 +1,13 @@
 export const REIMBURSEMENT_CATEGORY_LABELS = {
   TRAVEL: 'Travel',
   GENERAL: 'General',
-  REALLOCATION: 'Reallocation',
+  RELOCATION: 'Relocation',
 };
 
 const REIMBURSEMENT_CATEGORY_STYLES = {
   TRAVEL: 'bg-slate-100 text-slate-600 ring-slate-500/20',
   GENERAL: 'bg-indigo-50 text-indigo-700 ring-indigo-600/20',
-  REALLOCATION: 'bg-fuchsia-50 text-fuchsia-700 ring-fuchsia-600/20',
+  RELOCATION: 'bg-fuchsia-50 text-fuchsia-700 ring-fuchsia-600/20',
 };
 
 /** Single source of truth for how a ReimbursementCategory value renders — mirrors

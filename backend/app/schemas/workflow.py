@@ -28,15 +28,6 @@ class PaymentBody(BaseModel):
     advance_deducted: Decimal = Field(default=Decimal("0"), ge=Decimal("0"))
 
 
-class ExceptionRequestIn(BaseModel):
-    # Always required — this endpoint raises an exception against an existing claim's
-    # expense line. Travel-request exceptions are created via a separate path
-    # (create_travel_request_with_exception) that never goes through this schema.
-    claim_id: int
-    exception_type: str = Field(..., min_length=1, max_length=128)
-    description: str | None = None
-
-
 class ExceptionRequestOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -47,6 +38,8 @@ class ExceptionRequestOut(BaseModel):
     exception_type: str
     exception_types: list[str] = Field(default_factory=list)
     description: str | None
+    expense_category_name: str | None = None
+    claimed_amount: Decimal | None = None
     status: str
     decided_at: datetime | None = None
     decided_by_user_id: int | None = None

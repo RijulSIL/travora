@@ -128,7 +128,7 @@ function OptionSection({ section, options, isViewOnly, onChanged }) {
                     className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-bold transition-colors ${option.notify_project_stakeholders ? 'bg-indigo-50 text-indigo-700 ring-1 ring-inset ring-indigo-600/20' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
                     disabled={isViewOnly || updateAction.loading}
                     onClick={() => updateAction.run(option, { notify_project_stakeholders: !option.notify_project_stakeholders })}
-                    title="When selected on a Project-type request, emails that project's recipients (see Project Notification Recipients below)"
+                    title="When selected on a Project-type request, emails that project's recipients (see Project Notification Recipients below) once the Travel Desk has booked the trip"
                   >
                     <Mail size={12} />
                     {option.notify_project_stakeholders ? 'Notifies project' : 'Notify project?'}

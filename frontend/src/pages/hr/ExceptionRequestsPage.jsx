@@ -90,6 +90,7 @@ export default function ExceptionRequestsPage() {
               <option value="PENDING">PENDING</option>
               <option value="APPROVED">APPROVED</option>
               <option value="REJECTED">REJECTED</option>
+              <option value="CANCELLED">CANCELLED</option>
             </select>
           </div>
           <div className="space-y-1">
@@ -218,6 +219,11 @@ export default function ExceptionRequestsPage() {
                       {row.status === 'PENDING' && <span className="badge badge-in-approval">PENDING</span>}
                       {row.status === 'APPROVED' && <span className="badge badge-paid">APPROVED</span>}
                       {row.status === 'REJECTED' && <span className="badge badge-rejected">REJECTED</span>}
+                      {row.status === 'CANCELLED' && (
+                        <span className="badge bg-slate-100 text-slate-500" title={row.decision_comment || undefined}>
+                          CANCELLED
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-center text-slate-500">{new Date(row.requested_on).toLocaleDateString()}</td>
                     <td className="px-4 py-3 text-center text-slate-700">{row.decided_by || '—'}</td>
@@ -303,6 +309,24 @@ export default function ExceptionRequestsPage() {
 
                         <div className="grid gap-5 md:grid-cols-2 p-4 bg-white rounded-lg border border-slate-200/80 shadow-sm">
                           <div className="space-y-3">
+                            {row.expense_category_name ? (
+                              <div>
+                                <span className="font-semibold text-slate-700 text-xs block mb-1">Flagged Expense</span>
+                                <p className="text-sm font-semibold text-slate-800">
+                                  {row.expense_category_name}
+                                  {row.claimed_amount != null ? (
+                                    <span className="ml-1.5 font-mono font-medium text-slate-600">
+                                      ₹{Number(row.claimed_amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                                    </span>
+                                  ) : null}
+                                </p>
+                              </div>
+                            ) : null}
+                            {row.status === 'CANCELLED' && row.decision_comment ? (
+                              <p className="rounded-lg border border-slate-200 bg-slate-50 p-2.5 text-xs text-slate-600">
+                                {row.decision_comment}
+                              </p>
+                            ) : null}
                             <div>
                               <span className="font-semibold text-slate-700 text-xs block mb-1">Reason for Exception</span>
                               <p className="text-sm text-slate-600 bg-slate-50 p-3 rounded-lg border border-slate-100 italic">

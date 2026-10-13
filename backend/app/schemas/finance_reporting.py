@@ -186,6 +186,10 @@ class ExceptionRequestLogOut(BaseModel):
     requested_on: datetime
     decided_by: str | None = None
     description: str | None = None
+    # Claim-linked requests: the flagged expense this was raised for, and its amount at submit.
+    expense_category_name: str | None = None
+    claimed_amount: Decimal | None = None
+    decision_comment: str | None = None
     required_approvers: list[str] = Field(default_factory=list)
     decisions: list[ExceptionApprovalDecisionOut] = Field(default_factory=list)
     # Only ever set for a travel-request-linked exception (AIR_TRAVEL_UNLOCK,

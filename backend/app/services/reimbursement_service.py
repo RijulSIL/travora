@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.timezone import now_ist
 from app.models.auth import User
+from app.models.claim_workflow import NotificationCategory
 from app.models.employee import Employee
 from app.models.expense_category import ExpenseCategory
 from app.models.policy import AirEligibility, ExpenseLimit, ImpactLevel
@@ -40,9 +41,9 @@ from app.models.travel_request import TravelOptionType, TravelRequestTravelType
 from app.schemas.reimbursement import ClaimDraftIn, InvoiceFieldsUpdateRequest
 from app.services.budget_alert_service import check_and_notify_budget_threshold
 from app.services.claim_submission_rules import validate_claim_submission
-from app.services.exception_service import trigger_exceptions_if_needed
 from app.services.expense_category_service import check_blacklist
 from app.services.invoice_gemini_extraction import extract_invoice_with_gemini_sync
+from app.services.notification_service import create_notification
 from app.services.policy_engine import (
     check_cap,
     get_active_policy_version,
@@ -50,10 +51,16 @@ from app.services.policy_engine import (
     resolve_city_group,
 )
 from app.services.workflow_service import (
+    CLAIM_EXCEPTION_REASON_MIN_CHARS,
+    EXCEPTION_SUBMISSION_BLOCK,
     assert_user_can_view_claim_workflow,
+    cancel_pending_claim_exceptions,
+    exception_submission_mode,
     get_workflow_config,
     init_claim_approval_chain,
+    init_claim_exception_route,
     is_exception_enabled,
+    raise_submitted_claim_exception,
 )
 
 logger = logging.getLogger(__name__)
@@ -1485,13 +1492,6 @@ async def _build_claim_expenses(
 
     has_train_expense = any(cat and "train" in cat.lower() for _, cat in grouped.keys())
 
-    # Fetch existing exception requests to restore exception_requested status
-    from app.models.claim_workflow import ExceptionRequest
-    exception_stmt = select(ExceptionRequest.exception_type).where(
-        ExceptionRequest.claim_id == claim.id
-    )
-    existing_exception_types = set((await db.execute(exception_stmt)).scalars().all())
-
     limit_row = await _resolve_limit_row(claim, db)
     twin_sharing_active = await _is_twin_sharing_active(claim, db)
     cfg = await get_workflow_config(db)
@@ -1548,17 +1548,15 @@ async def _build_claim_expenses(
                     exc_type = "HIRED_TAXI_UNAUTHORIZED"
 
         if exc_type is None and policy_status in ("HARD_BLOCK", "SOFT_FLAG"):
-            # Covers the cap-driven categories (Hotel, Food, Incidental) via their dedicated
-            # types; "day_visit" and anything uncapped (Office Supplies, Telecom, ...) have no
-            # dedicated chain and fall through to the generic f"{category}_DEVIATION". This is
-            # also what ExceptionRequestModal.jsx reads directly off this expense
-            # (expense.exception_type) rather than re-deriving its own guess, so there's only
-            # one place this string is ever computed.
-            exc_type = _dedicated_exception_type(category_name) or f"{(category_name or 'GENERAL').upper()}_DEVIATION"
-
-        exception_requested = False
-        if exc_type and exc_type in existing_exception_types:
-            exception_requested = True
+            # Cap-driven categories use the type of the cap that flagged them (day visits too —
+            # DAY_VISIT_EXTERNAL_MEETING has its own chain); anything else falls back to its
+            # dedicated type, or the generic f"{category}_DEVIATION" (POLICY_EXCEPTION_GENERAL
+            # chain). Stored on the expense, so submit and every later read use this one value.
+            exc_type = (
+                field_exception_types.get(field)
+                or _dedicated_exception_type(category_name)
+                or f"{(category_name or 'GENERAL').upper()}_DEVIATION"
+            )
 
         expense = ClaimExpense(
             claim_id=claim.id,
@@ -1568,13 +1566,9 @@ async def _build_claim_expenses(
             taxable_value=grouped_taxable.get((category_id, category_name), Decimal("0.00")),
             cap_amount=cap_amount,
             policy_status=policy_status,
-            exception_requested=exception_requested,
+            exception_requested=False,
+            exception_type=exc_type,
         )
-        # Transient, not persisted — the single source of truth for which exception type
-        # requesting an exception on this expense should use (see ClaimExpenseOut.exception_type
-        # and ExceptionRequestModal.jsx, which reads it directly instead of re-deriving its own
-        # guess from category_name).
-        expense.exception_type = exc_type
         db.add(expense)
         expenses.append(expense)
     await db.flush()
@@ -1621,18 +1615,18 @@ async def assert_invoices_eligible_for_claim(
         if inv.uploader_user_id != user_id:
             raise HTTPException(status_code=403, detail=f"{inv_label} cannot be linked to this claim")
         # Travel claims draw only from Travel-tagged invoices. General Reimbursement's wizard
-        # is also where Reallocation-tagged invoices are picked (they share one trip-less
-        # picker — see GeneralReimbursementWizard.jsx's visibleInvoices — since Reallocation
+        # is also where Relocation-tagged invoices are picked (they share one trip-less
+        # picker — see GeneralReimbursementWizard.jsx's visibleInvoices — since Relocation
         # isn't a distinct "New Claim" entry point), so a claim that started as GENERAL — or
-        # has already been promoted to REALLOCATION by _resolve_claim_reimbursement_category
+        # has already been promoted to RELOCATION by _resolve_claim_reimbursement_category
         # below — accepts either.
         wants_general_pool = claim_category in (
             ReimbursementCategory.GENERAL,
-            ReimbursementCategory.REALLOCATION,
+            ReimbursementCategory.RELOCATION,
         )
         is_general_pool_invoice = inv.reimbursement_category in (
             ReimbursementCategory.GENERAL,
-            ReimbursementCategory.REALLOCATION,
+            ReimbursementCategory.RELOCATION,
         )
         if claim_category is not None and wants_general_pool != is_general_pool_invoice:
             raise HTTPException(
@@ -1690,10 +1684,8 @@ async def delete_claim_draft(claim_id: int, user_id: int, db: AsyncSession) -> N
     """Delete a claim that's still a DRAFT — anything further along (even SENT_BACK, since
     that's mid-approval-history, not a fresh draft) is refused. Frees up every invoice/trip
     it held (they simply become unlinked again, same as release_invoice_from_draft) and
-    drops any pending exception request raised on it — a manually-requested exception never
-    moves the claim out of DRAFT (see create_exception_request / submit_claim's
-    trigger_exceptions_if_needed), so a draft sitting with one attached is the normal case
-    for someone mid-flow on a flagged expense, not a special state worth blocking on."""
+    drops any exception requests on it — only a claim reopened after a send-back can still
+    carry some (exceptions are raised at submit, never on a fresh draft)."""
     claim = await db.get(ClaimDraft, claim_id)
     if claim is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Claim not found")
@@ -1707,10 +1699,11 @@ async def delete_claim_draft(claim_id: int, user_id: int, db: AsyncSession) -> N
 
     from app.models.claim_workflow import ExceptionRequest
 
-    # claim_invoices, claim_expenses and exception_requests have no DB-level ON DELETE
-    # CASCADE, so they're removed explicitly; claim_trips and claim_approval_stages do
-    # cascade at the DB level (and a DRAFT claim never has approval stages anyway).
+    # claim_invoices, claim_trips, claim_expenses and exception_requests have no DB-level
+    # ON DELETE CASCADE (NO ACTION), so they're removed explicitly; only claim_approval_stages
+    # cascades at the DB level (and a DRAFT claim never has approval stages anyway).
     await db.execute(delete(ClaimInvoice).where(ClaimInvoice.claim_id == claim_id))
+    await db.execute(delete(ClaimTrip).where(ClaimTrip.claim_id == claim_id))
     await db.execute(delete(ClaimExpense).where(ClaimExpense.claim_id == claim_id))
     await db.execute(delete(ExceptionRequest).where(ExceptionRequest.claim_id == claim_id))
     await db.delete(claim)
@@ -1720,26 +1713,26 @@ async def delete_claim_draft(claim_id: int, user_id: int, db: AsyncSession) -> N
 async def _resolve_claim_reimbursement_category(
     claim: ClaimDraft, invoice_ids: list[int], db: AsyncSession
 ) -> None:
-    """Reallocation is tagged per-invoice, not chosen at claim-creation time — it's picked
+    """Relocation is tagged per-invoice, not chosen at claim-creation time — it's picked
     from the same trip-less General Reimbursement wizard/picker (see
     GeneralReimbursementWizard.jsx's visibleInvoices), not a distinct "New Claim" entry point.
-    If any linked invoice is tagged REALLOCATION, that takes precedence over the GENERAL entry
+    If any linked invoice is tagged RELOCATION, that takes precedence over the GENERAL entry
     point that created this claim, since it's the one that drives approval routing (see
     workflow_service.get_workflow_config's category param). Travel claims never go through
-    this picker, so this only ever promotes GENERAL -> REALLOCATION, never touches a TRAVEL
+    this picker, so this only ever promotes GENERAL -> RELOCATION, never touches a TRAVEL
     claim (assert_invoices_eligible_for_claim already keeps Travel's invoice pool separate)."""
     if not invoice_ids or claim.reimbursement_category == ReimbursementCategory.TRAVEL:
         return
-    has_reallocation = (
+    has_relocation = (
         await db.execute(
             select(Invoice.id).where(
                 Invoice.id.in_(invoice_ids),
-                Invoice.reimbursement_category == ReimbursementCategory.REALLOCATION,
+                Invoice.reimbursement_category == ReimbursementCategory.RELOCATION,
             )
         )
     ).first()
-    if has_reallocation:
-        claim.reimbursement_category = ReimbursementCategory.REALLOCATION
+    if has_relocation:
+        claim.reimbursement_category = ReimbursementCategory.RELOCATION
 
 
 async def _create_or_update_claim_draft_impl(
@@ -1837,7 +1830,49 @@ async def _create_or_update_claim_draft_impl(
     }
     await db.commit()
     await db.refresh(claim)
+    await annotate_expense_exceptions(claim, expenses, db)
     return claim, expenses, payload.invoice_ids, payload.trip_ids
+
+
+async def annotate_expense_exceptions(
+    claim: ClaimDraft, expenses: list[ClaimExpense], db: AsyncSession, cfg: dict | None = None
+) -> None:
+    """Attach (transient, not persisted) what the wizard's submit modal needs per flagged
+    expense: `exception_mode` (ALLOW/BLOCK, the Approval Matrix's "When flagged" setting),
+    `exception_status` (its latest exception request's status, if any) and
+    `exception_reason_required` — True while the claim is still editable and this expense has no
+    approved exception for its current amount (an approved one survives a send-back only while
+    the amount is unchanged)."""
+    from app.models.claim_workflow import ExceptionRequest, ExceptionRequestStatus
+
+    cfg = cfg or await get_workflow_config(db)
+    requests = (
+        await db.execute(
+            select(ExceptionRequest)
+            .where(
+                ExceptionRequest.claim_id == claim.id,
+                ExceptionRequest.status != ExceptionRequestStatus.CANCELLED.value,
+            )
+            .order_by(ExceptionRequest.id)
+        )
+    ).scalars().all()
+    editable = claim.status in (ClaimStatus.DRAFT, ClaimStatus.SENT_BACK)
+    for expense in expenses:
+        exc_type = expense.exception_type
+        latest = None
+        for req in requests:
+            # Requests raised before per-expense tracking have no category — match on type.
+            if req.exception_type == exc_type and req.expense_category_name in (None, expense.category_name):
+                latest = req
+        approved_for_amount = (
+            latest is not None
+            and latest.status == ExceptionRequestStatus.APPROVED.value
+            and latest.claimed_amount is not None
+            and Decimal(str(latest.claimed_amount)) == Decimal(str(expense.amount))
+        )
+        expense.exception_mode = exception_submission_mode(cfg, exc_type) if exc_type else None
+        expense.exception_status = latest.status if latest is not None else None
+        expense.exception_reason_required = bool(exc_type) and editable and not approved_for_amount
 
 
 async def get_claim_bundle(
@@ -1861,12 +1896,12 @@ async def get_claim_bundle(
     breakdown = await _claim_invoice_breakdown(invoice_ids, db)
     for expense in expenses:
         expense.invoice_breakdown = breakdown.get(expense.category_name, [])
-        exc_type = None
-        if expense.policy_status != "OK":
-            exc_type = _dedicated_exception_type(expense.category_name) or (
+        if expense.exception_type is None and expense.policy_status != "OK":
+            # Rows saved before exception_type was stored — best-effort fallback from the name.
+            expense.exception_type = _dedicated_exception_type(expense.category_name) or (
                 f"{(expense.category_name or 'GENERAL').upper()}_DEVIATION"
             )
-        expense.exception_type = exc_type
+    await annotate_expense_exceptions(claim, expenses, db)
 
     return claim, expenses, invoice_ids, trip_ids
 
@@ -1912,7 +1947,20 @@ async def list_claims_all(
     return (await db.execute(query)).scalars().all()
 
 
-async def submit_claim(claim_id: int, user_id: int, db: AsyncSession) -> ClaimDraft:
+async def submit_claim(
+    claim_id: int,
+    user_id: int,
+    db: AsyncSession,
+    exception_reasons: list[dict] | None = None,
+) -> ClaimDraft:
+    """Submit a draft (or sent-back) claim. Every flagged expense still needing an exception
+    must come with a reason in `exception_reasons` ({exception_type, category_name, reason}) —
+    the wizard's submit modal collects one per flagged expense. Each becomes its own exception
+    request with its own approver chain, raised here and nowhere else, so an unsubmitted claim
+    never has one. A claim with any exception skips the normal approval stages: its exception
+    approvers are its approval, and it goes to Finance once every exception is approved; any
+    rejection rejects the whole claim (see workflow_service.init_claim_exception_route /
+    decide_exception_request). A claim with no exceptions takes the normal approval chain."""
     user = await db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
@@ -1927,33 +1975,36 @@ async def submit_claim(claim_id: int, user_id: int, db: AsyncSession) -> ClaimDr
             exclude_claim_id=claim.id,
             claim_category=claim.reimbursement_category,
         )
-    if any(expense.policy_status == "HARD_BLOCK" for expense in expenses):
-        # Relax block if it's a Room Rent deviation (which should go to exception instead)
-        room_rent_only = all(
-            ("hotel" in exp.category_name.lower() or "accommodation" in exp.category_name.lower())
-            for exp in expenses if exp.policy_status == "HARD_BLOCK"
-        )
-        if not room_rent_only:
-            raise HTTPException(status_code=409, detail="Hard-blocking policy exceptions must be resolved")
 
-    # Trigger exceptions — covers both freshly auto-detected ones (hotel/air/taxi/tatkal)
-    # and any the employee already manually requested mid-wizard (create_exception_request
-    # leaves the claim in DRAFT so the wizard stays usable; this is where that finally
-    # takes effect on the claim's actual status, exactly like the auto-detected path).
-    has_exceptions = await trigger_exceptions_if_needed(claim, expenses, db)
-    if not has_exceptions:
-        from app.models.claim_workflow import ExceptionRequest, ExceptionRequestStatus
-        existing_pending = (
-            await db.execute(
-                select(ExceptionRequest.id).where(
-                    ExceptionRequest.claim_id == claim.id,
-                    ExceptionRequest.status == ExceptionRequestStatus.PENDING.value,
-                )
-            )
-        ).scalars().first()
-        has_exceptions = existing_pending is not None
-    if has_exceptions:
-        claim.status = ClaimStatus.PENDING_EXCEPTION
+    cfg = await get_workflow_config(db)
+    needing = [expense for expense in expenses if expense.exception_reason_required]
+    blocked = [
+        expense for expense in needing
+        if exception_submission_mode(cfg, expense.exception_type) == EXCEPTION_SUBMISSION_BLOCK
+    ]
+    if blocked:
+        names = ", ".join(expense.category_name for expense in blocked)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Policy doesn't allow submitting these expenses, even with an exception: {names}. "
+            "Remove their invoices to submit the claim.",
+        )
+    reasons: dict[tuple[str, str], str] = {}
+    for item in exception_reasons or []:
+        key = (str(item.get("exception_type") or ""), str(item.get("category_name") or ""))
+        reasons[key] = str(item.get("reason") or "").strip()
+    missing = [
+        expense.category_name
+        for expense in needing
+        if len(reasons.get((expense.exception_type, expense.category_name), ""))
+        < CLAIM_EXCEPTION_REASON_MIN_CHARS
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Give a reason of at least {CLAIM_EXCEPTION_REASON_MIN_CHARS} characters for each "
+            f"policy exception: {', '.join(missing)}",
+        )
 
     if trip_ids:
         flights = (
@@ -1991,7 +2042,41 @@ async def submit_claim(claim_id: int, user_id: int, db: AsyncSession) -> ClaimDr
         claim.compliance_report = rep
         
     claim.submitted_at = _now()
-    await init_claim_approval_chain(claim, db)
+    # Anything still pending here predates exceptions-on-submit (raised mid-wizard on a draft) —
+    # superseded by the reasons given now.
+    await cancel_pending_claim_exceptions(claim.id, "Superseded by the reason given at submission.", db)
+    # Both set the claim reference used in the notifications below.
+    if any(expense.exception_type for expense in expenses):
+        # A claim with policy exceptions is approved by its exception approvers alone and then
+        # goes to Finance — it skips the normal approval stages entirely.
+        await init_claim_exception_route(claim, db, exceptions_pending=bool(needing))
+    else:
+        await init_claim_approval_chain(claim, db)
+    for expense in needing:
+        await raise_submitted_claim_exception(
+            claim,
+            exception_type=expense.exception_type,
+            category_name=expense.category_name,
+            amount=expense.amount,
+            reason=reasons[(expense.exception_type, expense.category_name)],
+            cfg=cfg,
+            db=db,
+        )
+        expense.exception_requested = True
+    if needing:
+        claim_ref = claim.claim_reference or f"CLM-{claim.id}"
+        count = len(needing)
+        await create_notification(
+            user_id=claim.employee_user_id,
+            title=f"Exception{'s' if count > 1 else ''} sent for approval: {claim_ref}",
+            body=(
+                f"{count} policy exception{'s were' if count > 1 else ' was'} sent to approvers with your claim. "
+                "Once every exception is approved, the claim goes to Finance for payment."
+            ),
+            link=f"/claims/{claim.id}",
+            category=NotificationCategory.EXCEPTION.value,
+            db=db,
+        )
     await db.commit()
     await db.refresh(claim)
 

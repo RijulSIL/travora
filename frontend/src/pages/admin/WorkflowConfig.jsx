@@ -43,6 +43,23 @@ const EXCEPTION_TYPES = {
   "POLICY_EXCEPTION_GENERAL": "Exception: Other Category Deviation (Default)",
 };
 
+// Exception types a claim expense can be flagged with at submission — the ones the "When
+// flagged" Allow/Block setting applies to (see workflow_service.DEFAULT_EXCEPTION_SUBMISSION_MODE).
+const CLAIM_SUBMIT_EXCEPTION_KEYS = new Set([
+  'ROOM_RENT_DEVIATION',
+  'FOOD_DEVIATION',
+  'INCIDENTAL_DEVIATION',
+  'DAY_VISIT_EXTERNAL_MEETING',
+  'POLICY_EXCEPTION_GENERAL',
+  'TRAIN_TATKAL',
+  'AIR_TRAVEL_L5_L6',
+  'HIRED_TAXI_UNAUTHORIZED',
+]);
+const SUBMISSION_MODE_OPTIONS = [
+  { value: 'ALLOW', label: 'Allow with exception reason', hint: 'The employee gives a reason and the claim is submitted; this exception goes to its approvers alongside the claim.' },
+  { value: 'BLOCK', label: 'Block submission', hint: "The claim can't be submitted while it contains this expense, even with a reason." },
+];
+
 function sanitizeMaxWorkingDaysAfterReturn(raw) {
   if (raw === '' || raw === undefined || raw === null) return DEFAULT_MAX_DAYS;
   const n = typeof raw === 'number' ? raw : parseInt(String(raw).trim(), 10);
@@ -76,7 +93,7 @@ const STAGE_CATEGORIES = [
   { value: 'DEFAULT', label: 'Default (all categories)' },
   { value: 'TRAVEL', label: 'Travel claims' },
   { value: 'GENERAL', label: 'General reimbursements' },
-  { value: 'REALLOCATION', label: 'Reallocations' },
+  { value: 'RELOCATION', label: 'Relocations' },
 ];
 
 // Travel requests have their own approval chain, separate from claim reimbursement — no
@@ -173,6 +190,10 @@ export default function WorkflowConfig() {
   // otherwise apply (travel-request creation, flight/train search, claim submission, ...);
   // missing from this map means enabled, same as a fresh deployment with nothing configured.
   const [exceptionEnabled, setExceptionEnabled] = useState({});
+  // Per-type "When flagged" at claim submission: ALLOW (employee gives a reason, an exception
+  // request runs alongside the claim) or BLOCK (the claim can't be submitted with that expense).
+  // The server fills in defaults for every type, so this always arrives complete.
+  const [exceptionSubmissionMode, setExceptionSubmissionMode] = useState({});
   // What a category override "falls back to" when unconfigured — every claim category shares
   // the main `stages` list, but Travel Request has its own, unrelated default.
   const defaultStagesForCategory = (category) =>
@@ -247,7 +268,7 @@ export default function WorkflowConfig() {
 
       const loadedOverrides = cfg.category_overrides || {};
       const sanitizedOverrides = {};
-      for (const cat of ['TRAVEL', 'GENERAL', 'REALLOCATION', 'TRAVEL_REQUEST']) {
+      for (const cat of ['TRAVEL', 'GENERAL', 'RELOCATION', 'TRAVEL_REQUEST']) {
         if (loadedOverrides[cat]?.stages?.length) {
           sanitizedOverrides[cat] = { stages: sanitizeStageRoles(loadedOverrides[cat].stages) };
         }
@@ -256,6 +277,7 @@ export default function WorkflowConfig() {
       setSelectedCategory('DEFAULT');
       setExceptionChains(cfg.exception_chains || {});
       setExceptionEnabled(cfg.exception_enabled || {});
+      setExceptionSubmissionMode(cfg.exception_submission_mode || {});
 
       const sub = cfg.submission || {};
       setSubmission({
@@ -301,6 +323,7 @@ export default function WorkflowConfig() {
       auto_approve_below_amount: sanitizeAutoApproveAmount(autoApprove),
       exception_chains: exceptionChains,
       exception_enabled: exceptionEnabled,
+      exception_submission_mode: exceptionSubmissionMode,
     };
 
     if (lastLoadedConfig) {
@@ -469,6 +492,41 @@ export default function WorkflowConfig() {
               }`}
             />
           </button>
+        </section>
+      ) : null}
+
+      {CLAIM_SUBMIT_EXCEPTION_KEYS.has(selectedWorkflow) && exceptionEnabled[selectedWorkflow] !== false ? (
+        <section className="panel mb-4 flex flex-wrap items-center justify-between gap-3 p-4">
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-semibold text-ink">When flagged on a claim</div>
+            <p className="text-xs text-slate-500">
+              {SUBMISSION_MODE_OPTIONS.find((o) => o.value === (exceptionSubmissionMode[selectedWorkflow] || 'ALLOW'))?.hint}
+            </p>
+          </div>
+          <div role="radiogroup" aria-label="When flagged on a claim" className="inline-flex shrink-0 rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+            {SUBMISSION_MODE_OPTIONS.map((option) => {
+              const selected = (exceptionSubmissionMode[selectedWorkflow] || 'ALLOW') === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  disabled={isViewOnly}
+                  onClick={() => setExceptionSubmissionMode((prev) => ({ ...prev, [selectedWorkflow]: option.value }))}
+                  className={`rounded-md px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed ${
+                    selected
+                      ? option.value === 'BLOCK'
+                        ? 'bg-white text-rose-700 shadow-sm'
+                        : 'bg-white text-brand shadow-sm'
+                      : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
         </section>
       ) : null}
 

@@ -40,7 +40,7 @@ const TRAVEL_MODE_ICONS = { BUS: Bus, TRAIN: TrainFront, FLIGHT: Plane };
 const REIMBURSEMENT_TYPE_OPTIONS = [
   { value: 'TRAVEL', label: 'Travel' },
   { value: 'GENERAL', label: 'General' },
-  { value: 'REALLOCATION', label: 'Reallocation' },
+  { value: 'RELOCATION', label: 'Relocation' },
 ];
 
 const titleCase = (value) =>

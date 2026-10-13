@@ -5,26 +5,24 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import ClaimWizardStepEvidence from '../../components/claims/ClaimWizardStepEvidence';
 import ClaimWizardStepPolicyCheck from '../../components/claims/ClaimWizardStepPolicyCheck';
 import ClaimWizardStepSubmit from '../../components/claims/ClaimWizardStepSubmit';
-import ExceptionRequestModal from '../../components/claims/ExceptionRequestModal';
-import OrigamiAnimation from '../../components/ui/OrigamiAnimation';
+import ClaimExceptionsModal from '../../components/claims/ClaimExceptionsModal';
+import ClaimSubmitAnimation from '../../components/ui/ClaimSubmitAnimation';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import useToast from '../../hooks/useToast';
 import { reimbursementApi } from '../../services/reimbursementApi';
-import { useAuthStore } from '../../store/authStore';
 
 const STEP_LABELS = ['Invoices', 'Policy Check', 'Submit'];
 const DRAFT_STORAGE_KEY = 'travora_general_reimbursement_draft';
-// Reallocation isn't a trip either, so it shares this wizard rather than getting its own
-// entry point — a Reallocation-tagged invoice shows up in the picker right alongside
+// Relocation isn't a trip either, so it shares this wizard rather than getting its own
+// entry point — a Relocation-tagged invoice shows up in the picker right alongside
 // General ones (see visibleInvoices below). Which of the two the claim actually routes as
 // is resolved server-side from the invoices actually attached (see
 // reimbursement_service._resolve_claim_reimbursement_category).
-const PICKER_CATEGORIES = ['GENERAL', 'REALLOCATION'];
+const PICKER_CATEGORIES = ['GENERAL', 'RELOCATION'];
 
 export default function GeneralReimbursementWizard() {
   useSetPageTitle('General Reimbursement');
   const navigate = useNavigate();
-  const user = useAuthStore((s) => s.user);
   const { id } = useParams();
   const [searchParams] = useSearchParams();
   const effectiveEditId = id || null;
@@ -46,10 +44,8 @@ export default function GeneralReimbursementWizard() {
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [declarationChecked, setDeclarationChecked] = useState(false);
-  const [exceptionOpen, setExceptionOpen] = useState(false);
-  const [activeExpense, setActiveExpense] = useState(null);
-  const [requestingException, setRequestingException] = useState(false);
-  const [showAnimation, setShowAnimation] = useState(false);
+  const [exceptionsOpen, setExceptionsOpen] = useState(false);
+  const [submittedClaim, setSubmittedClaim] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -108,7 +104,7 @@ export default function GeneralReimbursementWizard() {
     localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify({ selectedInvoiceIds, currentStep }));
   }, [selectedInvoiceIds, currentStep, effectiveEditId]);
 
-  // General and Reallocation share this one picker (enforced server-side too, see
+  // General and Relocation share this one picker (enforced server-side too, see
   // assert_invoices_eligible_for_claim) — filter here so it never offers a Travel invoice
   // that would fail validation on save.
   const visibleInvoices = useMemo(
@@ -170,43 +166,33 @@ export default function GeneralReimbursementWizard() {
     input.click();
   };
 
-  const submit = async () => {
+  const exceptionExpenses = (claim?.expenses || []).filter((expense) => expense.exception_reason_required);
+
+  const sendClaim = async (exceptions = []) => {
     if (!claim?.id) return;
     setSubmitting(true);
     try {
-      await reimbursementApi.submitClaim(claim.id);
+      const response = await reimbursementApi.submitClaim(claim.id, { exceptions });
+      const submitted = response?.data || claim;
       localStorage.removeItem(DRAFT_STORAGE_KEY);
-      showToast(`Reimbursement submitted successfully. Claim ID: ${claim.claim_reference || `CLM-${claim.id}`}`, 'success');
-      setShowAnimation(true);
+      showToast(`Reimbursement submitted successfully. Claim ID: ${submitted.claim_reference || `CLM-${submitted.id}`}`, 'success');
+      setExceptionsOpen(false);
+      setSubmittedClaim(submitted);
     } catch (error) {
       showToast(error?.response?.data?.detail || 'Submit failed', 'error');
       setSubmitting(false);
     }
   };
 
-  const requestException = async ({ reason, exceptionType }) => {
-    if (!claim?.id || !activeExpense) return;
-    setRequestingException(true);
-    try {
-      await reimbursementApi.requestException({
-        claim_id: claim.id,
-        exception_type: exceptionType,
-        description: reason.trim(),
-      });
-      setClaim((prev) => ({
-        ...prev,
-        expenses: (prev?.expenses || []).map((expense) =>
-          expense.id === activeExpense.id ? { ...expense, exception_requested: true } : expense,
-        ),
-      }));
-      showToast('Exception request submitted', 'success');
-      setExceptionOpen(false);
-      setActiveExpense(null);
-    } catch {
-      showToast('Exception request failed', 'error');
-    } finally {
-      setRequestingException(false);
+  // Expenses outside policy get their reasons in the exceptions modal first — the claim and all
+  // its exception requests are only sent from there, so nothing is raised before submission.
+  const submit = () => {
+    if (!claim?.id) return;
+    if (exceptionExpenses.length) {
+      setExceptionsOpen(true);
+      return;
     }
+    sendClaim();
   };
 
   const goStep2 = async () => {
@@ -307,10 +293,6 @@ export default function GeneralReimbursementWizard() {
           isGeneral
           onBack={() => setCurrentStep(1)}
           onNext={goStep3}
-          onRequestException={(expense) => {
-            setActiveExpense(expense);
-            setExceptionOpen(true);
-          }}
         />
       ) : null}
 
@@ -330,25 +312,18 @@ export default function GeneralReimbursementWizard() {
         />
       ) : null}
 
-      <ExceptionRequestModal
-        open={exceptionOpen}
-        expense={activeExpense}
+      <ClaimExceptionsModal
+        open={exceptionsOpen}
+        expenses={exceptionExpenses}
         onClose={() => {
-          if (requestingException) return;
-          setExceptionOpen(false);
-          setActiveExpense(null);
+          if (!submitting) setExceptionsOpen(false);
         }}
-        onSubmit={requestException}
-        loading={requestingException}
+        onSubmit={sendClaim}
+        submitting={submitting}
       />
 
-      {showAnimation && (
-        <OrigamiAnimation
-          onComplete={() => navigate('/claims/my')}
-          employeeName={user?.full_name || user?.email || 'Employee'}
-          destination="General Reimbursement"
-          date={new Date().toISOString().slice(0, 10)}
-        />
+      {submittedClaim && (
+        <ClaimSubmitAnimation claim={submittedClaim} onComplete={() => navigate('/claims/my')} />
       )}
     </section>
   );

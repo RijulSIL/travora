@@ -100,29 +100,6 @@ async def list_users(
 
 
 @router.get(
-    "/impact-levels",
-    dependencies=[Depends(require_permission("manage_users")), Depends(require_mfa)],
-)
-async def list_impact_levels(db: AsyncSession = Depends(get_db)):
-    from datetime import date
-
-    from app.services.policy_engine import get_active_policy_version
-    
-    try:
-        policy = await get_active_policy_version(date.today(), db)
-        result = await db.execute(
-            select(ImpactLevel)
-            .where(ImpactLevel.policy_version_id == policy.id)
-            .order_by(ImpactLevel.id)
-        )
-        return [{"id": level.id, "level_code": level.level_code, "level_name": level.level_name} for level in result.scalars().all()]
-    except Exception:
-        # Fallback to returning all levels if no active policy found for today
-        result = await db.execute(select(ImpactLevel).order_by(ImpactLevel.id))
-        return [{"id": level.id, "level_code": level.level_code, "level_name": level.level_name} for level in result.scalars().all()]
-
-
-@router.get(
     "/reporting-managers",
     dependencies=[Depends(require_permission("manage_users")), Depends(require_mfa)],
     response_model=list[dict],

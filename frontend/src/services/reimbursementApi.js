@@ -62,7 +62,8 @@ export const reimbursementApi = {
   saveClaimDraft: (payload) => api.post('claims/draft', payload),
   deleteClaim: (claimId) => api.delete(`claims/${claimId}`),
   policyCheck: (claimId) => api.get(`claims/${claimId}/policy-check`),
-  submitClaim: (claimId) => api.post(`claims/${claimId}/submit`),
+  // payload: { exceptions: [{ exception_type, category_name, reason }] } — one reason per flagged expense
+  submitClaim: (claimId, payload) => api.post(`claims/${claimId}/submit`, payload ?? { exceptions: [] }),
   claims: (params) => api.get('claims', { params }),
   claimDetail: (claimId) => api.get(`claims/${claimId}`),
   claimTimeline: (claimId) => api.get(`claims/${claimId}/timeline`),
@@ -101,7 +102,6 @@ export const reimbursementApi = {
   createReportSchedule: (payload) => api.post('reports/schedule', payload),
   exceptionRequestsLog: (params) => api.get('reports/exception-requests', { params }),
 
-  requestException: (payload) => api.post('exceptions/request', payload),
   getException: (id) => api.get(`exceptions/${id}`),
   decideException: (id, payload) => api.post(`exceptions/${id}/approve`, payload),
   workflowConfig: () => api.get('workflow/config'),

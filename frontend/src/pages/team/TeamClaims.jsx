@@ -122,7 +122,7 @@ export default function TeamClaims() {
             ) : claim.status === 'PENDING_EXCEPTION' ? (
               <ClaimApprovalStepper
                 stages={[]}
-                emptyHint="Awaiting policy exception review before approval can begin."
+                claimStatus="PENDING_EXCEPTION"
               />
             ) : claim.status !== 'DRAFT' ? (
               <ClaimApprovalStepper stages={[]} emptyHint="Approval details unavailable." />

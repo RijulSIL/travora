@@ -94,6 +94,34 @@ def _resolve_exception_chain(cfg: dict, exception_type: str) -> list[str]:
     return _chain_for_type(cfg.get("exception_chains", EXCEPTION_APPROVAL_CHAINS), exception_type)
 
 
+# What a flagged claim expense does at submit, per exception type (the Approval Matrix's
+# "When flagged" setting): ALLOW lets the employee submit with a reason, raising an exception
+# request; BLOCK refuses the submission until that expense is removed. Defaults keep the
+# pre-existing behavior — Tatkal, restricted air class and unauthorised taxi were already
+# hard-blocked at submit, every capped category already went to exception instead.
+EXCEPTION_SUBMISSION_ALLOW = "ALLOW"
+EXCEPTION_SUBMISSION_BLOCK = "BLOCK"
+DEFAULT_EXCEPTION_SUBMISSION_MODE: dict[str, str] = {
+    "ROOM_RENT_DEVIATION": EXCEPTION_SUBMISSION_ALLOW,
+    "FOOD_DEVIATION": EXCEPTION_SUBMISSION_ALLOW,
+    "INCIDENTAL_DEVIATION": EXCEPTION_SUBMISSION_ALLOW,
+    "DAY_VISIT_EXTERNAL_MEETING": EXCEPTION_SUBMISSION_ALLOW,
+    "POLICY_EXCEPTION_GENERAL": EXCEPTION_SUBMISSION_ALLOW,
+    "TRAIN_TATKAL": EXCEPTION_SUBMISSION_BLOCK,
+    "AIR_TRAVEL_L5_L6": EXCEPTION_SUBMISSION_BLOCK,
+    "HIRED_TAXI_UNAUTHORIZED": EXCEPTION_SUBMISSION_BLOCK,
+}
+
+
+def exception_submission_mode(cfg: dict, exception_type: str) -> str:
+    """ALLOW or BLOCK for a flagged claim expense of `exception_type`. A generic
+    f"{category}_DEVIATION" type has no entry of its own and follows POLICY_EXCEPTION_GENERAL —
+    the same fallback _chain_for_type uses for who approves it."""
+    modes = {**DEFAULT_EXCEPTION_SUBMISSION_MODE, **(cfg.get("exception_submission_mode") or {})}
+    mode = modes.get(exception_type) or modes.get("POLICY_EXCEPTION_GENERAL")
+    return EXCEPTION_SUBMISSION_BLOCK if mode == EXCEPTION_SUBMISSION_BLOCK else EXCEPTION_SUBMISSION_ALLOW
+
+
 def is_exception_enabled(cfg: dict, exception_type: str) -> bool:
     """False only when an admin has explicitly switched this exception type off in the Approval
     Matrix (the "Flag this exception" toggle) — every check that would otherwise flag/block on
@@ -273,13 +301,24 @@ async def _notify_stage_approver(claim: ClaimDraft, stage_def: dict, db: AsyncSe
 async def _notify_exception_approver(
     claim: ClaimDraft, req: ExceptionRequest, role: str, db: AsyncSession
 ) -> None:
-    recipients = await _user_ids_for_stage(claim, {"route_role": role}, db)
+    recipients = await _user_ids_for_exception_role(claim, role, db)
+    claim_ref = claim.claim_reference or f"CLM-{claim.id}"
+    body = f"Exception '{_humanize_token(req.exception_type)}' requires your review."
+    if req.expense_category_name:
+        body = (
+            f"Exception '{_humanize_token(req.exception_type)}' on {req.expense_category_name}"
+            f"{f' (₹{req.claimed_amount:,.2f})' if req.claimed_amount is not None else ''} requires your review."
+        )
+    if req.description:
+        body += f" Reason: {req.description}"
     for user_id in recipients:
         await create_notification(
             user_id=user_id,
-            title=f"Exception Approval Required: {claim.claim_reference}",
-            body=f"Exception '{_humanize_token(req.exception_type)}' requires your review.",
-            link=f"/claims/{claim.id}/exceptions",
+            title=f"Exception Approval Required: {claim_ref}",
+            body=body,
+            # The exceptions queue is where approvers act on these — there's no per-claim
+            # exceptions page (the old /claims/{id}/exceptions link had no route).
+            link="/hr/exceptions",
             category=NotificationCategory.EXCEPTION.value,
             db=db,
         )
@@ -312,6 +351,7 @@ DEFAULT_WORKFLOW_CONFIG: dict = {
         {"number": 4, "label": "Finance / Payment", "sla_hours": 240, "route_role": Role.FINANCE.value},
     ],
     "exception_chains": dict(EXCEPTION_APPROVAL_CHAINS),
+    "exception_submission_mode": dict(DEFAULT_EXCEPTION_SUBMISSION_MODE),
     "submission": {"max_working_days_after_return": 5, "deadline_mode": "hard_block"},
     "auto_approve_below_amount": "2000.00",
 }
@@ -457,6 +497,18 @@ def _validate_workflow_config(config: dict) -> None:
                     status_code=422, detail=f"exception_enabled '{key}' must be true or false"
                 )
 
+    submission_modes = config.get("exception_submission_mode")
+    if submission_modes is not None:
+        if not isinstance(submission_modes, dict):
+            raise HTTPException(status_code=422, detail="exception_submission_mode must be a dictionary")
+        for key, val in submission_modes.items():
+            if val not in (EXCEPTION_SUBMISSION_ALLOW, EXCEPTION_SUBMISSION_BLOCK):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"exception_submission_mode '{key}' must be {EXCEPTION_SUBMISSION_ALLOW} or "
+                    f"{EXCEPTION_SUBMISSION_BLOCK}",
+                )
+
 
 def _normalize_stage_defs(config: dict) -> list[dict]:
     raw_stages = config.get("stages")
@@ -480,7 +532,7 @@ def _normalize_stage_defs(config: dict) -> list[dict]:
 
 
 async def get_workflow_config(db: AsyncSession, category: str | None = None) -> dict:
-    """`category` (TRAVEL/GENERAL/REALLOCATION) selects that category's stage override from
+    """`category` (TRAVEL/GENERAL/RELOCATION) selects that category's stage override from
     config_json.category_overrides, if an admin has configured one — everything else
     (exception_chains, submission, auto_approve_below_amount) stays shared. With no
     override configured for that category, this returns exactly the same stages as
@@ -498,6 +550,12 @@ async def get_workflow_config(db: AsyncSession, category: str | None = None) -> 
         # would silently drop that new type's default chain (and hide it from the admin's
         # Approval Matrix editor) until someone happens to re-save the whole config.
         merged["exception_chains"] = {**EXCEPTION_APPROVAL_CHAINS, **row.config_json["exception_chains"]}
+    # Same per-key merge, so a config saved before this setting existed still shows (and
+    # applies) the defaults for every type.
+    merged["exception_submission_mode"] = {
+        **DEFAULT_EXCEPTION_SUBMISSION_MODE,
+        **(row.config_json.get("exception_submission_mode") or {}),
+    }
     if category:
         override = (row.config_json.get("category_overrides") or {}).get(category)
         if isinstance(override, dict) and override.get("stages"):
@@ -833,6 +891,100 @@ def _active_pending_stage(claim: ClaimDraft, stages: list[ClaimApprovalStage]) -
     return row
 
 
+async def _activate_stage_rows(
+    claim: ClaimDraft,
+    rows: list[ClaimApprovalStage],
+    row_defs: list[dict],
+    stage_defs: list[dict],
+    stage_number: int,
+    now: datetime,
+    db: AsyncSession,
+) -> None:
+    """Open the given stage's row(s) (one per parallel branch): PENDING, SLA clock started,
+    approver(s) notified."""
+    for row in rows:
+        row.status = ClaimApprovalStageStatus.PENDING.value
+        row.sla_deadline_at = now + timedelta(hours=_stage_hours(stage_defs, stage_number))
+        row_def = next((sd for sd in row_defs if sd["route_role"] == row.required_role), None)
+        if row_def:
+            await _notify_stage_approver(claim, row_def, db)
+
+
+async def release_claim_to_finance(claim: ClaimDraft, db: AsyncSession) -> bool:
+    """A claim with exceptions waits at its finance stage with that stage NOT_STARTED, hidden
+    from Finance (see init_claim_exception_route; also approve_claim_stage's hold for any claim
+    still on the older parallel route). Once its last exception is approved this opens the
+    finance stage — READY_FOR_PAYMENT, same as an ordinary claim reaching Finance. Returns False
+    (no-op) for any claim not waiting there."""
+    if (
+        claim.status not in (ClaimStatus.IN_APPROVAL, ClaimStatus.PENDING_EXCEPTION)
+        or claim.current_approval_stage is None
+    ):
+        return False
+    stages = await _load_stages(claim.id, db)
+    rows = [s for s in stages if s.stage_number == claim.current_approval_stage]
+    if not rows or any(s.status != STAGE_STATUS_NOT_STARTED for s in rows):
+        return False
+    cfg = await get_workflow_config(db, category=claim.reimbursement_category.value)
+    stage_defs = _normalize_stage_defs(cfg)
+    row_defs = [sd for sd in stage_defs if int(sd["number"]) == claim.current_approval_stage]
+    if not any(str(sd.get("route_role")) == Role.FINANCE.value for sd in row_defs):
+        return False
+    previous_status = claim.status.value
+    claim.status = ClaimStatus.READY_FOR_PAYMENT
+    await _activate_stage_rows(claim, rows, row_defs, stage_defs, claim.current_approval_stage, _now(), db)
+    await log_event(
+        entity_type="claim_draft",
+        entity_id=str(claim.id),
+        action="release_to_finance",
+        actor_id=None,
+        old={"status": previous_status},
+        new={"status": claim.status.value, "current_approval_stage": claim.current_approval_stage},
+        db=db,
+    )
+    return True
+
+
+async def init_claim_exception_route(claim: ClaimDraft, db: AsyncSession, *, exceptions_pending: bool) -> None:
+    """Route for a claim with policy exceptions: its exception approvers ARE its approval — it
+    skips the normal approval stages entirely and goes to Finance for payment once every
+    exception is approved (a claim with no exceptions uses init_claim_approval_chain instead).
+
+    Only the finance stage row(s) are created. While exceptions are pending the claim sits in
+    PENDING_EXCEPTION with that stage NOT_STARTED (hidden from Finance); the last exception
+    approval opens it via release_claim_to_finance. With nothing pending (every exception was
+    already approved, e.g. a resubmission with unchanged amounts) it goes to Finance right away."""
+    cfg = await get_workflow_config(db, category=claim.reimbursement_category.value)
+    stage_defs = _normalize_stage_defs(cfg)
+    finance_defs = [s for s in stage_defs if str(s.get("route_role")) == Role.FINANCE.value]
+    # Saving the config requires a finance stage, so this fallback is only defensive.
+    finance_number = int((finance_defs or stage_defs)[-1]["number"])
+    row_defs = [s for s in stage_defs if int(s["number"]) == finance_number]
+    now = _now()
+
+    await db.execute(delete(ClaimApprovalStage).where(ClaimApprovalStage.claim_id == claim.id))
+    claim.claim_reference = claim.claim_reference or f"CLM-{now.year}-{claim.id:04d}"
+    rows = []
+    for row_def in row_defs:
+        row = ClaimApprovalStage(
+            claim_id=claim.id,
+            stage_number=finance_number,
+            stage_label=str(row_def["label"]),
+            required_role=row_def["route_role"],
+            status=STAGE_STATUS_NOT_STARTED,
+        )
+        db.add(row)
+        rows.append(row)
+    await db.flush()
+
+    claim.current_approval_stage = finance_number
+    if exceptions_pending:
+        claim.status = ClaimStatus.PENDING_EXCEPTION
+    else:
+        claim.status = ClaimStatus.READY_FOR_PAYMENT
+        await _activate_stage_rows(claim, rows, row_defs, stage_defs, finance_number, now, db)
+
+
 async def _can_user_act_on_exception(
     user: User, exc: ExceptionRequest, approvals: list[ExceptionApproval], db: AsyncSession
 ) -> bool:
@@ -1162,10 +1314,15 @@ async def get_approval_chain(claim: ClaimDraft, db: AsyncSession) -> dict:
     # Surface the exception's own approval chain instead, so the stepper shows *something*
     # rather than "unavailable" while a real approval is genuinely in progress.
     exception_stages: list[dict] = []
+    exceptions: list[dict] = []
     exc_requests = (
         await db.execute(
             select(ExceptionRequest)
-            .where(ExceptionRequest.claim_id == claim.id)
+            .where(
+                ExceptionRequest.claim_id == claim.id,
+                # Closed without a decision (send-back / claim rejected) — nothing to show.
+                ExceptionRequest.status != ExceptionRequestStatus.CANCELLED.value,
+            )
             .order_by(ExceptionRequest.id)
         )
     ).scalars().all()
@@ -1177,6 +1334,25 @@ async def get_approval_chain(claim: ClaimDraft, db: AsyncSession) -> dict:
                 .order_by(ExceptionApproval.id)
             )
         ).scalars().all()
+        waiting_on = next((a for a in approvals if a.status == ExceptionRequestStatus.PENDING.value), None)
+        exceptions.append(
+            {
+                "exception_request_id": req.id,
+                "exception_type": req.exception_type,
+                "exception_type_label": _humanize_token(req.exception_type),
+                "category_name": req.expense_category_name,
+                "claimed_amount": str(req.claimed_amount) if req.claimed_amount is not None else None,
+                "reason": req.description,
+                "status": req.status,
+                "decision_comment": req.decision_comment,
+                "waiting_on_role": waiting_on.required_role if waiting_on else None,
+                "waiting_on_names": (
+                    await _pending_approver_names(waiting_on.required_role, claim.employee_id, db)
+                    if waiting_on
+                    else []
+                ),
+            }
+        )
         for approval in approvals:
             acted_by_name, _ = await _user_identity(approval.acted_by_user_id, db)
             pending_names: list[str] = []
@@ -1197,12 +1373,15 @@ async def get_approval_chain(claim: ClaimDraft, db: AsyncSession) -> dict:
                 }
             )
 
-    # Once the exception(s) clear, the claim gets the *real* stage rows above — this is
-    # only meant to preview what's coming next while none exist yet.
+    # Only for legacy PENDING_EXCEPTION claims that have no stage rows yet: preview where they go
+    # once the exceptions clear — straight to Finance (claims with exceptions skip the normal
+    # approval stages; newer ones already carry their finance stage row above).
     upcoming_stages: list[dict] = []
     if claim.status == ClaimStatus.PENDING_EXCEPTION and not stages:
         cfg = await get_workflow_config(db, category=claim.reimbursement_category.value)
         for s in _normalize_stage_defs(cfg):
+            if str(s.get("route_role")) != Role.FINANCE.value:
+                continue
             names = await _pending_approver_names(str(s.get("route_role") or ""), claim.employee_id, db)
             upcoming_stages.append(
                 {"stage_number": s["number"], "label": s["label"], "pending_approver_names": names}
@@ -1241,6 +1420,13 @@ async def get_approval_chain(claim: ClaimDraft, db: AsyncSession) -> dict:
         "stages": stage_dicts,
         "exception_stages": exception_stages,
         "upcoming_stages": upcoming_stages,
+        "exceptions": exceptions,
+        # Held from Finance until every exception is decided.
+        "awaiting_exceptions": (
+            claim.status in (ClaimStatus.IN_APPROVAL, ClaimStatus.PENDING_EXCEPTION)
+            and any(e["status"] == ExceptionRequestStatus.PENDING.value for e in exceptions)
+            and _active_pending_stage(claim, stages) is None
+        ),
     }
 
 
@@ -1320,6 +1506,7 @@ async def get_claim_timeline(claim: ClaimDraft, db: AsyncSession) -> list[dict]:
         "approve_stage_auto": "stage_approved",
         "send_back": "sent_back",
         "reject_claim": "rejected",
+        "reject_claim_via_exception": "rejected",
         "record_payment": "payment_processed",
     }
     for log in logs:
@@ -1331,7 +1518,7 @@ async def get_claim_timeline(claim: ClaimDraft, db: AsyncSession) -> list[dict]:
         if log.action in ("approve_stage", "approve_stage_partial", "approve_stage_auto"):
             stage = new_value.get("approved_stage_number")
             comment = new_value.get("comment")
-        elif log.action == "reject_claim":
+        elif log.action in ("reject_claim", "reject_claim_via_exception"):
             stage = new_value.get("stage_number")
             comment = new_value.get("reject_reason")
         else:
@@ -1446,18 +1633,17 @@ async def approve_claim_stage(claim_id: int, user_id: int, comment: str | None, 
             next_stage_defs = [s for s in stage_defs if int(s["number"]) == next_stage_number]
             
             is_finance = any(str(sd.get("route_role")) == Role.FINANCE.value for sd in next_stage_defs)
-            
+
             claim.current_approval_stage = next_stage_number
-            if is_finance:
-                claim.status = ClaimStatus.READY_FOR_PAYMENT
-            
-            for ns in next_stages:
-                ns.status = ClaimApprovalStageStatus.PENDING.value
-                ns.sla_deadline_at = now + timedelta(hours=_stage_hours(stage_defs, next_stage_number))
-                
-                ns_def = next((sd for sd in next_stage_defs if sd["route_role"] == ns.required_role), None)
-                if ns_def:
-                    await _notify_stage_approver(claim, ns_def, db)
+            if is_finance and await has_pending_claim_exceptions(claim.id, db):
+                # Approvers are done but an exception is still undecided: the claim waits here,
+                # hidden from Finance (its finance stage stays NOT_STARTED), until the last
+                # exception is approved — see release_claim_to_finance.
+                pass
+            else:
+                if is_finance:
+                    claim.status = ClaimStatus.READY_FOR_PAYMENT
+                await _activate_stage_rows(claim, next_stages, next_stage_defs, stage_defs, next_stage_number, now, db)
 
     if not still_pending:
         # The still_pending branch above already logged "approve_stage_partial" for this same
@@ -1523,6 +1709,10 @@ async def send_back_claim(claim_id: int, user_id: int, comment: str, db: AsyncSe
 
     claim.status = ClaimStatus.SENT_BACK
     claim.current_approval_stage = None
+    # Undecided exceptions are closed — the employee may change those expenses, so they give
+    # fresh reasons on resubmit. Already-approved ones are kept and reused on resubmit as long
+    # as that expense's amount is unchanged (see reimbursement_service.submit_claim).
+    await cancel_pending_claim_exceptions(claim.id, "Claim was sent back to the employee.", db)
 
     await log_event(
         entity_type="claim_draft",
@@ -1589,6 +1779,7 @@ async def reject_claim(claim_id: int, user_id: int, reason: str, db: AsyncSessio
 
     claim.status = ClaimStatus.REJECTED
     claim.reject_reason = reason.strip()
+    await cancel_pending_claim_exceptions(claim.id, "Claim was rejected by an approver.", db)
 
     await log_event(
         entity_type="claim_draft",
@@ -1675,6 +1866,12 @@ async def record_claim_payment(
         raise HTTPException(status_code=404, detail="Claim not found")
     if claim.status != ClaimStatus.READY_FOR_PAYMENT:
         raise HTTPException(status_code=409, detail="Claim is not ready for payment")
+    # Backstop for the finance hold in approve_claim_stage: never pay while an exception on the
+    # claim is undecided (it could still reject the whole claim).
+    if await has_pending_claim_exceptions(claim.id, db):
+        raise HTTPException(
+            status_code=409, detail="This claim has policy exceptions still awaiting a decision"
+        )
 
     user = await db.get(User, user_id)
     if user is None or user.role != Role.FINANCE:
@@ -2107,16 +2304,8 @@ async def _finalize_travel_request_approval(travel_request, db: AsyncSession) ->
             category="ACTION_REQUIRED",
             db=db,
         )
-
-    # Project stakeholders only get told once the request is actually happening — fully
-    # approved, right before it heads to the Travel Desk for ticketing — not at submission time,
-    # when it could still be rejected or sent back.
-    try:
-        from app.services.travel_request_service import notify_project_stakeholders_if_applicable
-
-        await notify_project_stakeholders_if_applicable(travel_request, db)
-    except Exception as e:
-        print(f"Failed to notify project stakeholders: {e}")
+    # Project stakeholders (site visit email) are told later, once the Travel Desk has actually
+    # booked the trip — see travel_request_service._notify_stakeholders_once_booked.
 
 
 async def approve_travel_request_stage(request_id: int, user_id: int, comment: str | None, db: AsyncSession):
@@ -2262,9 +2451,7 @@ async def reject_travel_request_stage(request_id: int, user_id: int, reason: str
 
 
 async def get_travel_request_approval_chain(travel_request, db: AsyncSession) -> dict:
-    from app.models.travel_request import TravelRequestStatus
-
-    stages = await _load_travel_stages(travel_request.id, db)
+    stages =await _load_travel_stages(travel_request.id, db)
     subject_user = await db.get(User, travel_request.employee_user_id)
     subject_employee_id = subject_user.employee_id if subject_user else None
 
@@ -2304,17 +2491,10 @@ async def get_travel_request_approval_chain(travel_request, db: AsyncSession) ->
                 }
             )
 
-    # Mirrors get_approval_chain's claim-side "preview the real chain before it exists" —
-    # a PENDING_EXCEPTION request has no TravelRequestApprovalStage rows yet (see
-    # init_travel_request_approval_chain, which only runs once every exception clears).
+    # Always empty for travel requests now: a request with an exception never enters the normal
+    # approval stages (its exception chain is its whole approval — see decide_exception_request),
+    # so there's nothing "upcoming" to preview. Kept in the response for shape compatibility.
     upcoming_stages: list[dict] = []
-    if travel_request.status == TravelRequestStatus.PENDING_EXCEPTION.value and not stages:
-        cfg = await get_workflow_config(db)
-        for s in _travel_request_stage_defs(cfg):
-            names = await _pending_approver_names(str(s.get("route_role") or ""), subject_employee_id, db)
-            upcoming_stages.append(
-                {"stage_number": s["number"], "label": s["label"], "pending_approver_names": names}
-            )
 
     stage_dicts = []
     for s in stages:
@@ -2413,96 +2593,94 @@ async def create_travel_exception_request(
     return row
 
 
-async def create_exception_request(
-    claim_id: int, user_id: int, exception_type: str, description: str | None, db: AsyncSession
-) -> ExceptionRequest:
-    claim = await db.get(ClaimDraft, claim_id)
-    if claim is None:
-        raise HTTPException(status_code=404, detail="Claim not found")
-    if claim.employee_user_id != user_id:
-        raise HTTPException(status_code=403, detail="Cannot raise exception for another user's claim")
+CLAIM_EXCEPTION_REASON_MIN_CHARS = 20
 
+
+async def has_pending_claim_exceptions(claim_id: int, db: AsyncSession) -> bool:
+    found = (
+        await db.execute(
+            select(ExceptionRequest.id).where(
+                ExceptionRequest.claim_id == claim_id,
+                ExceptionRequest.status == ExceptionRequestStatus.PENDING.value,
+            )
+        )
+    ).scalars().first()
+    return found is not None
+
+
+async def cancel_pending_claim_exceptions(
+    claim_id: int, reason: str, db: AsyncSession, *, exclude_id: int | None = None
+) -> int:
+    """Close every still-pending exception request on a claim (and its open approval steps)
+    without a decision — used when the claim itself stops moving (sent back, rejected, or
+    rejected via another of its exceptions), so nothing stale is left in approvers' queues."""
+    stmt = select(ExceptionRequest).where(
+        ExceptionRequest.claim_id == claim_id,
+        ExceptionRequest.status == ExceptionRequestStatus.PENDING.value,
+    )
+    if exclude_id is not None:
+        stmt = stmt.where(ExceptionRequest.id != exclude_id)
+    rows = (await db.execute(stmt)).scalars().all()
+    if not rows:
+        return 0
+    now = _now()
+    open_approvals = (
+        await db.execute(
+            select(ExceptionApproval).where(
+                ExceptionApproval.exception_request_id.in_([row.id for row in rows]),
+                ExceptionApproval.status.in_([ExceptionRequestStatus.PENDING.value, "AWAITING"]),
+            )
+        )
+    ).scalars().all()
+    for approval in open_approvals:
+        approval.status = ExceptionRequestStatus.CANCELLED.value
+    for row in rows:
+        row.status = ExceptionRequestStatus.CANCELLED.value
+        row.decided_at = now
+        row.decision_comment = reason
+    return len(rows)
+
+
+async def raise_submitted_claim_exception(
+    claim: ClaimDraft,
+    *,
+    exception_type: str,
+    category_name: str,
+    amount: Decimal,
+    reason: str,
+    cfg: dict,
+    db: AsyncSession,
+) -> ExceptionRequest:
+    """One exception request for one flagged expense, raised as part of submitting the claim
+    (see reimbursement_service.submit_claim). Runs its own configured approver chain in
+    parallel with the claim's normal approval; the claim only reaches Finance once every one
+    of these is approved, and any rejection rejects the whole claim."""
     row = ExceptionRequest(
-        claim_id=claim_id,
-        requested_by_user_id=user_id,
+        claim_id=claim.id,
+        requested_by_user_id=claim.employee_user_id,
         exception_type=exception_type,
         exception_types=[exception_type],
-        description=description,
+        description=reason,
+        expense_category_name=category_name,
+        claimed_amount=amount,
         status=ExceptionRequestStatus.PENDING.value,
     )
     db.add(row)
     await db.flush()
 
-    # Map exception type to expense category name keyword and update corresponding ClaimExpense
-    category_keyword = None
-    if exception_type == "ROOM_RENT_DEVIATION":
-        category_keyword = "hotel"
-    elif exception_type == "AIR_TRAVEL_L5_L6":
-        category_keyword = "air"
-    elif exception_type == "HIRED_TAXI_UNAUTHORIZED":
-        category_keyword = "taxi"
-    elif exception_type == "TRAIN_TATKAL":
-        category_keyword = "train"
-    elif exception_type == "FOOD_DEVIATION":
-        category_keyword = "food"
-    elif exception_type == "INCIDENTAL_DEVIATION":
-        category_keyword = "incidental"
-
-    if category_keyword:
-        from app.models.reimbursement import ClaimExpense
-        stmt = select(ClaimExpense).where(
-            ClaimExpense.claim_id == claim_id,
-            func.lower(ClaimExpense.category_name).contains(category_keyword)
-        )
-        expense_rows = (await db.execute(stmt)).scalars().all()
-        for exp in expense_rows:
-            exp.exception_requested = True
-
-    # Requesting an exception mid-wizard no longer locks the claim out of DRAFT — the
-    # employee can keep building/navigating/submitting the claim normally. The approver
-    # is still notified right away (below), but the claim itself only moves to
-    # PENDING_EXCEPTION once the employee actually submits (see submit_claim), which is
-    # also when any *other* pending exception requests on this claim get folded in.
-
-    cfg = await get_workflow_config(db)
-    required_roles = _resolve_exception_chain(cfg, exception_type)
-    for i, role in enumerate(required_roles):
-        status_val = ExceptionRequestStatus.PENDING.value if i == 0 else "AWAITING"
+    chain = _resolve_exception_chain(cfg, exception_type)
+    for i, role in enumerate(chain):
         db.add(
             ExceptionApproval(
                 exception_request_id=row.id,
                 required_role=role,
-                status=status_val,
+                status=ExceptionRequestStatus.PENDING.value if i == 0 else "AWAITING",
             )
         )
-    await db.commit()
-    await db.refresh(row)
+    await db.flush()
 
-    # Notify only the first stage approver(s)
-    claim_ref = claim.claim_reference or f"CLM-{claim.id}"
-    if required_roles:
-        first_role = required_roles[0]
-        target_uids = await _user_ids_for_exception_role(claim, first_role, db)
-        for target_uid in target_uids:
-            await create_notification(
-                user_id=target_uid,
-                title=f"Exception Approval Required: {claim_ref}",
-                body=f"Exception Type: {_humanize_token(exception_type)}. Justification: {description}",
-                link="/hr/exceptions",
-                category=NotificationCategory.EXCEPTION.value,
-                db=db,
-            )
-
-    await create_notification(
-        user_id=user_id,
-        title=f"Exception Request Submitted: {claim_ref}",
-        body=f"Your {_humanize_token(exception_type)} exception request has been sent for approval.",
-        link=f"/claims/{claim.id}",
-        category=NotificationCategory.EXCEPTION.value,
-        db=db,
-    )
-    await db.commit()
-
+    if chain:
+        await _notify_exception_approver(claim, row, chain[0], db)
     return row
 
 
@@ -2595,15 +2773,30 @@ async def decide_exception_request(
 
             travel_request.status = TravelRequestStatus.REJECTED.value
             travel_request.rejection_reason = comment or f"Exception '{_exception_label(row)}' was rejected."
-        elif claim is not None:
-            # A claim sitting in PENDING_EXCEPTION has no path forward once its exception is
-            # rejected — it never got real ClaimApprovalStage rows to reject instead (see
-            # init_claim_approval_chain). Reject the claim itself, the same way reject_claim
-            # does, so it doesn't get stuck unresubmittable and its invoices go back to
-            # Archived/reusable via the normal rejected-claim flow.
+        elif claim is not None and claim.status in (
+            ClaimStatus.IN_APPROVAL,
+            ClaimStatus.READY_FOR_PAYMENT,
+            ClaimStatus.PENDING_EXCEPTION,
+        ):
+            # Any rejected exception rejects the whole claim (same end state as reject_claim, so
+            # its invoices go back to Archived/reusable via the normal rejected-claim flow). The
+            # claim's normal approval runs in parallel with its exceptions, so also close its
+            # open approval step(s) — otherwise they'd sit in approvers' queues and keep tripping
+            # SLA escalations — and its other still-pending exceptions.
             previous_status = claim.status.value
             claim.status = ClaimStatus.REJECTED
             claim.reject_reason = comment or f"Exception '{_exception_label(row)}' was rejected."
+            for stage_row in await _load_stages(claim.id, db):
+                if stage_row.status == ClaimApprovalStageStatus.PENDING.value:
+                    stage_row.status = ClaimApprovalStageStatus.REJECTED.value
+                    stage_row.decided_at = now
+                    stage_row.comment = f"Closed: exception '{_exception_label(row)}' was rejected."
+            await cancel_pending_claim_exceptions(
+                claim.id,
+                f"Claim rejected: exception '{_exception_label(row)}' was rejected.",
+                db,
+                exclude_id=row.id,
+            )
             await log_event(
                 entity_type="claim_draft",
                 entity_id=str(claim.id),
@@ -2639,17 +2832,16 @@ async def decide_exception_request(
             row.decision_comment = "Exception approved by all required approver roles."
 
             if claim is not None:
-                # Check if all exceptions on this claim are now approved
-                active_exceptions_stmt = select(ExceptionRequest).where(
-                    ExceptionRequest.claim_id == claim.id,
-                    ExceptionRequest.status != ExceptionRequestStatus.APPROVED.value
-                )
-                other_active = (await db.execute(active_exceptions_stmt)).scalars().first()
+                await db.flush()
                 # A shell claim exists only to carry this exception request — it has no
                 # expenses to review or pay, so it never enters the claim approval workflow.
-                if not other_active and not claim.is_exception_shell:
-                    claim.status = ClaimStatus.IN_APPROVAL
-                    await init_claim_approval_chain(claim, db)
+                if not claim.is_exception_shell and not await has_pending_claim_exceptions(claim.id, db):
+                    # Every exception approved — the claim goes to Finance for payment.
+                    released = await release_claim_to_finance(claim, db)
+                    if not released and claim.status == ClaimStatus.PENDING_EXCEPTION:
+                        # Legacy: claims held in PENDING_EXCEPTION before the finance-only route
+                        # existed have no stage rows at all — build it and release in one go.
+                        await init_claim_exception_route(claim, db, exceptions_pending=False)
             else:
                 from app.models.travel_request import TravelRequestStatus
 
@@ -2659,8 +2851,22 @@ async def decide_exception_request(
                 )
                 other_active = (await db.execute(active_exceptions_stmt)).scalars().first()
                 if not other_active:
-                    travel_request.status = TravelRequestStatus.PENDING.value
-                    await init_travel_request_approval_chain(travel_request, db)
+                    # The exception chain IS this request's approval: once every exception
+                    # approver has signed off it goes straight to the Travel Desk, without also
+                    # going back through the normal approval stages (which only apply to
+                    # requests that never needed an exception).
+                    travel_request.status = TravelRequestStatus.APPROVED.value
+                    travel_request.current_approval_stage = None
+                    await _finalize_travel_request_approval(travel_request, db)
+                    await log_event(
+                        entity_type="travel_request",
+                        entity_id=str(travel_request.id),
+                        action="approve_via_exception",
+                        actor_id=approver_id,
+                        old={"status": TravelRequestStatus.PENDING_EXCEPTION.value},
+                        new={"status": travel_request.status, "exception_request_id": row.id},
+                        db=db,
+                    )
 
     await db.commit()
     await db.refresh(row)
@@ -2685,6 +2891,8 @@ async def decide_exception_request(
         body = f"Your exception request for {exception_label} was rejected by {_humanize_token(approver.role.value)}."
         if comment:
             body += f" Comment: {comment}"
+        if claim is not None and claim.status == ClaimStatus.REJECTED:
+            body += " Because of this, the whole claim has been rejected."
     elif row.status == ExceptionRequestStatus.APPROVED.value:
         title = f"Exception Request Approved: {claim_ref}"
         body = f"Your exception request for {exception_label} has been fully approved!"
@@ -3077,6 +3285,9 @@ async def process_auto_approvals(db: AsyncSession) -> None:
         total = total_claimed_from_report(claim)
         if total <= Decimal("0"):
             continue
+        # A claim with an exception still undecided always gets a human look, however small.
+        if await has_pending_claim_exceptions(claim.id, db):
+            continue
 
         stages = await _load_stages(claim.id, db)
         pending = _active_pending_stage(claim, stages)
@@ -3150,14 +3361,7 @@ async def process_auto_approvals(db: AsyncSession) -> None:
                 claim.current_approval_stage = next_stage_number
                 if is_finance:
                     claim.status = ClaimStatus.READY_FOR_PAYMENT
-
-                for ns in next_stages:
-                    ns.status = ClaimApprovalStageStatus.PENDING.value
-                    ns.sla_deadline_at = now + timedelta(hours=_stage_hours(stage_defs, next_stage_number))
-
-                    ns_def = next((sd for sd in next_stage_defs if sd["route_role"] == ns.required_role), None)
-                    if ns_def:
-                        await _notify_stage_approver(claim, ns_def, db)
+                await _activate_stage_rows(claim, next_stages, next_stage_defs, stage_defs, next_stage_number, now, db)
 
             await log_event(
                 entity_type="claim_draft",

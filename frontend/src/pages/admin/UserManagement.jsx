@@ -50,6 +50,20 @@ const departmentsList = [
 
 const USERS_PAGE_SIZE = 10;
 
+function localIsoDate(d = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** The version whose effective window covers today — same rule as the backend's
+ * get_active_policy_version, which ignores status (an archived version can still be in force). */
+function policyInForce(versions) {
+  const today = localIsoDate();
+  return (versions || [])
+    .filter((v) => v.effective_from && v.effective_from <= today && (!v.effective_to || v.effective_to >= today))
+    .sort((a, b) => (b.effective_from.localeCompare(a.effective_from)) || (b.id - a.id))[0];
+}
+
 const emptyCreateForm = {
   email: '',
   full_name: '',
@@ -151,7 +165,7 @@ export default function UserManagement() {
           adminApi.policyVersions()
         ]);
         setImpactLevels(impactRes.data);
-        const activePolicy = policyRes.data.find(p => p.status === 'ACTIVE');
+        const activePolicy = policyInForce(policyRes.data) || policyRes.data.find(p => p.status === 'ACTIVE');
         if (activePolicy) setActivePolicyId(activePolicy.id);
       } catch (err) {
         console.error('Failed to load impact levels/policies', err);

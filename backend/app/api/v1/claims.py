@@ -14,7 +14,7 @@ from app.core.rbac import (
 )
 from app.models.auth import Role
 from app.models.reimbursement import ClaimDraft, ClaimExpense, ClaimInvoice, ClaimTrip
-from app.schemas.reimbursement import ClaimDraftIn, ClaimDraftOut, PolicyCheckOut
+from app.schemas.reimbursement import ClaimDraftIn, ClaimDraftOut, ClaimSubmitIn, PolicyCheckOut
 from app.services.reimbursement_service import (
     create_or_update_claim_draft,
     delete_claim_draft,
@@ -290,10 +290,12 @@ async def team_spend(
 )
 async def submit_employee_claim(
     claim_id: int,
+    payload: ClaimSubmitIn | None = None,
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    claim = await submit_claim(claim_id, int(claims["sub"]), db)
+    exception_reasons = [item.model_dump() for item in payload.exceptions] if payload else []
+    claim = await submit_claim(claim_id, int(claims["sub"]), db, exception_reasons=exception_reasons)
     _claim, expenses, invoice_ids, trip_ids = await get_claim_bundle(claim.id, int(claims["sub"]), db)
     return _claim_response(_claim, expenses, invoice_ids, trip_ids)
 

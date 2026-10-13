@@ -20,9 +20,9 @@ def _add_working_days(start: date, days: int) -> date:
 
 
 def assert_submission_deadline(claim: ClaimDraft, submission_config: dict) -> tuple[bool, int]:
-    # General Reimbursements and Reallocation claims have no trip, so there's no return_date
+    # General Reimbursements and Relocation claims have no trip, so there's no return_date
     # to anchor a deadline to — the "N working days after return" rule doesn't apply to them.
-    if claim.reimbursement_category in (ReimbursementCategory.GENERAL, ReimbursementCategory.REALLOCATION):
+    if claim.reimbursement_category in (ReimbursementCategory.GENERAL, ReimbursementCategory.RELOCATION):
         return False, 0
     if not claim.return_date:
         raise HTTPException(

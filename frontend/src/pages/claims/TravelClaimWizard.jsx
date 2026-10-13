@@ -7,13 +7,12 @@ import ClaimWizardStepEvidence from '../../components/claims/ClaimWizardStepEvid
 import ClaimWizardStepPolicyCheck from '../../components/claims/ClaimWizardStepPolicyCheck';
 import ClaimWizardStepSubmit from '../../components/claims/ClaimWizardStepSubmit';
 import ClaimWizardStepTripInfo from '../../components/claims/ClaimWizardStepTripInfo';
-import ExceptionRequestModal from '../../components/claims/ExceptionRequestModal';
+import ClaimExceptionsModal from '../../components/claims/ClaimExceptionsModal';
 import TicketPreviewDrawer from '../../components/ui/TicketPreviewDrawer';
-import OrigamiAnimation from '../../components/ui/OrigamiAnimation';
+import ClaimSubmitAnimation from '../../components/ui/ClaimSubmitAnimation';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import useToast from '../../hooks/useToast';
 import { reimbursementApi } from '../../services/reimbursementApi';
-import { useAuthStore } from '../../store/authStore';
 
 const STEP_LABELS = ['Trip Info', 'Invoices', 'Policy Check', 'Submit Claim'];
 
@@ -36,7 +35,6 @@ function addWorkingDays(date, days) {
 export default function TravelClaimWizard() {
   useSetPageTitle('Travel Claim');
   const navigate = useNavigate();
-  const user = useAuthStore((s) => s.user);
   const { id } = useParams();
   const [searchParams] = useSearchParams();
   const effectiveEditId = id || null;
@@ -87,10 +85,8 @@ export default function TravelClaimWizard() {
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [declarationChecked, setDeclarationChecked] = useState(false);
-  const [exceptionOpen, setExceptionOpen] = useState(false);
-  const [activeExpense, setActiveExpense] = useState(null);
-  const [requestingException, setRequestingException] = useState(false);
-  const [showAnimation, setShowAnimation] = useState(false);
+  const [exceptionsOpen, setExceptionsOpen] = useState(false);
+  const [submittedClaim, setSubmittedClaim] = useState(null);
   const [showLateModal, setShowLateModal] = useState(false);
 
   useEffect(() => {
@@ -231,7 +227,7 @@ export default function TravelClaimWizard() {
     localStorage.setItem('travora_claim_draft', JSON.stringify(draftData));
   }, [form, selectedTripIds, selectedInvoiceIds, currentStep, effectiveEditId]);
 
-  // A Travel claim can only draw from Travel-tagged invoices — General and Reallocation both
+  // A Travel claim can only draw from Travel-tagged invoices — General and Relocation both
   // belong in the trip-less General Reimbursement wizard's picker instead (see
   // GeneralReimbursementWizard.jsx's visibleInvoices), never here.
   const visibleInvoices = useMemo(
@@ -457,7 +453,7 @@ export default function TravelClaimWizard() {
       if (!file) return;
       const formData = new FormData();
       formData.append('file', file);
-      // Quick-uploading from inside the wizard always tags the invoice Travel — Reallocation
+      // Quick-uploading from inside the wizard always tags the invoice Travel — Relocation
       // invoices are deliberately only created via the standalone Upload Invoices page's
       // 3-way selector, then attached here.
       formData.append('reimbursement_category', 'TRAVEL');
@@ -492,43 +488,33 @@ export default function TravelClaimWizard() {
     }
   };
 
-  const submit = async () => {
+  const exceptionExpenses = (claim?.expenses || []).filter((expense) => expense.exception_reason_required);
+
+  const sendClaim = async (exceptions = []) => {
     if (!claim?.id) return;
     setSubmitting(true);
     try {
-      await reimbursementApi.submitClaim(claim.id);
+      const response = await reimbursementApi.submitClaim(claim.id, { exceptions });
+      const submitted = response?.data || claim;
       localStorage.removeItem('travora_claim_draft');
-      showToast(`Claim submitted successfully. Claim ID: ${claim.claim_reference || `CLM-${claim.id}`}`, 'success');
-      setShowAnimation(true);
+      showToast(`Claim submitted successfully. Claim ID: ${submitted.claim_reference || `CLM-${submitted.id}`}`, 'success');
+      setExceptionsOpen(false);
+      setSubmittedClaim(submitted);
     } catch (error) {
       showToast(error?.response?.data?.detail || 'Submit failed', 'error');
       setSubmitting(false);
     }
   };
 
-  const requestException = async ({ reason, exceptionType }) => {
-    if (!claim?.id || !activeExpense) return;
-    setRequestingException(true);
-    try {
-      await reimbursementApi.requestException({
-        claim_id: claim.id,
-        exception_type: exceptionType,
-        description: reason.trim(),
-      });
-      setClaim((prev) => ({
-        ...prev,
-        expenses: (prev?.expenses || []).map((expense) =>
-          expense.id === activeExpense.id ? { ...expense, exception_requested: true } : expense,
-        ),
-      }));
-      showToast('Exception request submitted', 'success');
-      setExceptionOpen(false);
-      setActiveExpense(null);
-    } catch {
-      showToast('Exception request failed', 'error');
-    } finally {
-      setRequestingException(false);
+  // Expenses outside policy get their reasons in the exceptions modal first — the claim and all
+  // its exception requests are only sent from there, so nothing is raised before submission.
+  const submit = () => {
+    if (!claim?.id) return;
+    if (exceptionExpenses.length) {
+      setExceptionsOpen(true);
+      return;
     }
+    sendClaim();
   };
 
   const goStep2 = async () => {
@@ -673,10 +659,6 @@ export default function TravelClaimWizard() {
           claim={claim}
           onBack={() => setCurrentStep(2)}
           onNext={goStep4}
-          onRequestException={(expense) => {
-            setActiveExpense(expense);
-            setExceptionOpen(true);
-          }}
         />
       ) : null}
 
@@ -695,16 +677,14 @@ export default function TravelClaimWizard() {
         />
       ) : null}
 
-      <ExceptionRequestModal
-        open={exceptionOpen}
-        expense={activeExpense}
+      <ClaimExceptionsModal
+        open={exceptionsOpen}
+        expenses={exceptionExpenses}
         onClose={() => {
-          if (requestingException) return;
-          setExceptionOpen(false);
-          setActiveExpense(null);
+          if (!submitting) setExceptionsOpen(false);
         }}
-        onSubmit={requestException}
-        loading={requestingException}
+        onSubmit={sendClaim}
+        submitting={submitting}
       />
       <TicketPreviewDrawer
         open={drawer.open}
@@ -714,13 +694,8 @@ export default function TravelClaimWizard() {
         filename={drawer.name}
         title={drawer.title}
       />
-      {showAnimation && (
-        <OrigamiAnimation
-          onComplete={() => navigate('/claims/my')}
-          employeeName={user?.full_name || user?.email || 'Employee'}
-          destination={form.destination_city}
-          date={form.departure_date}
-        />
+      {submittedClaim && (
+        <ClaimSubmitAnimation claim={submittedClaim} onComplete={() => navigate('/claims/my')} />
       )}
 
       {showLateModal && createPortal(

@@ -99,7 +99,7 @@ class DuplicateCheckOut(BaseModel):
 class ClaimDraftIn(BaseModel):
     claim_id: int | None = None
     # Which "New Claim" entry point created this draft — TRAVEL (default) or GENERAL. The
-    # claim's *effective* routing category can still end up REALLOCATION if any linked
+    # claim's *effective* routing category can still end up RELOCATION if any linked
     # invoice is tagged that way (see reimbursement_service._resolve_claim_reimbursement_category);
     # this field is just what the wizard itself was opened as.
     reimbursement_category: ReimbursementCategory = ReimbursementCategory.TRAVEL
@@ -149,12 +149,28 @@ class ClaimExpenseOut(BaseModel):
     # Which invoice(s) this category's total was aggregated from — see
     # reimbursement_service._claim_invoice_breakdown.
     invoice_breakdown: list[ClaimExpenseInvoiceOut] = Field(default_factory=list)
-    # Which exception type requesting an exception on this expense should use (None if
-    # policy_status is OK) — computed once server-side (see
-    # reimbursement_service._dedicated_exception_type) and read directly by
-    # ExceptionRequestModal.jsx, instead of the frontend re-deriving its own guess from
-    # category_name (that duplication was the root cause of a past routing bug).
+    # Which exception type this flagged expense needs (None if policy_status is OK) — decided
+    # once in reimbursement_service._build_claim_expenses and stored on the expense.
     exception_type: str | None = None
+    # ALLOW (submittable with a reason) or BLOCK, per the Approval Matrix's "When flagged".
+    exception_mode: str | None = None
+    # Latest exception request's status for this expense (PENDING/APPROVED/REJECTED), if any.
+    exception_status: str | None = None
+    # The submit modal must collect a reason for this expense (see annotate_expense_exceptions).
+    exception_reason_required: bool = False
+
+
+class ClaimSubmitExceptionIn(BaseModel):
+    exception_type: str = Field(..., min_length=1, max_length=128)
+    category_name: str = Field(..., min_length=1, max_length=128)
+    reason: str = Field(..., max_length=2000)
+
+
+class ClaimSubmitIn(BaseModel):
+    """One reason per flagged expense that still needs an exception — collected by the
+    wizard's submit modal. Empty when nothing on the claim is flagged."""
+
+    exceptions: list[ClaimSubmitExceptionIn] = Field(default_factory=list)
 
 
 class ClaimDraftOut(BaseModel):

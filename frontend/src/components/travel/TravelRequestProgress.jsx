@@ -92,8 +92,10 @@ function buildApprovalSteps(request, chain) {
 
   if (status === 'CANCELLED') {
     steps.push({ key: 'manager', label: 'Approval', state: 'cancelled', stateLabel: 'Cancelled' });
-  } else if (rejectedDuringException) {
-    steps.push({ key: 'manager', label: 'Approval', state: 'pending', stateLabel: 'Not required' });
+  } else if (rejectedDuringException || (exc && !realStages.length)) {
+    // A request with an exception is approved by its exception chain alone and goes straight to
+    // the Travel Desk — it never enters the normal approval stages, so none are shown. (Requests
+    // approved before this rule have real stage rows and still show them below.)
   } else if (realStages.length) {
     // Real, admin-configured stage(s) — could be more than one (Manager -> HRBP -> ...), unlike
     // the single hardcoded "Reporting manager approval" step this used to always show.
@@ -122,19 +124,6 @@ function buildApprovalSteps(request, chain) {
         state,
         stateLabel,
         detail: s.comment || null,
-      });
-    });
-  } else if (status === 'PENDING_EXCEPTION' && chain?.upcoming_stages?.length) {
-    // No real stage rows yet (see init_travel_request_approval_chain) — preview what's coming
-    // once every exception clears.
-    chain.upcoming_stages.forEach((s) => {
-      steps.push({
-        key: `upcoming-${s.stage_number}`,
-        label: s.label,
-        state: 'pending',
-        stateLabel: s.pending_approver_names?.length
-          ? `Will route to ${s.pending_approver_names.join(', ')}`
-          : 'Waiting on exception review',
       });
     });
   } else {
@@ -221,35 +210,40 @@ export default function TravelRequestProgress({ request }) {
           ).map(humanize).join(', ')}
         </div>
       ) : null}
-      {steps.map((step, idx) => {
-        const { Icon, iconCls } = STATE_STYLES[step.state] || STATE_STYLES.pending;
-        const isLast = idx === steps.length - 1;
-        return (
-          <div key={step.key} className="flex items-start gap-3">
-            <div className="flex flex-col items-center">
-              {/* size=14, not 13: the badge is h-6/w-6 (24px), and (24-13)/2 = 5.5px can't be
-                  split evenly, so browsers round it asymmetrically — a real, measurable ~1px
-                  off-center icon. 14 divides evenly (5px each side). */}
-              <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border ${iconCls}`}>
-                <Icon size={14} />
-              </span>
-              {!isLast ? <span className="mt-1 h-full min-h-[14px] w-px flex-1 bg-slate-200" /> : null}
-            </div>
-            <div className="min-w-0 pb-3">
-              {/* leading-6 matches the icon circle's own h-6 (24px) exactly, so the first line
-                  of text and the icon share the same line-box height and end up centered on
-                  the same axis under the row's items-start — no guessed offset needed. */}
-              <div className="flex flex-wrap items-baseline gap-x-2 leading-6">
-                <span className="text-[11px] font-bold text-slate-700">{step.label}</span>
-                <span className="text-[10px] font-medium text-slate-400">{step.stateLabel}</span>
+      {/* No gap between steps (spacing comes from each step's pb-3), and the icon column
+          stretches to the full row height — so each connector runs unbroken from one icon to
+          the next, even when a step's label wraps onto a second line. */}
+      <div className="flex flex-col">
+        {steps.map((step, idx) => {
+          const { Icon, iconCls } = STATE_STYLES[step.state] || STATE_STYLES.pending;
+          const isLast = idx === steps.length - 1;
+          return (
+            <div key={step.key} className="flex items-start gap-3">
+              <div className="flex flex-col items-center self-stretch">
+                {/* size=14, not 13: the badge is h-6/w-6 (24px), and (24-13)/2 = 5.5px can't be
+                    split evenly, so browsers round it asymmetrically — a real, measurable ~1px
+                    off-center icon. 14 divides evenly (5px each side). */}
+                <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border ${iconCls}`}>
+                  <Icon size={14} />
+                </span>
+                {!isLast ? <span className="my-1 min-h-[14px] w-px flex-1 bg-slate-200" /> : null}
               </div>
-              {step.detail ? (
-                <p className="mt-0.5 text-[10px] leading-relaxed text-slate-500 italic">&ldquo;{step.detail}&rdquo;</p>
-              ) : null}
+              <div className="min-w-0 pb-3">
+                {/* leading-6 matches the icon circle's own h-6 (24px) exactly, so the first line
+                    of text and the icon share the same line-box height and end up centered on
+                    the same axis under the row's items-start — no guessed offset needed. */}
+                <div className="flex flex-wrap items-baseline gap-x-2 leading-6">
+                  <span className="text-[11px] font-bold text-slate-700">{step.label}</span>
+                  <span className="text-[10px] font-medium text-slate-400">{step.stateLabel}</span>
+                </div>
+                {step.detail ? (
+                  <p className="mt-0.5 text-[10px] leading-relaxed text-slate-500 italic">&ldquo;{step.detail}&rdquo;</p>
+                ) : null}
+              </div>
             </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   );
 }

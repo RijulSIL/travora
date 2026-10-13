@@ -2,33 +2,18 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.rbac import get_current_claims, is_direct_report, require_any_permission, require_permission
+from app.core.rbac import get_current_claims, is_direct_report, require_any_permission
 from app.models.auth import Role
-from app.schemas.workflow import ExceptionDecisionBody, ExceptionRequestIn, ExceptionRequestOut
+from app.schemas.workflow import ExceptionDecisionBody, ExceptionRequestOut
 from app.services.workflow_service import (
-    create_exception_request,
     decide_exception_request,
     get_exception_request,
 )
 
+# Claim exceptions are no longer requested one at a time mid-wizard — they're raised together
+# when the claim is submitted (POST /claims/{id}/submit with a reason per flagged expense), so
+# an unsubmitted claim never has any. Travel-request exceptions have their own creation path.
 router = APIRouter(prefix="/exceptions", tags=["exceptions"])
-
-
-@router.post(
-    "/request",
-    response_model=ExceptionRequestOut,
-    dependencies=[Depends(require_permission("submit_claim"))],
-)
-async def request_exception(
-    payload: ExceptionRequestIn,
-    claims: dict = Depends(get_current_claims),
-    db: AsyncSession = Depends(get_db),
-) -> ExceptionRequestOut:
-    user_id = int(claims["sub"])
-    row = await create_exception_request(
-        payload.claim_id, user_id, payload.exception_type, payload.description, db
-    )
-    return row
 
 
 @router.get("/{exception_id}", response_model=ExceptionRequestOut)

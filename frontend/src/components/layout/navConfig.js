@@ -81,8 +81,8 @@ function policyAdminItems() {
 /** "New Claim" expands in place to let the employee pick which claim flow to start —
  * see AppSidebar's NavRow, which renders `children` as an expandable group instead of a
  * plain link when present. `getFlatNavItems` below flattens this to two rows for mobile,
- * where there's no room to expand inline. Reallocation isn't a separate entry point here —
- * a Reallocation-tagged invoice is picked up by the General Reimbursement wizard alongside
+ * where there's no room to expand inline. Relocation isn't a separate entry point here —
+ * a Relocation-tagged invoice is picked up by the General Reimbursement wizard alongside
  * General ones (see GeneralReimbursementWizard.jsx's visibleInvoices filter). */
 const NEW_CLAIM_ITEM = {
   label: 'New Claim',

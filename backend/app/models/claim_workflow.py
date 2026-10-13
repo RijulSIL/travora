@@ -28,6 +28,9 @@ class ExceptionRequestStatus(str, enum.Enum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
+    # Closed without a decision — its claim was sent back, rejected, or another exception on it
+    # was rejected (which rejects the whole claim), so there's nothing left to approve.
+    CANCELLED = "CANCELLED"
 
 
 class NotificationCategory(str, enum.Enum):
@@ -100,6 +103,11 @@ class ExceptionRequest(Base):
     # it is the union of each type's required-approver roles (see _merge_exception_chains).
     exception_types: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     description: Mapped[str | None] = mapped_column(Text)
+    # Claim-sourced requests only: which expense this was raised for and its amount at submit.
+    # An approved request is reused on resubmission (after a send-back) only while that
+    # expense's amount is unchanged — otherwise the employee is asked for a fresh reason.
+    expense_category_name: Mapped[str | None] = mapped_column(String(128))
+    claimed_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     status: Mapped[str] = mapped_column(String(32), nullable=False, default=ExceptionRequestStatus.PENDING.value)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime)
     decided_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))

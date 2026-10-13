@@ -760,6 +760,9 @@ async def list_exception_requests_log(
                 "requested_on": exc.created_at,
                 "decided_by": decided_users.get(exc.decided_by_user_id) if exc.decided_by_user_id else None,
                 "description": exc.description,
+                "expense_category_name": exc.expense_category_name,
+                "claimed_amount": exc.claimed_amount,
+                "decision_comment": exc.decision_comment,
                 "required_approvers": [a.required_role for a in approvals],
                 "decisions": [
                     {
