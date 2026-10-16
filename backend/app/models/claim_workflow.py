@@ -53,6 +53,10 @@ class ClaimApprovalStage(Base):
     required_role: Mapped[str | None] = mapped_column(String(64), index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default=ClaimApprovalStageStatus.PENDING.value)
     sla_deadline_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # SLA bookkeeping (see app.workers.sla_monitor): when the approver was last emailed about
+    # this stage (assignment or 4-hourly reminder), and when its SLA ran out.
+    last_notified_at: Mapped[datetime | None] = mapped_column(DateTime)
+    sla_breached_at: Mapped[datetime | None] = mapped_column(DateTime)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime)
     decided_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     comment: Mapped[str | None] = mapped_column(Text)
@@ -124,6 +128,10 @@ class ExceptionApproval(Base):
     )
     required_role: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default=ExceptionRequestStatus.PENDING.value)
+    # Same SLA bookkeeping as ClaimApprovalStage — set when this step becomes the active one.
+    sla_deadline_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_notified_at: Mapped[datetime | None] = mapped_column(DateTime)
+    sla_breached_at: Mapped[datetime | None] = mapped_column(DateTime)
     acted_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     acted_at: Mapped[datetime | None] = mapped_column(DateTime)
     comment: Mapped[str | None] = mapped_column(Text)

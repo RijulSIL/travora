@@ -157,10 +157,16 @@ class DeskQueueItemOut(BaseModel):
     request: TravelRequestOut
     employee_display_name: str
     impact_level_code: str
+    # Approver queue only: earlier stages whose approver missed their SLA (request passed on).
+    sla_passed_over: list[str] = Field(default_factory=list)
 
 
 class TravelRejectIn(BaseModel):
     reason: str = Field(..., min_length=1, max_length=2000)
+
+
+class TravelApproveIn(BaseModel):
+    comment: str | None = Field(default=None, max_length=2000)
 
 
 class EntitlementNoteOut(BaseModel):

@@ -26,13 +26,14 @@ export const reimbursementApi = {
     api.get('travel-requests/city-suggestions', { params: { q, limit } }),
   travelDeskQueue: () => api.get('travel-requests/desk'),
   travelDeskAll: (params) => api.get('travel-requests/desk/all', { params }),
-  travelApprove: (id) => api.post(`travel-requests/${id}/approve`, {}),
+  travelApprove: (id, payload) => api.post(`travel-requests/${id}/approve`, payload ?? {}),
   travelReject: (id, payload) => api.post(`travel-requests/${id}/reject`, payload),
   travelRequestApprovalChain: (id) => api.get(`travel-requests/${id}/approval-chain`),
   travelUploadTicket: (id, formData) =>
     api.post(`travel-requests/${id}/upload-ticket`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     }),
+  travelTicketDetails: (ticketId) => api.get(`travel-requests/tickets/${ticketId}`),
   travelTicketFileBlob: (ticketId) =>
     api.get(`travel-requests/tickets/${ticketId}/file`, { responseType: 'blob' }),
   travelUploadSupportingDocument: (id, formData) =>
@@ -66,6 +67,21 @@ export const reimbursementApi = {
   submitClaim: (claimId, payload) => api.post(`claims/${claimId}/submit`, payload ?? { exceptions: [] }),
   claims: (params) => api.get('claims', { params }),
   claimDetail: (claimId) => api.get(`claims/${claimId}`),
+  claimRelocationEvidenceBlob: (claimId) =>
+    api.get(`claims/${claimId}/relocation-evidence`, { responseType: 'blob' }),
+
+  // Relocation approvals (Travel Claim → trip purpose Relocation; approvers in Pending Approvals)
+  relocationMine: () => api.get('relocation/mine'),
+  createRelocationRequest: (payload) => api.post('relocation/requests', payload),
+  uploadRelocationPriorApproval: (formData) =>
+    api.post('relocation/prior-approvals', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }),
+  relocationPending: () => api.get('relocation/pending'),
+  approveRelocation: (requestId, payload) => api.post(`relocation/requests/${requestId}/approve`, payload ?? {}),
+  rejectRelocation: (requestId, payload) => api.post(`relocation/requests/${requestId}/reject`, payload),
+  relocationEvidenceBlob: (requestId) =>
+    api.get(`relocation/requests/${requestId}/evidence`, { responseType: 'blob' }),
   claimTimeline: (claimId) => api.get(`claims/${claimId}/timeline`),
   pendingApprovals: () => api.get('claims/pending-approvals'),
   approvalChain: (claimId) => api.get(`claims/${claimId}/approval-chain`),
@@ -79,6 +95,8 @@ export const reimbursementApi = {
   managerAnalytics: () => api.get('reports/manager/team-spend'),
 
   gstSummary: (params) => api.get('finance/gst-summary', { params }),
+  // Departments, invoice categories and levels for the report filters (anyone who can view reports).
+  reportFilterOptions: () => api.get('finance/filter-options'),
   spendByCategory: (params) => api.get('finance/spend-by-category', { params }),
   policyViolations: (params) => api.get('reports/policy-violations', { params }),
   exportGstr2b: (params) =>

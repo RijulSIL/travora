@@ -1,16 +1,25 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Link } from 'react-router-dom';
-import {
-  Plus, Plane, Train, Bus, FileText, ArrowRight,
-  Clock, Info, ShieldAlert, ArrowUpRight,
-  X, ChevronDown, ChevronUp, GitBranch, Paperclip,
-  ArrowLeftRight, Briefcase, CalendarDays, CheckCircle2, ConciergeBell, Hash, MessageSquare, Target
-} from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { ArrowLeftRight, ChevronDown, Clock, Plus, Send, ShieldAlert, Ticket, X } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 
+import { RELOCATION_PURPOSE } from '../../components/claims/ClaimRelocationSteps';
 import TicketPreviewDrawer from '../../components/ui/TicketPreviewDrawer';
-import TravelRequestProgress from '../../components/travel/TravelRequestProgress';
+import { EntitlementChips, TravelRequestDetail, TravelRequestRow, TripRow } from '../../components/travel/TravelRequestList';
+import { describeRequest } from '../../components/travel/travelRequestView';
+import {
+  CapsPanel,
+  EYEBROW,
+  FIELD,
+  FlightNote,
+  LABEL,
+  MODES,
+  PolicyChips,
+  RouteLine,
+  SegButtons,
+} from '../../components/travel/TravelRequestFormParts';
+import { addWorkingDays, dayOf, daysBetween, shortDate, today, weekdayDate } from '../../components/home/HomeParts';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import Pagination from '../../components/ui/Pagination';
 import SubmissionAnimation from '../../components/ui/SubmissionAnimation';
@@ -20,37 +29,8 @@ import { usePagination } from '../../hooks/usePagination';
 import useToast from '../../hooks/useToast';
 import { reimbursementApi } from '../../services/reimbursementApi';
 import { claimNewPath } from '../../utils/claimRoutes';
-import { formatCurrency } from '../../utils/formatters';
 import { required } from '../../utils/validators';
 import useBodyScrollLock from '../../hooks/useBodyScrollLock';
-
-function ModeIcon({ mode, className }) {
-  if (mode === 'FLIGHT') return <Plane className={className} size={15} />;
-  if (mode === 'TRAIN') return <Train className={className} size={15} />;
-  if (mode === 'BUS') return <Bus className={className} size={15} />;
-  return <FileText className={className} size={15} />;
-}
-
-function getStatusDetails(status) {
-  switch (status) {
-    case 'BOOKED':
-      return { label: 'Booked', bg: 'bg-emerald-100 text-emerald-800' };
-    case 'PARTIALLY_BOOKED':
-      return { label: 'Partially Booked', bg: 'bg-sky-100 text-sky-800' };
-    case 'APPROVED':
-      return { label: 'Approved', bg: 'bg-brand/10 text-brand' };
-    case 'PENDING':
-      return { label: 'Pending', bg: 'bg-amber-100 text-amber-800' };
-    case 'PENDING_EXCEPTION':
-      return { label: 'Under Review (Exception)', bg: 'bg-orange-100 text-orange-800' };
-    case 'REJECTED':
-      return { label: 'Rejected', bg: 'bg-rose-100 text-rose-800' };
-    case 'CANCELLED':
-      return { label: 'Cancelled', bg: 'bg-slate-100 text-slate-500' };
-    default:
-      return { label: status, bg: 'bg-slate-100 text-slate-600' };
-  }
-}
 
 function emptyRequestForm() {
   return {
@@ -70,114 +50,42 @@ function emptyRequestForm() {
   };
 }
 
-const TRIP_TYPE_LABELS = { ONE_WAY: 'One Way', ROUND_TRIP: 'Round Trip', MULTI_CITY: 'Multi-City' };
-
-function DetailTile({ icon: Icon, label, value }) {
-  return (
-    <div className="rounded-md bg-slate-50 px-3 py-2">
-      <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-slate-400">
-        <Icon size={11} className="shrink-0" />
-        {label}
-      </div>
-      <div className="mt-0.5 break-words text-xs font-semibold text-slate-800">{value}</div>
-    </div>
-  );
-}
-
-function DocLink({ doc, onOpen }) {
-  return (
-    <button
-      type="button"
-      className="flex max-w-full items-center gap-1.5 text-left text-[11px] font-semibold text-brand hover:underline"
-      onClick={() => onOpen(doc)}
-    >
-      <Paperclip size={11} className="shrink-0" />
-      <span className="truncate">{doc.description || doc.original_filename}</span>
-    </button>
-  );
-}
-
-function NoteBlock({ icon: Icon, label, text, tone = 'plain' }) {
-  const toneClass = tone === 'warn' ? 'border-orange-100 bg-orange-50/40' : 'border-slate-100';
-  return (
-    <div className={`flex gap-2 rounded-lg border px-3 py-2.5 ${toneClass}`}>
-      <Icon size={13} className="mt-0.5 shrink-0 text-slate-400" />
-      <div className="min-w-0">
-        <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">{label}</div>
-        <p className="mt-0.5 whitespace-pre-wrap break-words text-xs text-slate-700">{text}</p>
-      </div>
-    </div>
-  );
-}
-
 /** "PRJ-1024 — Plant expansion"; just the value when the admin gave no separate description. */
 function optionText(option) {
   return option.label && option.label !== option.value ? `${option.value} — ${option.label}` : option.value;
 }
 
-const LIMIT_FIELDS = [
-  { key: 'hotel', label: 'Hotel' },
-  { key: 'food', label: 'Food' },
-  { key: 'incidental', label: 'Incidentals' },
-  { key: 'day_visit', label: 'Day Visit' },
+const TRIP_TYPES = [
+  { value: 'ONE_WAY', label: 'One way' },
+  { value: 'ROUND_TRIP', label: 'Round trip' },
+  { value: 'MULTI_CITY', label: 'Multi-city' },
+];
+const TRAVEL_TYPES = [
+  { value: 'NON_PROJECT', label: 'Non-project' },
+  { value: 'PROJECT', label: 'Project' },
 ];
 
-/** Travel-policy expense caps at each destination — shown when the traveler isn't asking the
- * company to book anything extra, i.e. they'll be paying for these things themselves. */
-function ExpenseLimitsPanel({ limits, loading }) {
-  if (!loading && limits.length === 0) return null;
-  return (
-    <div className="space-y-2.5 rounded-lg border border-slate-200 bg-slate-50 p-3">
-      <div className="flex items-start gap-2 text-[11px] font-semibold text-slate-600">
-        <Info size={14} className="text-brand shrink-0 mt-0.5" />
-        <span>Expense limits at your destination under the travel policy</span>
-      </div>
-      {loading && limits.length === 0 ? (
-        <div className="flex items-center gap-1.5 text-[11px] font-bold text-slate-400">
-          <Clock className="animate-spin" size={12} /> Checking limits...
-        </div>
-      ) : null}
-      {limits.map((entry) => (
-        <div key={entry.city} className="rounded-lg border border-slate-200 bg-white p-3">
-          <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] font-bold text-slate-800">
-            <span>{entry.city}</span>
-            <span className="rounded-sm bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600">
-              {entry.city_group_name || `Group ${entry.city_group}`}
-            </span>
-            <span className="font-medium text-slate-400">· Impact level {entry.impact_level}</span>
-          </div>
-          {entry.has_limits ? (
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-[11px] sm:grid-cols-4">
-              {LIMIT_FIELDS.map(({ key, label }) => (
-                <div key={key}>
-                  <dt className="font-semibold text-slate-400">{label}</dt>
-                  <dd className="mt-0.5 font-bold text-slate-700">
-                    {entry[`${key}_cap`] != null ? formatCurrency(entry[`${key}_cap`]) : 'No limit'}
-                    {entry[`${key}_cap`] != null ? (
-                      <span className="ml-1 text-[9px] font-medium text-slate-400">
-                        {entry[`${key}_is_hard_block`] ? 'hard limit' : 'soft limit'}
-                      </span>
-                    ) : null}
-                  </dd>
-                </div>
-              ))}
-            </dl>
-          ) : (
-            <p className="text-[11px] italic text-slate-400">No expense limits are configured for this city under the current policy.</p>
-          )}
-        </div>
-      ))}
-    </div>
-  );
+function FieldError({ children }) {
+  return children ? <p className="mt-1 text-[11px] font-bold text-rose-600">{children}</p> : null;
+}
+
+/** "Wed, 14 Oct" */
+function formDate(value) {
+  return value ? new Date(`${value}T00:00:00`).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' }) : '';
 }
 
 export default function TravelRequestsPage() {
   useSetPageTitle('Travel Requests');
   const profile = useAuthStore((s) => s.profile);
   const { showToast } = useToast();
-  const [tab, setTab] = useState('requests');
+  const navigate = useNavigate();
+  // 'requests' or 'trips' (My trips), and which requests tab is showing.
+  const [view, setView] = useState('requests');
+  const [bucket, setBucket] = useState('upcoming');
   const [rows, setRows] = useState([]);
   const [trips, setTrips] = useState([]);
+  const [chains, setChains] = useState({});
+  const [unclaimedIds, setUnclaimedIds] = useState(() => new Set());
   const [loading, setLoading] = useState(true);
   const [entitlement, setEntitlement] = useState(null);
   const [travelOptions, setTravelOptions] = useState({ project_codes: [], trip_purposes: [] });
@@ -238,9 +146,16 @@ export default function TravelRequestsPage() {
     });
   }
 
-  function openTicketMenu(requestId, buttonEl) {
+  function openTicketMenu(requestId, buttonEl, itemCount = 2) {
     const rect = buttonEl.getBoundingClientRect();
-    setTicketMenuPos({ top: rect.bottom + 6, right: window.innerWidth - rect.right });
+    // Opens below the button, or above it when there isn't room (e.g. the last row on screen).
+    const menuHeight = itemCount * 36 + 14;
+    const below = rect.bottom + 6 + menuHeight <= window.innerHeight;
+    setTicketMenuPos(
+      below
+        ? { top: rect.bottom + 6, right: window.innerWidth - rect.right }
+        : { bottom: window.innerHeight - rect.top + 6, right: window.innerWidth - rect.right },
+    );
     setOpenTicketMenuId(requestId);
   }
 
@@ -271,24 +186,45 @@ export default function TravelRequestsPage() {
       .catch(() => setEntitlement(null));
   }, []);
 
+  // The policy in force (level, flights, train classes) for the form's header chips and the
+  // "flights aren't in your policy" note. Read on open, like the option lists below.
+  const [policyLimits, setPolicyLimits] = useState(null);
+  useEffect(() => {
+    if (!modalOpen) return;
+    reimbursementApi
+      .myPolicyLimits()
+      .then((r) => setPolicyLimits(r.data || null))
+      .catch(() => setPolicyLimits(null));
+  }, [modalOpen]);
+
   // Admins manage these lists, so re-read them every time the form opens rather than caching
   // for the whole session.
   useEffect(() => {
     if (!modalOpen) return;
     reimbursementApi
       .travelOptions()
-      .then((r) => setTravelOptions(r.data || { project_codes: [], trip_purposes: [] }))
+      .then((r) => {
+        const data = r.data || { project_codes: [], trip_purposes: [] };
+        // "Relocation" is a Travel Claim purpose only (it starts the relocation claim flow) —
+        // the server refuses it on a travel request.
+        setTravelOptions({
+          ...data,
+          trip_purposes: (data.trip_purposes || []).filter((o) => o.value !== RELOCATION_PURPOSE),
+        });
+      })
       .catch(() => setTravelOptions({ project_codes: [], trip_purposes: [] }));
   }, [modalOpen]);
 
   // Destinations the traveler's policy limits are shown for: the To City of a one-way / round
-  // trip, or each distinct leg destination (with that leg's date) for a multi-city trip.
+  // trip, or each distinct leg destination (with that leg's date) for a multi-city trip — except
+  // the city the trip starts from, where the last leg usually ends (home isn't a stop).
   const limitTargets = useMemo(() => {
     const { trip_type: tripType, to_city: toCity, travel_date: travelDate, legs } = form.values;
     const raw = tripType === 'MULTI_CITY'
       ? legs.map((l) => ({ city: l.to_city, date: l.travel_date }))
       : [{ city: toCity, date: travelDate }];
-    const seen = new Set();
+    const home = tripType === 'MULTI_CITY' ? (legs[0]?.from_city || '').trim().toLowerCase() : '';
+    const seen = new Set(home ? [home] : []);
     return raw
       .map((t) => ({ city: (t.city || '').trim(), date: t.date || '' }))
       .filter((t) => {
@@ -333,30 +269,44 @@ export default function TravelRequestsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showExpenseLimits, limitTargetsKey]);
 
+  // Requests, each one's approval chain (who it's waiting on), the booked trips, and which of
+  // those trips aren't on a claim yet — all in one go, reloaded after a create or cancel.
+  const loadAll = useCallback(async () => {
+    const [my, allTrips, unclaimed] = await Promise.all([
+      reimbursementApi.travelRequestsMy(),
+      reimbursementApi.bookingTripsMy().catch(() => ({ data: [] })),
+      reimbursementApi.bookingTripsMy({ unlinked_only: true }).catch(() => ({ data: [] })),
+    ]);
+    const list = my.data || [];
+    setRows(list);
+    setTrips(allTrips.data || []);
+    setUnclaimedIds(new Set((unclaimed.data || []).map((t) => t.id)));
+    // The list shows straight away; each request's "waiting on …" fills in as its chain arrives.
+    list.forEach(({ request }) => {
+      reimbursementApi
+        .travelRequestApprovalChain(request.id)
+        .then((r) => r.data)
+        .catch(() => null)
+        .then((chain) => setChains((prev) => ({ ...prev, [request.id]: chain })));
+    });
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
-    async function load() {
+    (async () => {
       setLoading(true);
       try {
-        if (cancelled) return;
-        if (tab === 'requests') {
-          const my = await reimbursementApi.travelRequestsMy();
-          if (!cancelled) setRows(my.data || []);
-        } else {
-          const tm = await reimbursementApi.bookingTripsMy();
-          if (!cancelled) setTrips(tm.data || []);
-        }
+        await loadAll();
       } catch (e) {
         if (!cancelled) showToast(e.response?.data?.detail || e.message || 'Failed to load travel data', 'error');
       } finally {
         if (!cancelled) setLoading(false);
       }
-    }
-    load();
+    })();
     return () => {
       cancelled = true;
     };
-  }, [tab, showToast]);
+  }, [loadAll, showToast]);
 
   useEffect(() => {
     let cancelled = false;
@@ -384,9 +334,58 @@ export default function TravelRequestsPage() {
     }
   }, [profile, form]);
 
-  const tripIdsCsv = useMemo(() => (trips || []).filter((x) => x?.id).map((t) => t.id).join(','), [trips]);
-  const requestsPagination = usePagination(rows);
+  // How each request reads (tab, status in plain words, claim window), then the current tab's rows.
+  const viewOptions = useMemo(
+    () => ({
+      trips,
+      unclaimedIds,
+      claimDays: profile?.workflow_submission_max_working_days || 5,
+      claimMode: profile?.workflow_submission_deadline_mode || 'hard_block',
+    }),
+    [trips, unclaimedIds, profile?.workflow_submission_max_working_days, profile?.workflow_submission_deadline_mode],
+  );
+  const described = useMemo(
+    () => (rows || []).map(({ request }) => ({ request, view: describeRequest(request, chains[request.id], viewOptions) })),
+    [rows, chains, viewOptions],
+  );
+  const bucketCounts = useMemo(() => {
+    const counts = { upcoming: 0, past: 0, cancelled: 0, all: described.length };
+    described.forEach(({ view }) => {
+      counts[view.bucket] += 1;
+    });
+    return counts;
+  }, [described]);
+  const staleCount = described.filter(({ view }) => view.stale).length;
+  const visibleRequests = useMemo(() => {
+    const list = described.filter(({ view }) => bucket === 'all' || view.bucket === bucket);
+    // Upcoming: soonest first. Everything else: most recent trip first.
+    const key = ({ view }) => (view.start ? view.start.getTime() : 0);
+    return list.sort((a, b) => (bucket === 'upcoming' ? key(a) - key(b) : key(b) - key(a)));
+  }, [described, bucket]);
+  const requestsPagination = usePagination(visibleRequests);
   const tripsPagination = usePagination(trips);
+
+  /** Claim status of one booked trip, grouped with the other trips from the same request. */
+  const tripClaim = (trip) => {
+    if (!unclaimedIds.has(trip.id)) return { claimed: true, open: false, text: '' };
+    const group = trips.filter((t) => t.travel_request_id && t.travel_request_id === trip.travel_request_id);
+    const ends = (group.length ? group : [trip]).map((t) => dayOf(t.return_date) || dayOf(t.travel_date)).filter(Boolean);
+    const end = ends.sort((a, b) => b - a)[0];
+    if (!end) return { claimed: false, open: true, text: '', ids: [trip.id] };
+    const deadline = addWorkingDays(end, viewOptions.claimDays);
+    const now = today();
+    const left = daysBetween(now, deadline);
+    const ids = (group.length ? group : [trip]).filter((t) => unclaimedIds.has(t.id)).map((t) => t.id);
+    if (end >= now) return { claimed: false, open: false, text: 'Claim after you travel', ids };
+    if (now > deadline && viewOptions.claimMode === 'hard_block') return { claimed: false, open: false, text: `Claim window closed ${shortDate(deadline)}`, ids };
+    return {
+      claimed: false,
+      open: true,
+      ids,
+      text: now > deadline ? `Claim window closed ${shortDate(deadline)} · late claim` : `Claim by ${weekdayDate(deadline)} · ${left === 0 ? 'today' : left === 1 ? 'tomorrow' : `${left} days left`}`,
+    };
+  };
+  const startClaim = (ids) => navigate(claimNewPath('TRAVEL', { tripIds: ids.join(',') }));
 
   const [policyError, setPolicyError] = useState(null);
   const [exceptionReason, setExceptionReason] = useState('');
@@ -440,8 +439,7 @@ export default function TravelRequestsPage() {
       setModalOpen(false);
       setSubmissionState(s => ({ ...s, status: 'success' }));
 
-      const my = await reimbursementApi.travelRequestsMy();
-      setRows(my.data || []);
+      await loadAll();
 
       form.setValues(emptyRequestForm());
       setBookingItemDraft('');
@@ -486,8 +484,7 @@ export default function TravelRequestsPage() {
       setExceptionReason('');
       setModalOpen(false);
 
-      const my = await reimbursementApi.travelRequestsMy();
-      setRows(my.data || []);
+      await loadAll();
 
       form.setValues(emptyRequestForm());
       setBookingItemDraft('');
@@ -499,12 +496,55 @@ export default function TravelRequestsPage() {
     }
   }
 
+  function closeRequestModal() {
+    setModalOpen(false);
+    setPolicyError(null);
+    setExceptionReason('');
+  }
+
+  function updateLeg(index, patch) {
+    form.handleChange('legs', form.values.legs.map((leg, i) => (i === index ? { ...leg, ...patch } : leg)));
+  }
+
+  const isMultiCity = form.values.trip_type === 'MULTI_CITY';
+  // Which legs are flights (1-based), or [0] for a one-way / round trip by flight.
+  const flightLegs = isMultiCity
+    ? form.values.legs.map((leg, i) => (leg.travel_mode === 'FLIGHT' ? i + 1 : 0)).filter(Boolean)
+    : form.values.travel_mode === 'FLIGHT'
+      ? [0]
+      : [];
+  const routeSummary = (() => {
+    const v = form.values;
+    if (isMultiCity) {
+      const legs = v.legs;
+      const cities = [legs[0]?.from_city, ...legs.map((l) => l.to_city)].map((c) => c || '…');
+      const dates = legs.map((l) => l.travel_date).filter(Boolean).sort();
+      return (
+        <>
+          <b className="text-ink">{cities.join(' → ')}</b> · {legs.length} leg{legs.length === 1 ? '' : 's'}
+          {dates.length ? ` · ${formDate(dates[0])}${dates[dates.length - 1] !== dates[0] ? ` – ${formDate(dates[dates.length - 1])}` : ''}` : ''}
+        </>
+      );
+    }
+    if (!v.from_city && !v.to_city) return null;
+    const mode = MODES.find((m) => m.value === v.travel_mode)?.label;
+    return (
+      <>
+        <b className="text-ink">
+          {v.from_city || '…'} {v.trip_type === 'ROUND_TRIP' ? '⇄' : '→'} {v.to_city || '…'}
+        </b>
+        {mode ? ` · ${mode}` : ''}
+        {v.travel_date ? ` · ${formDate(v.travel_date)}` : ''}
+        {v.trip_type === 'ROUND_TRIP' && v.return_date ? ` – ${formDate(v.return_date)}` : ''}
+      </>
+    );
+  })();
+
   async function onCancel(id) {
     try {
       await reimbursementApi.travelRequestDelete(id);
       showToast('Request cancelled', 'success');
-      const my = await reimbursementApi.travelRequestsMy();
-      setRows(my.data || []);
+      await loadAll();
     } catch (e) {
       showToast(
         typeof e.response?.data?.detail === 'string' ? e.response.data.detail : e.message || 'Cancel failed',
@@ -524,6 +564,7 @@ export default function TravelRequestsPage() {
       const filename = `${trip.reference_id || 'trip'}-${tid}.pdf`;
       setPreview({
         open: true,
+        ticketId: tid,
         blob: resp.data,
         name: filename,
         type: resp.headers['content-type'] || '',
@@ -557,6 +598,7 @@ export default function TravelRequestsPage() {
       const ctype = ticket.content_type || resp.headers['content-type'] || '';
       setPreview({
         open: true,
+        ticketId: ticket.id,
         blob: resp.data,
         name: filename,
         type: ctype,
@@ -568,465 +610,267 @@ export default function TravelRequestsPage() {
   }
 
   return (
-    <section className="space-y-6">
-      {/* Header Panel */}
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between border-b border-slate-200 pb-5 gap-4">
+    <section className="flex flex-col gap-3.5">
+      <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold text-slate-800">Travel Bookings & Requests</h1>
-          <p className="mt-1 text-xs text-slate-500">
-            Submit itinerary requests to the Travel Desk and monitor ticket status.
-          </p>
+          <h1 className="text-xl font-extrabold text-ink">Travel Requests</h1>
+          <p className="mt-0.5 text-[13px] text-slate-500">Ask for travel here. Once it&apos;s approved, the travel desk books your tickets.</p>
         </div>
+        <button
+          type="button"
+          className="inline-flex h-9 items-center justify-center gap-1.5 rounded-[9px] bg-brand px-3.5 text-[12.5px] font-bold text-white hover:bg-brand/90"
+          onClick={() => setModalOpen(true)}
+        >
+          <Plus size={15} /> New request
+        </button>
+      </div>
 
-        <div className="flex flex-wrap items-center gap-3">
-          {/* Tab Selection */}
-          <div className="flex items-center gap-1 bg-slate-100 border border-slate-200 rounded-xl p-1 shrink-0">
-            <button
-              type="button"
-              className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all duration-200 ${tab === 'requests' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'
-                }`}
-              onClick={() => setTab('requests')}
-            >
-              My Requests
-            </button>
-            <button
-              type="button"
-              className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all duration-200 ${tab === 'trips' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'
-                }`}
-              onClick={() => setTab('trips')}
-            >
-              My Trips
-            </button>
+      {entitlement?.text ? <EntitlementChips text={entitlement.text} /> : null}
+
+      <div className="flex flex-wrap items-end justify-between gap-2.5 border-b border-slate-200">
+        {view === 'requests' ? (
+          <div className="flex flex-wrap gap-0.5" role="tablist" aria-label="Show requests">
+            {[
+              ['upcoming', 'Upcoming'],
+              ['past', 'Past'],
+              ['cancelled', 'Cancelled & rejected'],
+              ['all', 'All'],
+            ].map(([key, label]) => {
+              const warn = key === 'past' && staleCount > 0;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  role="tab"
+                  aria-selected={bucket === key}
+                  onClick={() => setBucket(key)}
+                  title={warn ? `${staleCount} past trip${staleCount > 1 ? 's' : ''} still waiting` : undefined}
+                  className={`-mb-px inline-flex items-center gap-1.5 border-b-2 px-3 py-[9px] text-[12.5px] font-bold ${
+                    bucket === key ? 'border-brand text-brand' : 'border-transparent text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  {label}
+                  <span
+                    className={`rounded-full px-[7px] py-px text-[10.5px] ${
+                      warn ? 'bg-amber-50 text-amber-700' : bucket === key ? 'bg-brand/10 text-brand' : 'bg-slate-100 text-slate-500'
+                    }`}
+                  >
+                    {bucketCounts[key]}
+                  </span>
+                </button>
+              );
+            })}
           </div>
-
-          <button
-            type="button"
-            className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg bg-brand text-xs font-bold text-white hover:bg-brand/90 transition-all duration-200 shadow-md px-4"
-            onClick={() => setModalOpen(true)}
-          >
-            <Plus size={14} /> New Request
-          </button>
-
-          {tab === 'trips' && tripIdsCsv ? (
-            <Link
-              className="inline-flex h-9 items-center justify-center gap-1 px-4 rounded-lg border border-slate-250 hover:bg-slate-50 text-xs font-bold text-slate-700 transition-all duration-200"
-              to={`${claimNewPath('TRAVEL')}?tripIds=${encodeURIComponent(tripIdsCsv)}`}
+        ) : (
+          <div className="flex items-center gap-3 pb-2.5 text-[12.5px] font-bold text-slate-700">
+            {trips.length} booked trip{trips.length === 1 ? '' : 's'}
+            {trips.filter((t) => tripClaim(t).open).length ? (
+              <span className="font-bold text-amber-700">{trips.filter((t) => tripClaim(t).open).length} still to claim</span>
+            ) : null}
+          </div>
+        )}
+        <div className="mb-1.5 inline-flex rounded-[10px] border border-slate-200 bg-white p-[3px]" role="group" aria-label="Show">
+          {[
+            ['requests', 'My requests'],
+            ['trips', 'My trips'],
+          ].map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              aria-pressed={view === key}
+              onClick={() => setView(key)}
+              className={`rounded-[7px] px-3 py-[5px] text-xs font-bold ${view === key ? 'bg-ink text-white' : 'text-slate-500 hover:text-slate-700'}`}
             >
-              Link to Claim <ArrowUpRight size={13} />
-            </Link>
-          ) : null}
+              {label}
+            </button>
+          ))}
         </div>
       </div>
 
-      {entitlement?.text ? (
-        <div className="flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-600 shadow-sm">
-          <Info size={16} className="text-brand shrink-0 mt-0.5" />
-          <div className="font-medium">{entitlement.text}</div>
-        </div>
-      ) : null}
-
       {loading ? (
-        <div className="flex items-center gap-2 text-slate-500 text-xs font-bold">
-          <Clock className="animate-spin text-slate-400" size={15} /> Loading data...
+        <div className="flex items-center gap-2 text-xs font-bold text-slate-500">
+          <Clock className="animate-spin text-slate-400" size={15} /> Loading your travel…
         </div>
       ) : null}
 
-      {/* Tab: Requests Table */}
-      {!loading && tab === 'requests' ? (
-        <div className="panel rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs border-collapse min-w-[720px]">
-              <thead>
-                <tr className="border-b border-slate-200 bg-slate-100/60 text-center text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                  <th className="w-8 px-2 py-3" />
-                  <th className="px-5 py-3 whitespace-nowrap">S. No</th>
-                  <th className="px-5 py-3">Travel Date</th>
-                  <th className="px-5 py-3">Route</th>
-                  <th className="px-5 py-3">Mode</th>
-                  <th className="px-5 py-3">Status</th>
-                  <th className="px-5 py-3">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-150 font-medium text-slate-700">
-                {(rows || []).length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="px-5 py-8 text-center text-slate-400 italic">
-                      No travel requests created yet.
-                    </td>
-                  </tr>
-                ) : (
-                  requestsPagination.pageItems.map(({ request }, index) => {
-                    const statusDetails = getStatusDetails(request.status);
-                    const isExpanded = expandedIds.has(request.id);
-                    const ticketedSegments = (request.segments || []).filter((s) => s.ticket);
-                    const isTicketMenuOpen = openTicketMenuId === request.id;
-                    // Docs uploaded before per-item linking existed (booking_item_id null) still show, just ungrouped.
-                    const unlinkedSupportingDocuments = (request.supporting_documents || []).filter((doc) => !doc.booking_item_id);
-                    const provenItemIds = new Set((request.supporting_documents || []).map((doc) => doc.booking_item_id).filter(Boolean));
-                    const bookedItemCount = (request.booking_items || []).filter((item) => provenItemIds.has(item.id)).length;
-
-                    return (
-                      <Fragment key={request.id}>
-                        <tr className="hover:bg-slate-50/50 transition-colors">
-                          <td className="px-2 py-3">
-                            <button
-                              type="button"
-                              className="flex h-6 w-6 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors"
-                              onClick={() => toggleExpand(request.id)}
-                              aria-label={isExpanded ? 'Hide approval progress' : 'Show approval progress'}
-                              title={isExpanded ? 'Hide approval progress' : 'Show approval progress'}
-                            >
-                              {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                            </button>
-                          </td>
-                          <td className="px-5 py-3 text-center text-slate-500">
-                            {requestsPagination.startIndex + index + 1}
-                          </td>
-                          <td className="whitespace-nowrap px-5 py-3 text-center">
-                            {request.trip_type === 'MULTI_CITY' && request.legs?.length > 0 ? request.legs[0].travel_date : request.travel_date}
-                          </td>
-                          <td className="px-5 py-3 text-center">
-                            {request.trip_type === 'MULTI_CITY' && request.legs && request.legs.length > 0 ? (
-                              <div className="flex flex-col items-center gap-1">
-                                {request.legs.map((leg, i) => (
-                                  <div key={i} className="flex items-center gap-1 font-bold text-slate-800 text-[11px]">
-                                    <ModeIcon mode={leg.travel_mode || request.travel_mode} className="text-slate-400" />
-                                    <span>{leg.from_city}</span>
-                                    <ArrowRight size={8} className="text-slate-400" />
-                                    <span>{leg.to_city}</span>
-                                    <span className="text-slate-400 font-normal ml-1">({leg.travel_date})</span>
-                                  </div>
-                                ))}
-                                <div className="mt-0.5"><span className="inline-flex items-center rounded-sm bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600">Multi City</span></div>
-                              </div>
-                            ) : (
-                              <div className="flex items-center justify-center gap-1 font-bold text-slate-800">
-                                <span>{request.from_city}</span>
-                                <ArrowRight size={10} className="text-slate-400" />
-                                <span>{request.to_city}</span>
-                                {request.trip_type === 'ROUND_TRIP' && (
-                                  <span className="ml-1 inline-flex items-center rounded-sm bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600">Round Trip</span>
-                                )}
-                              </div>
-                            )}
-                          </td>
-                          <td className="px-5 py-3 text-center">
-                            {request.trip_type === 'MULTI_CITY' && request.legs?.length > 0 ? (
-                              <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
-                                {[...new Set(request.legs.map((leg) => leg.travel_mode || request.travel_mode))].map((m) => (
-                                  <span key={m} className="flex items-center gap-1">
-                                    <ModeIcon mode={m} className="text-slate-400" />
-                                    <span>{m}</span>
-                                  </span>
-                                ))}
-                              </div>
-                            ) : (
-                              <div className="flex items-center justify-center gap-1.5">
-                                <ModeIcon mode={request.travel_mode} className="text-slate-400" />
-                                <span>{request.travel_mode}</span>
-                              </div>
-                            )}
-                          </td>
-                          <td className="whitespace-nowrap px-5 py-3 text-center">
-                            <div className="flex items-center justify-center gap-1.5">
-                              <span className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-[9px] font-bold tracking-tight uppercase ${statusDetails.bg}`}>
-                                {statusDetails.label}
-                              </span>
-                              {request.exception ? (
-                                <GitBranch size={11} className="text-orange-500" aria-label="Has policy exception" />
-                              ) : null}
-                            </div>
-                          </td>
-                          <td className="whitespace-nowrap px-5 py-3 text-center">
-                            <div className="flex justify-center gap-2">
-                              {ticketedSegments.length === 1 ? (
-                                <button
-                                  type="button"
-                                  className="inline-flex h-7 items-center justify-center rounded-lg border border-slate-200 hover:bg-slate-50 text-[10px] font-bold text-slate-700 px-3 transition-all"
-                                  onClick={() => viewTicket(ticketedSegments[0].ticket, `Ticket · ${ticketedSegments[0].label}`)}
-                                >
-                                  View Ticket
-                                </button>
-                              ) : ticketedSegments.length > 1 ? (
-                                <div ref={isTicketMenuOpen ? ticketMenuTriggerRef : null}>
-                                  <button
-                                    type="button"
-                                    className="inline-flex h-7 items-center justify-center gap-1 rounded-lg border border-slate-200 hover:bg-slate-50 text-[10px] font-bold text-slate-700 px-3 transition-all"
-                                    onClick={(e) =>
-                                      isTicketMenuOpen ? setOpenTicketMenuId(null) : openTicketMenu(request.id, e.currentTarget)
-                                    }
-                                    aria-expanded={isTicketMenuOpen}
-                                  >
-                                    View Tickets
-                                    <ChevronDown size={11} className={`text-slate-400 transition-transform ${isTicketMenuOpen ? 'rotate-180' : ''}`} />
-                                  </button>
-                                  {isTicketMenuOpen && ticketMenuPos
-                                    ? createPortal(
-                                        <div
-                                          ref={ticketMenuPanelRef}
-                                          style={{ position: 'fixed', top: ticketMenuPos.top, right: ticketMenuPos.right }}
-                                          className="z-[100] w-56 rounded-lg border border-slate-200 bg-white py-1.5 text-left shadow-lg"
-                                        >
-                                          {ticketedSegments.map((seg) => (
-                                            <button
-                                              key={seg.seq}
-                                              type="button"
-                                              className="block w-full px-3 py-2 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
-                                              onClick={() => {
-                                                setOpenTicketMenuId(null);
-                                                viewTicket(seg.ticket, `Ticket · ${seg.label}`);
-                                              }}
-                                            >
-                                              {seg.label}
-                                            </button>
-                                          ))}
-                                        </div>,
-                                        document.body,
-                                      )
-                                    : null}
-                                </div>
-                              ) : null}
-                              {request.status === 'PENDING' || request.status === 'PENDING_EXCEPTION' ? (
-                                <button
-                                  type="button"
-                                  className="inline-flex h-7 items-center justify-center rounded-lg border border-rose-200 hover:bg-rose-50 text-[10px] font-bold text-rose-700 px-3 transition-all"
-                                  onClick={() => setConfirmCancelId(request.id)}
-                                >
-                                  Cancel Request
-                                </button>
-                              ) : null}
-                            </div>
-                          </td>
-                        </tr>
-                        {isExpanded ? (
-                          <tr className="bg-slate-50/60">
-                            <td colSpan={7} className="px-5 py-4 border-b border-slate-150">
-                              {/* On phones the table scrolls sideways; pin the panel to the visible width so it isn't clipped. */}
-                              <div className="panel grid w-full gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm max-md:sticky max-md:left-3 max-md:w-[calc(100vw-3.5rem)] md:grid-cols-[minmax(0,14rem)_minmax(0,1fr)] xl:grid-cols-[minmax(0,15rem)_minmax(0,1fr)_minmax(0,17rem)]">
-                                <section className="rounded-lg border border-slate-100 p-4">
-                                  <h4 className="mb-3 text-[10px] font-bold uppercase tracking-wider text-slate-400">Progress</h4>
-                                  <TravelRequestProgress request={request} />
-                                </section>
-
-                                <section className="min-w-0 space-y-4 rounded-lg border border-slate-100 p-4">
-                                  <h4 className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Trip Details</h4>
-                                  <div className="grid grid-cols-2 gap-2 xl:grid-cols-3">
-                                    <DetailTile icon={Briefcase} label="Travel Type" value={request.travel_type === 'PROJECT' ? 'Project' : 'Non-project'} />
-                                    {request.project_code ? <DetailTile icon={Hash} label="Project Code" value={request.project_code} /> : null}
-                                    {request.purpose ? <DetailTile icon={Target} label="Purpose" value={request.purpose} /> : null}
-                                    <DetailTile icon={ArrowLeftRight} label="Trip Type" value={TRIP_TYPE_LABELS[request.trip_type] || request.trip_type} />
-                                    {request.trip_type === 'ROUND_TRIP' && request.return_date ? (
-                                      <DetailTile icon={CalendarDays} label="Return Date" value={request.return_date} />
-                                    ) : null}
-                                  </div>
-
-                                  {request.needs_additional_booking ? (
-                                    <div className="rounded-lg border border-amber-200/80 bg-amber-50/50 p-3">
-                                      <div className="mb-2 flex items-center justify-between gap-2">
-                                        <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-amber-800">
-                                          <ConciergeBell size={12} /> Additional Bookings
-                                        </span>
-                                        {request.booking_items?.length ? (
-                                          <span className="text-[10px] font-bold text-amber-800">
-                                            {bookedItemCount} of {request.booking_items.length} booked
-                                          </span>
-                                        ) : null}
-                                      </div>
-                                      {request.booking_items?.length ? (
-                                        <ul className="space-y-1.5">
-                                          {request.booking_items.map((item, i) => {
-                                            const itemDocs = (request.supporting_documents || []).filter((doc) => doc.booking_item_id === item.id);
-                                            return (
-                                              <li key={item.id} className="rounded-md bg-white px-2.5 py-2 ring-1 ring-amber-100">
-                                                <div className="flex items-start justify-between gap-2">
-                                                  <span className="flex min-w-0 items-start gap-2 text-xs font-medium text-slate-700">
-                                                    <span className="mt-px flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-amber-100 text-[9px] font-bold text-amber-800">
-                                                      {i + 1}
-                                                    </span>
-                                                    <span className="break-words">{item.description}</span>
-                                                  </span>
-                                                  {itemDocs.length ? (
-                                                    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
-                                                      <CheckCircle2 size={10} /> Booked
-                                                    </span>
-                                                  ) : (
-                                                    <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">Pending</span>
-                                                  )}
-                                                </div>
-                                                {itemDocs.length ? (
-                                                  <div className="mt-1.5 space-y-1 pl-6">
-                                                    {itemDocs.map((doc) => (
-                                                      <DocLink key={doc.id} doc={doc} onOpen={viewSupportingDocument} />
-                                                    ))}
-                                                  </div>
-                                                ) : null}
-                                              </li>
-                                            );
-                                          })}
-                                        </ul>
-                                      ) : (
-                                        <p className="whitespace-pre-wrap text-xs font-medium text-slate-700">{request.additional_booking_details}</p>
-                                      )}
-                                    </div>
-                                  ) : null}
-
-                                  {unlinkedSupportingDocuments.length ? (
-                                    <div>
-                                      <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-slate-400">Documents from Travel Desk</div>
-                                      <div className="space-y-1">
-                                        {unlinkedSupportingDocuments.map((doc) => (
-                                          <DocLink key={doc.id} doc={doc} onOpen={viewSupportingDocument} />
-                                        ))}
-                                      </div>
-                                    </div>
-                                  ) : null}
-
-                                  {request.notes ? (
-                                    <NoteBlock icon={MessageSquare} label="Notes" text={request.notes} />
-                                  ) : null}
-                                  {request.exception?.description ? (
-                                    <NoteBlock icon={ShieldAlert} label="Exception Justification" text={request.exception.description} tone="warn" />
-                                  ) : null}
-                                  {request.exception?.decision_comment ? (
-                                    <NoteBlock icon={GitBranch} label="Decision Comment" text={request.exception.decision_comment} tone="warn" />
-                                  ) : null}
-                                </section>
-
-                                {(request.segments || []).length ? (
-                                  <section className="rounded-lg border border-slate-100 p-4 md:col-span-2 xl:col-span-1">
-                                    <h4 className="mb-3 text-[10px] font-bold uppercase tracking-wider text-slate-400">Itinerary</h4>
-                                    <ol className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
-                                      {request.segments.map((seg) => (
-                                        <li key={seg.seq} className="rounded-md bg-slate-50 px-3 py-2.5">
-                                          <div className="flex items-start gap-2">
-                                            <ModeIcon mode={seg.mode || request.travel_mode} className="mt-0.5 shrink-0 text-slate-400" />
-                                            <div className="min-w-0">
-                                              <div className="break-words text-xs font-semibold text-slate-800">{seg.label}</div>
-                                              <div className="mt-0.5 text-[11px] text-slate-500">{seg.travel_date}</div>
-                                            </div>
-                                          </div>
-                                          {seg.ticket ? (
-                                            <button
-                                              type="button"
-                                              className="mt-2 inline-flex max-w-full items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-700 hover:bg-emerald-200"
-                                              onClick={() => viewTicket(seg.ticket, `Ticket · ${seg.label}`)}
-                                            >
-                                              <CheckCircle2 size={10} className="shrink-0" />
-                                              <span className="truncate">
-                                                Ticketed{seg.ticket.pnr_or_booking_ref ? ` · PNR ${seg.ticket.pnr_or_booking_ref}` : ''}
-                                              </span>
-                                            </button>
-                                          ) : ['APPROVED', 'PARTIALLY_BOOKED'].includes(request.status) ? (
-                                            <span className="mt-2 inline-flex rounded-full bg-slate-200/70 px-2 py-0.5 text-[10px] font-bold text-slate-500">
-                                              Ticket pending
-                                            </span>
-                                          ) : null}
-                                        </li>
-                                      ))}
-                                    </ol>
-                                  </section>
-                                ) : null}
-                              </div>
-                            </td>
-                          </tr>
-                        ) : null}
-                      </Fragment>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
-          <Pagination
-            page={requestsPagination.page}
-            totalPages={requestsPagination.totalPages}
-            onPageChange={requestsPagination.setPage}
-            total={requestsPagination.total}
-            pageSize={requestsPagination.pageSize}
-            startIndex={requestsPagination.startIndex}
-          />
-        </div>
-      ) : null}
-
-      {/* Tab: Trips Table */}
-      {!loading && tab === 'trips' ? (
-        <div className="panel rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs border-collapse min-w-[720px]">
-              <thead>
-                <tr className="border-b border-slate-200 bg-slate-100/60 text-center text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                  <th className="px-5 py-3 whitespace-nowrap">S. No</th>
-                  <th className="px-5 py-3">Date</th>
-                  <th className="px-5 py-3">Route</th>
-                  <th className="px-5 py-3">Provider & Ref</th>
-                  <th className="px-5 py-3">Amount</th>
-                  <th className="px-5 py-3">Tags</th>
-                  <th className="px-5 py-3">Ticket</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-150 font-medium text-slate-700">
-                {(trips || []).length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="px-5 py-8 text-center text-slate-400 italic">
-                      No trip tickets uploaded yet.
-                    </td>
-                  </tr>
-                ) : (
-                  tripsPagination.pageItems.map((t, index) => (
-                    <tr key={t.id} className="hover:bg-slate-50/50 transition-colors">
-                      <td className="px-5 py-3 text-center text-slate-500">
-                        {tripsPagination.startIndex + index + 1}
-                      </td>
-                      <td className="whitespace-nowrap px-5 py-3 text-center">{t.travel_date}</td>
-                      <td className="px-5 py-3 text-center">
-                        <div className="flex items-center justify-center gap-1 font-bold text-slate-800">
-                          <span>{t.from_city}</span>
-                          <ArrowRight size={10} className="text-slate-400" />
-                          <span>{t.to_city}</span>
-                        </div>
-                      </td>
-                      <td className="px-5 py-3 text-center">
-                        <span className="font-bold text-slate-800">{t.provider || '—'}</span>
-                        {t.reference_id && <span className="text-slate-400 text-[10px] ml-1">({t.reference_id})</span>}
-                      </td>
-                      <td className="px-5 py-3 text-center font-bold text-slate-800">
-                        {t.booked_by_travel_desk
-                          ? '—'
-                          : `₹${Number(t.amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-                      </td>
-                      <td className="px-5 py-3 text-center">
-                        {t.booked_by_travel_desk ? (
-                          <span className="inline-flex items-center rounded-full bg-indigo-50 border border-indigo-100 px-2 py-0.5 text-[9px] font-bold text-indigo-700 uppercase tracking-tight">
-                            Desk Booked
-                          </span>
-                        ) : null}
-                      </td>
-                      <td className="px-5 py-3 text-center">
-                        {t.desk_ticket_id ? (
+      {!loading && view === 'requests' ? (
+        <section aria-label="Travel requests" className="overflow-hidden rounded-[14px] border border-slate-200 bg-white">
+          {visibleRequests.length === 0 ? (
+            <p className="px-4 py-8 text-center text-[12.5px] text-slate-500">
+              {rows.length === 0
+                ? 'No travel requests yet. Use New request to ask for your first trip.'
+                : bucket === 'upcoming'
+                  ? 'No trips coming up.'
+                  : 'Nothing here.'}
+            </p>
+          ) : (
+            requestsPagination.pageItems.map(({ request, view: rv }) => {
+              const isOpen = expandedIds.has(request.id);
+              const isTicketMenuOpen = openTicketMenuId === request.id;
+              const canClaim = rv.claim && !rv.claim.closed;
+              return (
+                <Fragment key={request.id}>
+                  <TravelRequestRow
+                    request={request}
+                    view={rv}
+                    open={isOpen}
+                    onToggle={() => toggleExpand(request.id)}
+                    actions={
+                      <>
+                        {canClaim ? (
                           <button
                             type="button"
-                            className="inline-flex h-7 items-center justify-center rounded-lg border border-slate-200 hover:bg-slate-50 text-[10px] font-bold text-slate-700 px-3 transition-all"
-                            onClick={() => previewTripDesk(t)}
+                            onClick={() => startClaim(rv.claim.ids)}
+                            className="inline-flex h-7 items-center rounded-lg bg-brand px-2.5 text-[11.5px] font-bold text-white hover:bg-brand/90"
                           >
-                            View Ticket
+                            Start claim
                           </button>
                         ) : null}
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-          <Pagination
-            page={tripsPagination.page}
-            totalPages={tripsPagination.totalPages}
-            onPageChange={tripsPagination.setPage}
-            total={tripsPagination.total}
-            pageSize={tripsPagination.pageSize}
-            startIndex={tripsPagination.startIndex}
-          />
-        </div>
+                        {rv.ticketed.length === 1 ? (
+                          <button
+                            type="button"
+                            onClick={() => viewTicket(rv.ticketed[0].ticket, `Ticket · ${rv.ticketed[0].label}`)}
+                            className="inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-[11.5px] font-bold text-slate-700 hover:bg-slate-50"
+                          >
+                            <Ticket size={13} /> Ticket
+                          </button>
+                        ) : rv.ticketed.length > 1 ? (
+                          <div ref={isTicketMenuOpen ? ticketMenuTriggerRef : null}>
+                            <button
+                              type="button"
+                              onClick={(e) => (isTicketMenuOpen ? setOpenTicketMenuId(null) : openTicketMenu(request.id, e.currentTarget, rv.ticketed.length))}
+                              aria-expanded={isTicketMenuOpen}
+                              className="inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-[11.5px] font-bold text-slate-700 hover:bg-slate-50"
+                            >
+                              <Ticket size={13} /> {rv.ticketed.length} tickets
+                              <ChevronDown size={12} className={`text-slate-400 transition-transform ${isTicketMenuOpen ? 'rotate-180' : ''}`} />
+                            </button>
+                            {isTicketMenuOpen && ticketMenuPos
+                              ? createPortal(
+                                  <div
+                                    ref={ticketMenuPanelRef}
+                                    style={{ position: 'fixed', top: ticketMenuPos.top, bottom: ticketMenuPos.bottom, right: ticketMenuPos.right }}
+                                    className="z-[100] w-56 rounded-lg border border-slate-200 bg-white py-1.5 text-left shadow-lg"
+                                  >
+                                    {rv.ticketed.map((seg) => (
+                                      <button
+                                        key={seg.seq}
+                                        type="button"
+                                        className="block w-full px-3 py-2 text-left text-[11.5px] font-semibold text-slate-700 hover:bg-slate-50"
+                                        onClick={() => {
+                                          setOpenTicketMenuId(null);
+                                          viewTicket(seg.ticket, `Ticket · ${seg.label}`);
+                                        }}
+                                      >
+                                        {seg.label}
+                                      </button>
+                                    ))}
+                                  </div>,
+                                  document.body,
+                                )
+                              : null}
+                          </div>
+                        ) : null}
+                      </>
+                    }
+                  />
+                  {isOpen ? (
+                    <TravelRequestDetail
+                      request={request}
+                      view={rv}
+                      chain={request.id in chains ? chains[request.id] : undefined}
+                      onViewTicket={viewTicket}
+                      onViewDocument={viewSupportingDocument}
+                      footer={
+                        <>
+                          {rv.cancellable ? (
+                            <button
+                              type="button"
+                              onClick={() => setConfirmCancelId(request.id)}
+                              className="inline-flex h-7 items-center rounded-lg border border-rose-200 bg-white px-2.5 text-[11.5px] font-bold text-rose-700 hover:bg-rose-50"
+                            >
+                              Cancel request
+                            </button>
+                          ) : null}
+                          {canClaim ? (
+                            <button
+                              type="button"
+                              onClick={() => startClaim(rv.claim.ids)}
+                              className="inline-flex h-7 items-center rounded-lg bg-brand px-2.5 text-[11.5px] font-bold text-white hover:bg-brand/90"
+                            >
+                              Start claim
+                            </button>
+                          ) : null}
+                        </>
+                      }
+                    />
+                  ) : null}
+                </Fragment>
+              );
+            })
+          )}
+          {visibleRequests.length ? (
+            <Pagination
+              page={requestsPagination.page}
+              totalPages={requestsPagination.totalPages}
+              onPageChange={requestsPagination.setPage}
+              total={requestsPagination.total}
+              pageSize={requestsPagination.pageSize}
+              startIndex={requestsPagination.startIndex}
+            />
+          ) : null}
+        </section>
+      ) : null}
+
+      {!loading && view === 'trips' ? (
+        <section aria-label="Booked trips" className="overflow-hidden rounded-[14px] border border-slate-200 bg-white">
+          {trips.length === 0 ? (
+            <p className="px-4 py-8 text-center text-[12.5px] text-slate-500">No booked trips yet. They show up here once the travel desk books your tickets.</p>
+          ) : (
+            tripsPagination.pageItems.map((t) => {
+              const claim = tripClaim(t);
+              return (
+                <TripRow
+                  key={t.id}
+                  trip={t}
+                  claim={claim}
+                  actions={
+                    <>
+                      {claim.open && claim.ids?.length ? (
+                        <button
+                          type="button"
+                          onClick={() => startClaim(claim.ids)}
+                          className="inline-flex h-7 items-center rounded-lg bg-brand px-2.5 text-[11.5px] font-bold text-white hover:bg-brand/90"
+                        >
+                          Start claim
+                        </button>
+                      ) : null}
+                      {t.desk_ticket_id ? (
+                        <button
+                          type="button"
+                          onClick={() => previewTripDesk(t)}
+                          className="inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-[11.5px] font-bold text-slate-700 hover:bg-slate-50"
+                        >
+                          <Ticket size={13} /> Ticket
+                        </button>
+                      ) : null}
+                    </>
+                  }
+                />
+              );
+            })
+          )}
+          {trips.length ? (
+            <Pagination
+              page={tripsPagination.page}
+              totalPages={tripsPagination.totalPages}
+              onPageChange={tripsPagination.setPage}
+              total={tripsPagination.total}
+              pageSize={tripsPagination.pageSize}
+              startIndex={tripsPagination.startIndex}
+            />
+          ) : null}
+        </section>
       ) : null}
 
       {/* Global Submission Animation Overlay */}
@@ -1040,430 +884,429 @@ export default function TravelRequestsPage() {
 
       {/* Modal: New Request Dialog */}
       {modalOpen ? createPortal(
-        <div className="fixed inset-0 z-[100] grid place-items-center bg-slate-900/40 p-4 backdrop-blur-[2px]">
-          <div className="panel flex w-full max-w-lg flex-col rounded-xl border border-slate-200 bg-white shadow-2xl max-h-[90vh] overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-
-            {/* Modal Header */}
-            <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-5 pt-5 pb-3">
-              <h2 className="text-sm font-bold text-slate-800">Submit Travel Request</h2>
+        <div className="fixed inset-0 z-[100] grid place-items-center bg-slate-900/45 p-4 backdrop-blur-[2px]">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="new-travel-request-title"
+            className="flex max-h-[92vh] w-full max-w-[760px] flex-col overflow-hidden rounded-[18px] bg-white shadow-2xl animate-in fade-in zoom-in-95 duration-200"
+          >
+            <div className="flex shrink-0 items-start justify-between gap-2.5 border-b border-slate-100 px-4 pb-3.5 pt-[18px] sm:px-[22px]">
+              <div className="min-w-0">
+                <h2 id="new-travel-request-title" className="text-[17px] font-extrabold text-ink">New travel request</h2>
+                <p className="mt-0.5 text-[12.5px] text-slate-500">The travel desk books your tickets once it&apos;s approved.</p>
+                <PolicyChips limits={policyLimits} />
+              </div>
               <button
                 type="button"
-                className="text-slate-400 hover:text-slate-600 rounded-lg p-1 hover:bg-slate-100 transition-colors"
-                onClick={() => {
-                  setModalOpen(false);
-                  setPolicyError(null);
-                  setExceptionReason('');
-                }}
+                aria-label="Close"
+                className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+                onClick={closeRequestModal}
               >
-                <X size={16} />
+                <X size={18} />
               </button>
             </div>
 
-            {entitlement?.text && (
-              <div className="mx-5 mt-4 flex shrink-0 items-start gap-2.5 rounded-lg border border-slate-200 bg-slate-50 p-3 text-[11px] text-slate-600">
-                <Info size={14} className="text-brand shrink-0 mt-0.5" />
-                <span className="font-semibold">{entitlement.text}</span>
-              </div>
-            )}
-
             <form className="flex min-h-0 flex-1 flex-col" onSubmit={onCreate}>
-              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
-              {/* Travel Type + Project Code */}
-              <div className="grid gap-3 md:grid-cols-2">
-                <div className="space-y-1">
-                  <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Travel Type *</span>
-                  <select
-                    className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none bg-white transition-all"
-                    value={form.values.travel_type}
-                    onChange={(e) => form.setValues({ ...form.values, travel_type: e.target.value, project_code: '' })}
-                    onBlur={() => form.handleBlur('travel_type')}
-                  >
-                    <option value="NON_PROJECT">Non-project</option>
-                    <option value="PROJECT">Project</option>
-                  </select>
-                </div>
-
-                {form.values.travel_type === 'PROJECT' ? (
-                  <div className="space-y-1">
-                    <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Project Code *</span>
-                    <select
-                      className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none bg-white transition-all"
-                      value={form.values.project_code}
-                      onChange={(e) => form.handleChange('project_code', e.target.value)}
-                      onBlur={() => form.handleBlur('project_code')}
-                    >
-                      <option value="">Select project code</option>
-                      {travelOptions.project_codes.map((o) => (
-                        <option key={o.id} value={o.value}>{optionText(o)}</option>
-                      ))}
-                    </select>
-                    {travelOptions.project_codes.length === 0 ? (
-                      <p className="text-[10px] font-bold text-amber-700">No project codes are configured yet — ask an admin to add them.</p>
-                    ) : null}
-                    {form.errors.project_code ? <p className="text-[10px] font-bold text-rose-650">{form.errors.project_code}</p> : null}
-                  </div>
-                ) : null}
-              </div>
-
-              {/* Travel Mode (multi-city sets this per leg instead) */}
-              {form.values.trip_type !== 'MULTI_CITY' && (
-                <div className="space-y-1">
-                  <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Travel Mode *</span>
-                  <select
-                    className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none bg-white transition-all"
-                    value={form.values.travel_mode}
-                    onChange={(e) => form.handleChange('travel_mode', e.target.value)}
-                    onBlur={() => form.handleBlur('travel_mode')}
-                  >
-                    <option value="FLIGHT">Flight</option>
-                    <option value="TRAIN">Train</option>
-                    <option value="BUS">Bus</option>
-                  </select>
-                </div>
-              )}
-
-              {/* Trip Type */}
-              <div className="space-y-1 border-b border-slate-100 pb-4">
-                <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Trip Type *</span>
-                <div className="flex gap-4">
-                  {['ONE_WAY', 'ROUND_TRIP', 'MULTI_CITY'].map((type) => (
-                    <label key={type} className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="trip_type"
-                        value={type}
-                        checked={form.values.trip_type === type}
-                        onChange={(e) => form.handleChange('trip_type', e.target.value)}
-                        className="text-brand focus:ring-brand"
+              <div className="min-h-0 flex-1 space-y-[18px] overflow-y-auto px-4 pb-[18px] pt-4 sm:px-[22px]">
+                {/* Your trip */}
+                <section className="space-y-3">
+                  <p className={EYEBROW}>Your trip</p>
+                  <div className="flex flex-wrap gap-2.5">
+                    <SegButtons
+                      label="Trip type"
+                      options={TRIP_TYPES}
+                      value={form.values.trip_type}
+                      onChange={(v) => form.handleChange('trip_type', v)}
+                    />
+                    {!isMultiCity ? (
+                      <SegButtons
+                        label="Travel mode"
+                        options={MODES}
+                        value={form.values.travel_mode}
+                        onChange={(v) => form.handleChange('travel_mode', v)}
                       />
-                      {type === 'ONE_WAY' ? 'One Way' : type === 'ROUND_TRIP' ? 'Round Trip' : 'Multi-City'}
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              {/* Origins & Destination / Legs */}
-              {form.values.trip_type !== 'MULTI_CITY' ? (
-                <div className="grid gap-3 md:grid-cols-2">
-                  <div className="space-y-1">
-                    <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">From City *</span>
-                    <input
-                      className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all"
-                      required
-                      value={form.values.from_city}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setCityQ(v);
-                        form.handleChange('from_city', v);
-                      }}
-                      onBlur={() => form.handleBlur('from_city')}
-                      list="city-from"
-                    />
-                    {form.errors.from_city ? <p className="text-[10px] font-bold text-rose-650">{form.errors.from_city}</p> : null}
+                    ) : null}
                   </div>
 
-                  <div className="space-y-1">
-                    <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">To City *</span>
-                    <input
-                      className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all"
-                      required
-                      value={form.values.to_city}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setCityQ(v);
-                        form.handleChange('to_city', v);
-                      }}
-                      onBlur={() => form.handleBlur('to_city')}
-                      list="city-to"
-                    />
-                    {form.errors.to_city ? <p className="text-[10px] font-bold text-rose-650">{form.errors.to_city}</p> : null}
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Trip Legs *</span>
-                  {form.values.legs.map((leg, i) => (
-                    <div key={i} className="p-3 bg-slate-50 border border-slate-200 rounded-lg relative">
-                      <div className="grid gap-3 md:grid-cols-4">
-                        <div className="space-y-1">
-                          <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Mode *</span>
-                          <select
-                            className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none bg-white transition-all"
-                            required
-                            value={leg.travel_mode || 'FLIGHT'}
-                            onChange={(e) => {
-                              const newLegs = [...form.values.legs];
-                              newLegs[i].travel_mode = e.target.value;
-                              form.handleChange('legs', newLegs);
-                            }}
-                          >
-                            <option value="FLIGHT">Flight</option>
-                            <option value="TRAIN">Train</option>
-                            <option value="BUS">Bus</option>
-                          </select>
-                        </div>
-                        <div className="space-y-1">
-                          <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">From City *</span>
+                  {!isMultiCity ? (
+                    <>
+                      <div className="grid grid-cols-[minmax(0,1fr)_32px_minmax(0,1fr)] items-end gap-2">
+                        <div>
+                          <label htmlFor="tr-from" className={LABEL}>From</label>
                           <input
-                            className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all bg-white"
+                            id="tr-from"
+                            className={FIELD}
                             required
-                            value={leg.from_city}
+                            value={form.values.from_city}
                             onChange={(e) => {
-                              const v = e.target.value;
-                              setCityQ(v);
-                              const newLegs = [...form.values.legs];
-                              newLegs[i].from_city = v;
-                              form.handleChange('legs', newLegs);
+                              setCityQ(e.target.value);
+                              form.handleChange('from_city', e.target.value);
                             }}
+                            onBlur={() => form.handleBlur('from_city')}
                             list="city-from"
                           />
                         </div>
-                        <div className="space-y-1">
-                          <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">To City *</span>
+                        <button
+                          type="button"
+                          aria-label="Swap from and to"
+                          title="Swap"
+                          className="grid h-[38px] w-8 place-items-center rounded-[10px] border border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
+                          onClick={() => form.setValues({ ...form.values, from_city: form.values.to_city, to_city: form.values.from_city })}
+                        >
+                          <ArrowLeftRight size={15} />
+                        </button>
+                        <div>
+                          <label htmlFor="tr-to" className={LABEL}>To</label>
                           <input
-                            className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all bg-white"
+                            id="tr-to"
+                            className={FIELD}
                             required
-                            value={leg.to_city}
+                            value={form.values.to_city}
                             onChange={(e) => {
-                              const v = e.target.value;
-                              setCityQ(v);
-                              const newLegs = [...form.values.legs];
-                              newLegs[i].to_city = v;
-                              form.handleChange('legs', newLegs);
+                              setCityQ(e.target.value);
+                              form.handleChange('to_city', e.target.value);
                             }}
+                            onBlur={() => form.handleBlur('to_city')}
                             list="city-to"
                           />
                         </div>
-                        <div className="space-y-1">
-                          <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Date *</span>
-                          <input
-                            type="date"
-                            className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all bg-white"
-                            required
-                            value={leg.travel_date}
-                            onChange={(e) => {
-                              const newLegs = [...form.values.legs];
-                              newLegs[i].travel_date = e.target.value;
-                              form.handleChange('legs', newLegs);
-                            }}
-                          />
-                        </div>
                       </div>
-                      {form.values.legs.length > 1 && (
-                        <button type="button" onClick={() => {
-                          const newLegs = form.values.legs.filter((_, idx) => idx !== i);
-                          form.handleChange('legs', newLegs);
-                        }} className="absolute -top-2 -right-2 w-6 h-6 flex items-center justify-center bg-white border border-slate-200 rounded-full text-slate-400 hover:text-red-500 shadow-sm">
-                          <X size={12} />
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                  <button type="button" onClick={() => {
-                    form.handleChange('legs', [...form.values.legs, { travel_mode: 'FLIGHT', from_city: '', to_city: '', travel_date: '', preferred_time: '' }]);
-                  }} className="text-[12px] font-medium text-brand flex items-center gap-1 hover:underline">
-                    <Plus size={14} /> Add another leg
-                  </button>
-                </div>
-              )}
-
-              <datalist id="city-from">
-                {cityOptions.map((c) => (
-                  <option key={`f-${c}`} value={c} />
-                ))}
-              </datalist>
-              <datalist id="city-to">
-                {cityOptions.map((c) => (
-                  <option key={`t-${c}`} value={c} />
-                ))}
-              </datalist>
-
-              {/* Dates */}
-              {form.values.trip_type !== 'MULTI_CITY' && (
-                <div className="grid gap-3 md:grid-cols-2">
-                  <div className="space-y-1">
-                    <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Departure Date *</span>
-                    <input
-                      type="date"
-                      required
-                      className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all"
-                      value={form.values.travel_date}
-                      onChange={(e) => form.handleChange('travel_date', e.target.value)}
-                      onBlur={() => form.handleBlur('travel_date')}
-                    />
-                    {form.errors.travel_date ? <p className="text-[10px] font-bold text-rose-650">{form.errors.travel_date}</p> : null}
-                  </div>
-
-                  {form.values.trip_type === 'ROUND_TRIP' && (
-                    <div className="space-y-1">
-                      <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Return Date *</span>
-                      <input
-                        type="date"
-                        required
-                        className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all"
-                        value={form.values.return_date}
-                        onChange={(e) => form.handleChange('return_date', e.target.value)}
-                        onBlur={() => form.handleBlur('return_date')}
-                      />
-                      {form.errors.return_date ? <p className="text-[10px] font-bold text-rose-650">{form.errors.return_date}</p> : null}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Purpose */}
-              <div className="space-y-1">
-                <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Trip Purpose *</span>
-                <select
-                  className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none bg-white transition-all"
-                  value={form.values.purpose}
-                  onChange={(e) => form.handleChange('purpose', e.target.value)}
-                  onBlur={() => form.handleBlur('purpose')}
-                  required
-                >
-                  <option value="">Select trip purpose</option>
-                  {travelOptions.trip_purposes.map((o) => (
-                    <option key={o.id} value={o.value}>{optionText(o)}</option>
-                  ))}
-                </select>
-                {travelOptions.trip_purposes.length === 0 ? (
-                  <p className="text-[10px] font-bold text-amber-700">No trip purposes are configured yet — ask an admin to add them.</p>
-                ) : null}
-                {form.errors.purpose ? <p className="text-[10px] font-bold text-rose-650">{form.errors.purpose}</p> : null}
-              </div>
-
-              {/* Notes */}
-              <div className="space-y-1">
-                <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Additional Instructions</span>
-                <input
-                  className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all"
-                  placeholder="Meal preferences, seat requirements"
-                  value={form.values.notes}
-                  onChange={(e) => form.handleChange('notes', e.target.value)}
-                  onBlur={() => form.handleBlur('notes')}
-                />
-              </div>
-
-              {/* Anything else the company should book */}
-              <div className="space-y-2">
-                <label className="flex cursor-pointer items-start gap-2 text-xs font-semibold text-slate-600">
-                  <input
-                    type="checkbox"
-                    className="mt-0.5 rounded text-brand focus:ring-brand"
-                    checked={form.values.needs_additional_booking}
-                    onChange={(e) => form.handleChange('needs_additional_booking', e.target.checked)}
-                  />
-                  <span>
-                    I need the company to book anything else for this trip
-                    <span className="ml-1 font-medium text-slate-400">(optional — e.g. hotel, cab, visa)</span>
-                  </span>
-                </label>
-                {form.values.needs_additional_booking ? (
-                  <div className="space-y-2">
-                    <div className="flex gap-2">
-                      <input
-                        className="h-9 flex-1 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all"
-                        placeholder="e.g. 2 nights hotel near client office"
-                        value={bookingItemDraft}
-                        onChange={(e) => setBookingItemDraft(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            addBookingItem();
-                          }
-                        }}
-                      />
+                      {form.errors.from_city || form.errors.to_city ? (
+                        <FieldError>{form.errors.from_city || form.errors.to_city}</FieldError>
+                      ) : null}
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div>
+                          <label htmlFor="tr-date" className={LABEL}>{form.values.trip_type === 'ROUND_TRIP' ? 'Going on' : 'Travel date'}</label>
+                          <input
+                            id="tr-date"
+                            type="date"
+                            required
+                            className={FIELD}
+                            value={form.values.travel_date}
+                            onChange={(e) => form.handleChange('travel_date', e.target.value)}
+                            onBlur={() => form.handleBlur('travel_date')}
+                          />
+                          <FieldError>{form.errors.travel_date}</FieldError>
+                        </div>
+                        {form.values.trip_type === 'ROUND_TRIP' ? (
+                          <div>
+                            <label htmlFor="tr-return" className={LABEL}>Coming back on</label>
+                            <input
+                              id="tr-return"
+                              type="date"
+                              required
+                              className={FIELD}
+                              value={form.values.return_date}
+                              onChange={(e) => form.handleChange('return_date', e.target.value)}
+                              onBlur={() => form.handleBlur('return_date')}
+                            />
+                            <FieldError>{form.errors.return_date}</FieldError>
+                          </div>
+                        ) : null}
+                      </div>
+                    </>
+                  ) : (
+                    <div>
+                      <RouteLine legs={form.values.legs} />
+                      <div className="hidden grid-cols-[26px_118px_minmax(0,1fr)_minmax(0,1fr)_138px_28px] gap-2 pt-1.5 text-[11px] font-bold text-slate-400 sm:grid" aria-hidden="true">
+                        <span />
+                        <span>Mode</span>
+                        <span>From</span>
+                        <span>To</span>
+                        <span>Date</span>
+                        <span />
+                      </div>
+                      {form.values.legs.map((leg, i) => {
+                        const isFlightWarn = leg.travel_mode === 'FLIGHT' && policyLimits && policyLimits.air_eligibility !== 'YES';
+                        return (
+                          <div
+                            key={i}
+                            className="relative mb-2 grid grid-cols-[26px_minmax(0,1fr)_minmax(0,1fr)_28px] items-center gap-2 rounded-xl border border-slate-200 p-2 sm:mb-0 sm:grid-cols-[26px_118px_minmax(0,1fr)_minmax(0,1fr)_138px_28px] sm:rounded-none sm:border-0 sm:px-0 sm:py-1.5"
+                          >
+                            {i > 0 ? <span className="absolute -top-3.5 left-[11px] hidden h-[30px] w-0.5 bg-brand/25 sm:block" aria-hidden="true" /> : null}
+                            <span className="relative row-span-3 grid h-6 w-6 place-items-center self-start rounded-full bg-brand/10 text-[11px] font-extrabold text-brand sm:row-span-1 sm:self-center">
+                              {i + 1}
+                            </span>
+                            <select
+                              aria-label={`Leg ${i + 1} mode`}
+                              className={`${FIELD} col-span-2 sm:col-span-1 ${isFlightWarn ? 'border-amber-200 bg-amber-50' : ''}`}
+                              required
+                              value={leg.travel_mode || 'FLIGHT'}
+                              onChange={(e) => updateLeg(i, { travel_mode: e.target.value })}
+                            >
+                              {MODES.map((m) => (
+                                <option key={m.value} value={m.value}>{m.label}</option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              aria-label={`Remove leg ${i + 1}`}
+                              disabled={form.values.legs.length < 2}
+                              onClick={() => form.handleChange('legs', form.values.legs.filter((_, idx) => idx !== i))}
+                              className="col-start-4 row-start-1 grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-rose-600 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-400 sm:col-start-6"
+                            >
+                              <X size={14} />
+                            </button>
+                            <input
+                              aria-label={`Leg ${i + 1} from`}
+                              placeholder="From"
+                              className={`${FIELD} sm:col-start-3 sm:row-start-1`}
+                              required
+                              value={leg.from_city}
+                              onChange={(e) => {
+                                setCityQ(e.target.value);
+                                updateLeg(i, { from_city: e.target.value });
+                              }}
+                              list="city-from"
+                            />
+                            <input
+                              aria-label={`Leg ${i + 1} to`}
+                              placeholder="To"
+                              className={`${FIELD} col-span-2 sm:col-span-1 sm:col-start-4 sm:row-start-1`}
+                              required
+                              value={leg.to_city}
+                              onChange={(e) => {
+                                setCityQ(e.target.value);
+                                updateLeg(i, { to_city: e.target.value });
+                              }}
+                              list="city-to"
+                            />
+                            <input
+                              type="date"
+                              aria-label={`Leg ${i + 1} date`}
+                              className={`${FIELD} col-span-3 sm:col-span-1 sm:col-start-5 sm:row-start-1`}
+                              required
+                              value={leg.travel_date}
+                              onChange={(e) => updateLeg(i, { travel_date: e.target.value })}
+                            />
+                          </div>
+                        );
+                      })}
                       <button
                         type="button"
-                        className="h-9 shrink-0 rounded-lg bg-slate-100 px-3 text-xs font-bold text-slate-600 transition-colors hover:bg-slate-200"
-                        onClick={addBookingItem}
+                        onClick={() => {
+                          const last = form.values.legs[form.values.legs.length - 1];
+                          form.handleChange('legs', [
+                            ...form.values.legs,
+                            { travel_mode: 'FLIGHT', from_city: last?.to_city || '', to_city: '', travel_date: '', preferred_time: '' },
+                          ]);
+                        }}
+                        className="mt-1.5 inline-flex items-center gap-1 rounded-[9px] border border-dashed border-brand/40 bg-white px-2.5 py-1.5 text-xs font-bold text-brand hover:bg-brand/5 sm:ml-[34px]"
                       >
-                        Add
+                        <Plus size={13} /> Add a leg
                       </button>
                     </div>
-                    {form.values.additional_booking_items.length ? (
-                      <ul className="space-y-1">
+                  )}
+
+                  <datalist id="city-from">
+                    {cityOptions.map((c) => (
+                      <option key={`f-${c}`} value={c} />
+                    ))}
+                  </datalist>
+                  <datalist id="city-to">
+                    {cityOptions.map((c) => (
+                      <option key={`t-${c}`} value={c} />
+                    ))}
+                  </datalist>
+
+                  <FlightNote limits={policyLimits} flightLegs={flightLegs} multi={isMultiCity} />
+                  {showExpenseLimits ? <CapsPanel limits={cityLimits} loading={limitsLoading} /> : null}
+                </section>
+
+                {/* Why */}
+                <section className="space-y-3">
+                  <p className={EYEBROW}>Why you&apos;re travelling</p>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <label htmlFor="tr-purpose" className={LABEL}>Purpose</label>
+                      <select
+                        id="tr-purpose"
+                        className={FIELD}
+                        value={form.values.purpose}
+                        onChange={(e) => form.handleChange('purpose', e.target.value)}
+                        onBlur={() => form.handleBlur('purpose')}
+                        required
+                      >
+                        <option value="">Select trip purpose</option>
+                        {travelOptions.trip_purposes.map((o) => (
+                          <option key={o.id} value={o.value}>{optionText(o)}</option>
+                        ))}
+                      </select>
+                      {travelOptions.trip_purposes.length === 0 ? (
+                        <p className="mt-1 text-[11px] font-bold text-amber-700">No trip purposes are configured yet. Ask an admin to add them.</p>
+                      ) : null}
+                      <FieldError>{form.errors.purpose}</FieldError>
+                    </div>
+                    <div>
+                      <span className={LABEL}>Travel type</span>
+                      <SegButtons
+                        label="Travel type"
+                        options={TRAVEL_TYPES}
+                        value={form.values.travel_type}
+                        onChange={(v) => form.setValues({ ...form.values, travel_type: v, project_code: '' })}
+                        stretch
+                      />
+                    </div>
+                  </div>
+                  {form.values.travel_type === 'PROJECT' ? (
+                    <div>
+                      <label htmlFor="tr-project" className={LABEL}>Project code</label>
+                      <select
+                        id="tr-project"
+                        className={FIELD}
+                        value={form.values.project_code}
+                        onChange={(e) => form.handleChange('project_code', e.target.value)}
+                        onBlur={() => form.handleBlur('project_code')}
+                      >
+                        <option value="">Select project code</option>
+                        {travelOptions.project_codes.map((o) => (
+                          <option key={o.id} value={o.value}>{optionText(o)}</option>
+                        ))}
+                      </select>
+                      {travelOptions.project_codes.length === 0 ? (
+                        <p className="mt-1 text-[11px] font-bold text-amber-700">No project codes are configured yet. Ask an admin to add them.</p>
+                      ) : null}
+                      <FieldError>{form.errors.project_code}</FieldError>
+                    </div>
+                  ) : null}
+                </section>
+
+                {/* Anything else */}
+                <section className="space-y-3">
+                  <p className={EYEBROW}>Anything else</p>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={form.values.needs_additional_booking}
+                    onClick={() => form.handleChange('needs_additional_booking', !form.values.needs_additional_booking)}
+                    className="flex w-full items-center justify-between gap-2.5 rounded-xl border border-slate-200 px-3 py-2.5 text-left hover:bg-slate-50"
+                  >
+                    <span>
+                      <b className="block text-[13px] text-ink">The company should also book something</b>
+                      <span className="text-xs text-slate-500">e.g. a hotel, a cab, a visa</span>
+                    </span>
+                    <span
+                      aria-hidden="true"
+                      className={`relative h-[22px] w-[38px] shrink-0 rounded-full transition-colors ${form.values.needs_additional_booking ? 'bg-brand' : 'bg-slate-200'}`}
+                    >
+                      <span
+                        className={`absolute top-[3px] h-4 w-4 rounded-full bg-white shadow transition-all ${form.values.needs_additional_booking ? 'left-[19px]' : 'left-[3px]'}`}
+                      />
+                    </span>
+                  </button>
+                  {form.values.needs_additional_booking ? (
+                    <div>
+                      <div className="flex flex-wrap items-center gap-1.5">
                         {form.values.additional_booking_items.map((item, idx) => (
-                          <li
-                            key={idx}
-                            className="flex items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700"
-                          >
+                          <span key={idx} className="inline-flex max-w-full items-center gap-1.5 rounded-lg bg-slate-100 py-1 pl-2 pr-1 text-xs font-semibold text-slate-700">
                             <span className="truncate">{item}</span>
                             <button
                               type="button"
-                              className="shrink-0 text-slate-400 hover:text-rose-600"
+                              aria-label={`Remove ${item}`}
+                              className="grid h-5 w-5 shrink-0 place-items-center rounded text-slate-400 hover:text-rose-600"
                               onClick={() => removeBookingItem(idx)}
                             >
-                              <X size={13} />
+                              <X size={12} />
                             </button>
-                          </li>
+                          </span>
                         ))}
-                      </ul>
-                    ) : null}
-                    {form.errors.additional_booking_items ? <p className="text-[10px] font-bold text-rose-650">{form.errors.additional_booking_items}</p> : null}
+                        <div className="flex min-w-[220px] flex-1 gap-1.5">
+                          <input
+                            aria-label="Something else to book"
+                            className={`${FIELD} h-8`}
+                            placeholder="Add one, e.g. 2 nights hotel near client office"
+                            value={bookingItemDraft}
+                            onChange={(e) => setBookingItemDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                addBookingItem();
+                              }
+                            }}
+                          />
+                          <button
+                            type="button"
+                            className="h-8 shrink-0 rounded-lg bg-slate-100 px-3 text-xs font-bold text-slate-600 hover:bg-slate-200"
+                            onClick={addBookingItem}
+                          >
+                            Add
+                          </button>
+                        </div>
+                      </div>
+                      <FieldError>{form.errors.additional_booking_items}</FieldError>
+                    </div>
+                  ) : null}
+                  <div>
+                    <label htmlFor="tr-notes" className={LABEL}>
+                      Notes for the travel desk <small className="font-medium text-slate-400">(optional)</small>
+                    </label>
+                    <input
+                      id="tr-notes"
+                      className={FIELD}
+                      placeholder="Meal preference, seat, timing…"
+                      value={form.values.notes}
+                      onChange={(e) => form.handleChange('notes', e.target.value)}
+                      onBlur={() => form.handleBlur('notes')}
+                    />
                   </div>
+                </section>
+
+                {/* The server said this needs an exception */}
+                {policyError ? (
+                  <section ref={policyErrorRef} className="space-y-3 rounded-xl border border-amber-200 bg-amber-50/60 p-3.5">
+                    <div className="flex items-start gap-2 text-xs text-amber-900">
+                      <ShieldAlert size={16} className="mt-px shrink-0 text-amber-700" />
+                      <div>
+                        <b className="block text-[13px]">This trip needs an exception</b>
+                        {policyError}
+                      </div>
+                    </div>
+                    <div>
+                      <label htmlFor="tr-exception" className={LABEL}>Why do you need it?</label>
+                      <textarea
+                        id="tr-exception"
+                        rows={2}
+                        className="min-h-[3rem] w-full rounded-[10px] border border-amber-200 bg-white p-2.5 text-[13px] text-ink outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-200/60"
+                        placeholder="e.g. Urgent customer escalation meeting requested by the VP"
+                        value={exceptionReason}
+                        onChange={(e) => setExceptionReason(e.target.value)}
+                      />
+                    </div>
+                    <p className="text-[11.5px] text-amber-800">It goes for exception approval first, then to the travel desk.</p>
+                  </section>
                 ) : null}
               </div>
 
-              {showExpenseLimits ? <ExpenseLimitsPanel limits={cityLimits} loading={limitsLoading} /> : null}
-
-              {/* Exception Warning Block */}
-              {policyError && (
-                <div ref={policyErrorRef} className="rounded-xl border border-rose-200 bg-rose-50/20 p-4 space-y-3">
-                  <div className="flex items-start gap-2.5 text-rose-900 text-[11px] font-bold">
-                    <ShieldAlert size={16} className="text-rose-650 shrink-0 mt-0.5" />
-                    <div>
-                      <strong className="block text-rose-800">Corporate Policy Restriction</strong>
-                      {policyError}
-                    </div>
-                  </div>
-
-                  <div className="space-y-1">
-                    <span className="block text-[10px] font-bold text-rose-800 uppercase tracking-wide">Exception Justification *</span>
-                    <textarea
-                      className="w-full min-h-[3rem] p-3 text-xs rounded-lg border border-rose-200 focus:border-rose-450 outline-none transition-all bg-white"
-                      rows={2}
-                      placeholder="Explain why this policy override is required (e.g. Urgent customer escalation meeting requested by VP)"
-                      value={exceptionReason}
-                      onChange={(e) => setExceptionReason(e.target.value)}
-                    />
-                  </div>
-
+              <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-white px-4 py-3 sm:px-[22px]">
+                <div className="min-w-0 text-[12.5px] text-slate-500">{routeSummary}</div>
+                <div className="flex gap-2">
                   <button
                     type="button"
-                    className="w-full inline-flex h-9 items-center justify-center gap-1.5 rounded-lg bg-amber-700 hover:bg-amber-800 text-xs font-bold text-white transition-all shadow-md"
-                    disabled={submittingException}
-                    onClick={handleRequestException}
+                    className="inline-flex h-9 items-center justify-center rounded-[10px] border border-slate-200 bg-white px-3.5 text-[12.5px] font-bold text-slate-700 hover:bg-slate-50"
+                    onClick={closeRequestModal}
                   >
-                    Submit Exception Override Request
+                    Cancel
                   </button>
+                  {policyError ? (
+                    <button
+                      type="button"
+                      disabled={submittingException}
+                      onClick={handleRequestException}
+                      className="inline-flex h-9 items-center justify-center gap-1.5 rounded-[10px] bg-amber-700 px-3.5 text-[12.5px] font-bold text-white hover:bg-amber-800 disabled:opacity-50"
+                    >
+                      <Send size={14} /> {submittingException ? 'Submitting…' : 'Submit with exception'}
+                    </button>
+                  ) : (
+                    <button
+                      type="submit"
+                      disabled={isSubmitting}
+                      className="inline-flex h-9 items-center justify-center gap-1.5 rounded-[10px] bg-brand px-3.5 text-[12.5px] font-bold text-white hover:bg-brand/90 disabled:opacity-50"
+                    >
+                      <Send size={14} /> {isSubmitting ? 'Submitting…' : 'Submit request'}
+                    </button>
+                  )}
                 </div>
-              )}
-
-              </div>
-
-              {/* Actions Footer */}
-              <div className="flex shrink-0 justify-end gap-2.5 border-t border-slate-100 px-5 py-3">
-                <button
-                  type="button"
-                  className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-xs font-bold text-slate-700 px-4 transition-colors"
-                  onClick={() => {
-                    setModalOpen(false);
-                    setPolicyError(null);
-                    setExceptionReason('');
-                  }}
-                >
-                  Close
-                </button>
-                {!policyError && (
-                  <button
-                    type="submit"
-                    disabled={isSubmitting}
-                    className={`inline-flex h-9 items-center justify-center gap-1.5 rounded-lg bg-brand text-xs font-bold text-white transition-all shadow-md px-4 disabled:opacity-50 ${isSubmitting ? 'animate-pulse w-32' : 'hover:bg-brand/90'}`}
-                  >
-                    {isSubmitting ? 'Submitting...' : 'Submit Request'}
-                  </button>
-                )}
               </div>
             </form>
           </div>
@@ -1473,6 +1316,7 @@ export default function TravelRequestsPage() {
 
       <TicketPreviewDrawer
         open={preview.open}
+        ticketId={preview.ticketId}
         onClose={() => setPreview((p) => ({ ...p, open: false }))}
         blob={preview.blob}
         contentType={preview.type}

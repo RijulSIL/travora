@@ -3,11 +3,14 @@ function eventColor(event) {
   if (event === 'sent_back') return 'bg-amber-500';
   if (event === 'rejected') return 'bg-red-500';
   if (event === 'payment_processed') return 'bg-blue-500';
+  if (event === 'sla_passed_on' || event === 'sla_breached') return 'bg-orange-500';
   return 'bg-slate-400';
 }
 
 function eventLabel(item) {
   if (item.event === 'stage_approved') return `Stage ${item.stage} approved`;
+  if (item.event === 'sla_passed_on') return `SLA breached at stage ${item.stage || '—'} — passed to the next approver`;
+  if (item.event === 'sla_breached') return `SLA breached at stage ${item.stage || '—'}`;
   if (item.event === 'sent_back') return `Sent back at stage ${item.stage || '—'}`;
   if (item.event === 'payment_processed') return `Payment processed${item.utr ? ` (UTR: ${item.utr})` : ''}`;
   return item.event.replaceAll('_', ' ');

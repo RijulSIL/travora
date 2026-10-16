@@ -1,7 +1,7 @@
 import {
   Home, Clock, AlertTriangle, Users, TrendingUp, CheckSquare,
   Plane, ReceiptIndianRupee, PlusCircle, Settings, Map,
-  IndianRupee, Folder, Mail, Calendar, Building, User, History, ClipboardList,
+  IndianRupee, Folder, Mail, Calendar, Building, User, History, ClipboardList, Truck,
 } from 'lucide-react';
 
 /** Shared semantic-key -> icon lookup for every nav item's `icon` field (see navConfig.js). */
@@ -28,4 +28,5 @@ export const NAV_ICON_MAP = {
   bank: Building,
   user: User,
   history: History,
+  relocation: Truck,
 };

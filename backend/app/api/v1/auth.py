@@ -216,10 +216,15 @@ async def refresh_access_token(
 async def logout(
     response: Response,
     refresh_token: str | None = Cookie(default=None),
+    x_refresh_token: str | None = Header(default=None),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
-    if refresh_token:
-        await revoke_refresh_token(refresh_token, db)
+    # The app keeps the refresh token both as a cookie and in the X-Refresh-Token header (from
+    # local storage); they can differ, so cancel both — otherwise one keeps working after logout.
+    tokens = {t for t in (refresh_token, x_refresh_token) if t}
+    for token in tokens:
+        await revoke_refresh_token(token, db)
+    if tokens:
         await db.commit()
     response.delete_cookie("refresh_token", samesite=settings.refresh_cookie_samesite)
     return {"status": "ok"}

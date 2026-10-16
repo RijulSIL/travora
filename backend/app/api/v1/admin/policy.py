@@ -41,6 +41,7 @@ from app.schemas.common import (
 from app.schemas.workflow import RejectBody
 from app.services.audit_service import log_event
 from app.services.policy_engine import (
+    archive_superseded_policy_versions,
     diff_policy_versions,
     enforce_city_group_immutability,
     enforce_immutability,
@@ -591,8 +592,8 @@ async def approve_policy_version(
     # (enforce_immutability triggers at effective_from <= today), closing off the very scheduling
     # window this feature exists to provide. The old ACTIVE version (if any) stays exactly as it
     # is — still genuinely governing every date up to whenever HRBP actually schedules this one —
-    # until schedule_policy_version's first call on this version archives it with a real handoff
-    # date, at which point it stays interchangeable with this one.
+    # schedule_policy_version's first call on this version gives it a real handoff date, and it's
+    # archived once that date arrives (archive_superseded_policy_versions).
     stuck_active = (
         await db.execute(
             select(PolicyVersion).where(
@@ -644,9 +645,9 @@ async def schedule_policy_version(
     """Picks (or moves) when a fully-approved version actually takes effect, right up until that
     date arrives — enforce_immutability is what cuts this off the moment it does, same rule that
     already locks every other field on this version. The FIRST call on a given version (its
-    effective_from is still None here) is also the moment it truly supersedes whatever else is
-    ACTIVE: that version gets archived with its effective_to set to this date, same handoff
-    approve_policy_version used to do inline before this became a separate step. A LATER call
+    effective_from is still None here) sets the handoff: whatever else is ACTIVE gets its
+    effective_to set to this date, but stays ACTIVE (still the policy in effect) until that
+    date actually arrives — archive_superseded_policy_versions archives it then. A LATER call
     (effective_from already set, just moving the date) instead keeps whatever it already
     archived in sync — find it by matching the OLD effective_from (the handoff point the first
     call set up) and carry the new date onto it too, or moving this date out would open a gap
@@ -671,13 +672,19 @@ async def schedule_policy_version(
 
     old_date = item.effective_from
     if old_date is None:
+        # Archive anything already replaced first, so only the version in effect today gets the
+        # new handoff date (not an older one whose status hadn't caught up yet).
+        await archive_superseded_policy_versions(db)
         active_versions = (
             await db.execute(
-                select(PolicyVersion).where(PolicyVersion.status == PolicyStatus.ACTIVE, PolicyVersion.id != item.id)
+                select(PolicyVersion).where(
+                    PolicyVersion.status == PolicyStatus.ACTIVE,
+                    PolicyVersion.id != item.id,
+                    PolicyVersion.effective_from.is_not(None),
+                )
             )
         ).scalars().all()
         for active in active_versions:
-            active.status = PolicyStatus.ARCHIVED
             active.effective_to = payload.effective_from
     else:
         predecessors = (

@@ -38,7 +38,17 @@ export default function ApprovalScopeGuard({ area, children }) {
   }
 
   if (area === 'pending-approvals') {
-    const requestedTab = searchParams.get('tab') === 'travel' ? 'travel' : 'claims';
+    const tabParam = searchParams.get('tab');
+    // No tab given (e.g. a dashboard link): open the first queue this approver actually has.
+    if (!tabParam && !scope.claims) {
+      if (scope.travel_request) return <Navigate to="/claims/pending?tab=travel" replace />;
+      if (scope.relocation) return <Navigate to="/claims/pending?tab=relocation" replace />;
+    }
+    if (tabParam === 'relocation') {
+      if (scope.relocation) return children || <Outlet />;
+      return <Navigate to="/access-denied" replace />;
+    }
+    const requestedTab = tabParam === 'travel' ? 'travel' : 'claims';
 
     // Finance's claims stage (the Finance / Payment stage) is handled exclusively through the
     // dedicated Payment Queue page — approve_claim_stage rejects a Finance-stage approval

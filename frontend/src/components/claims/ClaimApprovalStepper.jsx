@@ -29,13 +29,17 @@ export default function ClaimApprovalStepper({
       <div className="flex flex-wrap items-start gap-0 border-t border-slate-100 pt-4">
         {stages.map((s, idx) => {
           const done = s.status === 'APPROVED';
+          // Approver missed the SLA; the claim moved on to the next stage.
+          const skipped = s.status === 'SLA_SKIPPED';
           const active =
             s.status === 'PENDING' &&
             s.stage_number === currentStageNumber &&
             (claimStatus === 'IN_APPROVAL' || claimStatus === 'READY_FOR_PAYMENT');
           const circleClass = done
             ? 'border-emerald-400 bg-emerald-50 text-emerald-800'
-            : active
+            : skipped
+              ? 'border-orange-300 bg-orange-50 text-orange-700'
+              : active
               ? 'border-blue-400 bg-blue-50 text-blue-800'
               : 'border-slate-200 bg-slate-100 text-slate-400';
           const label = s.label || `Stage ${s.stage_number}`;
@@ -56,7 +60,9 @@ export default function ClaimApprovalStepper({
                 </div>
                 <div className="mt-1 text-center text-[10px] font-medium text-slate-600">{label}</div>
                 <div className="text-center text-[10px] text-slate-400">
-                  {s.status === 'PENDING' && s.sla_deadline_at
+                  {skipped
+                    ? 'SLA missed — passed on'
+                    : s.status === 'PENDING' && s.sla_deadline_at
                     ? `SLA ${new Date(s.sla_deadline_at).toLocaleString()}`
                     : s.decided_at
                       ? new Date(s.decided_at).toLocaleString()

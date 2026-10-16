@@ -456,39 +456,72 @@ async def generate_report(report_type: str, filters: FinanceFilterParams, db: As
         return {"report_type": report_type, "rows": [{"stage": s.value, "count": c} for s, c in rows]}
 
     if report_type == "approval-tat":
-        q = select(
-            ClaimApprovalStage.stage_label,
-            ClaimApprovalStage.sla_deadline_at,
-            ClaimApprovalStage.decided_at,
-        ).select_from(ClaimApprovalStage).join(
-            ClaimDraft, ClaimDraft.id == ClaimApprovalStage.claim_id
-        ).outerjoin(
-            Employee, Employee.employee_id == ClaimDraft.employee_id
-        ).outerjoin(
-            ImpactLevel, ImpactLevel.id == Employee.impact_level_id
-        ).where(
-            ClaimApprovalStage.decided_at.is_not(None),
-            ClaimApprovalStage.sla_deadline_at.is_not(None),
-            ClaimDraft.is_exception_shell.is_(False),
+        # Claim approval speed, per stage. A stage starts when the claim was submitted (first
+        # stage) or when the stage before it was decided or passed on; its SLA is the time from
+        # that start to its deadline. Only real approve / reject decisions count as decisions —
+        # a stage passed on after a missed SLA (SLA_SKIPPED) is counted separately.
+        q = (
+            select(
+                ClaimApprovalStage.claim_id,
+                ClaimApprovalStage.stage_number,
+                ClaimApprovalStage.stage_label,
+                ClaimApprovalStage.status,
+                ClaimApprovalStage.sla_deadline_at,
+                ClaimApprovalStage.decided_at,
+                ClaimDraft.submitted_at,
+            )
+            .select_from(ClaimApprovalStage)
+            .join(ClaimDraft, ClaimDraft.id == ClaimApprovalStage.claim_id)
+            .outerjoin(Employee, Employee.employee_id == ClaimDraft.employee_id)
+            .outerjoin(ImpactLevel, ImpactLevel.id == Employee.impact_level_id)
+            .where(ClaimDraft.is_exception_shell.is_(False))
+            .order_by(ClaimApprovalStage.claim_id, ClaimApprovalStage.stage_number)
         )
         if employee_level:
             q = q.where(ImpactLevel.level_code == employee_level)
         rows = (await db.execute(q)).all()
-        by_stage: dict[str, list[int]] = {}
-        for stage, sla_deadline_at, decided_at in rows:
-            if sla_deadline_at is None or decided_at is None:
+
+        stats: dict[str, dict] = {}
+        order: list[str] = []
+        last_handoff: dict[int, datetime] = {}
+        for claim_id, stage_number, label, status, deadline, decided, submitted in rows:
+            started = last_handoff.get(claim_id, submitted)
+            if decided is not None:
+                last_handoff[claim_id] = decided
+            if decided is None or deadline is None:
                 continue
-            by_stage.setdefault(stage, []).append(int((decided_at - sla_deadline_at).total_seconds()))
-        return {
-            "report_type": report_type,
-            "rows": [
+            if label not in stats:
+                stats[label] = {"number": stage_number, "decided": [], "skipped": 0}
+                order.append(label)
+            if str(status) == "SLA_SKIPPED":
+                stats[label]["skipped"] += 1
+                continue
+            stats[label]["decided"].append(
                 {
-                    "stage": stage,
-                    "average_delta_seconds": int(sum(values) / len(values)) if values else 0,
+                    "taken": (decided - started).total_seconds() if started else None,
+                    "sla": (deadline - started).total_seconds() if started else None,
+                    "margin": (decided - deadline).total_seconds(),
                 }
-                for stage, values in by_stage.items()
-            ],
-        }
+            )
+
+        def _avg(values: list[float]) -> int | None:
+            return int(sum(values) / len(values)) if values else None
+
+        out_rows = []
+        for label in sorted(order, key=lambda name: stats[name]["number"]):
+            decided_rows = stats[label]["decided"]
+            out_rows.append(
+                {
+                    "stage": label,
+                    "decisions": len(decided_rows),
+                    "average_taken_seconds": _avg([d["taken"] for d in decided_rows if d["taken"] is not None]),
+                    "sla_seconds": _avg([d["sla"] for d in decided_rows if d["sla"] is not None]),
+                    "within_sla": sum(1 for d in decided_rows if d["margin"] <= 0),
+                    "passed_on_after_sla": stats[label]["skipped"],
+                    "average_delta_seconds": _avg([d["margin"] for d in decided_rows]) or 0,
+                }
+            )
+        return {"report_type": report_type, "rows": out_rows}
 
     if report_type == "travel-spend-summary":
         q = (
@@ -702,13 +735,19 @@ async def list_exception_requests_log(
     if exc_ids:
         appr_rows = (
             await db.execute(
-                select(ExceptionApproval).where(ExceptionApproval.exception_request_id.in_(exc_ids))
+                select(ExceptionApproval)
+                .where(ExceptionApproval.exception_request_id.in_(exc_ids))
+                .order_by(ExceptionApproval.id)
             )
         ).scalars().all()
         for appr in appr_rows:
             approvals_map.setdefault(appr.exception_request_id, []).append(appr)
 
     decided_by_ids = {row[0].decided_by_user_id for row in result if row[0].decided_by_user_id is not None}
+    # Each step's approver too, for the approval route timeline.
+    decided_by_ids |= {
+        appr.acted_by_user_id for approvals in approvals_map.values() for appr in approvals if appr.acted_by_user_id
+    }
     decided_users: dict[int, str] = {}
     if decided_by_ids:
         users = (await db.execute(select(User).where(User.id.in_(decided_by_ids)))).scalars().all()
@@ -770,6 +809,8 @@ async def list_exception_requests_log(
                         "status": a.status,
                         "acted_by_user_id": a.acted_by_user_id,
                         "acted_at": a.acted_at,
+                        "acted_by_name": decided_users.get(a.acted_by_user_id) if a.acted_by_user_id else None,
+                        "sla_deadline_at": a.sla_deadline_at,
                         "comment": a.comment,
                     }
                     for a in approvals
@@ -812,11 +853,13 @@ async def _resolve_employee_level(employee_level: str | None, db: AsyncSession) 
     normalized = employee_level.strip()
     if not normalized:
         return None
+    # Every policy version has its own copy of each level (same code), so a code matches several
+    # rows — only the code itself is needed, so the first match is enough.
     row = (
         await db.execute(
             select(ImpactLevel.level_code).where(
                 func.lower(ImpactLevel.level_code) == normalized.lower()
-            )
+            ).limit(1)
         )
     ).scalar_one_or_none()
     if row is None:
@@ -824,9 +867,53 @@ async def _resolve_employee_level(employee_level: str | None, db: AsyncSession) 
             await db.execute(
                 select(ImpactLevel.level_code).where(
                     func.lower(ImpactLevel.level_name) == normalized.lower()
-                )
+                ).limit(1)
             )
         ).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=422, detail="Invalid employee_level filter value")
     return str(row)
+
+
+async def get_report_filter_options(db: AsyncSession) -> dict:
+    """The choices for the report filters (departments, invoice categories, levels), for anyone
+    who can view reports. Read-only names and codes only; levels come from the policy version in
+    effect today (every version repeats the same codes), or every code if none is in effect."""
+    from app.core.timezone import today_ist
+    from app.services.policy_engine import get_active_policy_version
+
+    departments = (
+        await db.execute(
+            select(Employee.department)
+            .where(Employee.department.is_not(None), Employee.department != "", Employee.is_active.is_(True))
+            .distinct()
+            .order_by(Employee.department)
+        )
+    ).scalars().all()
+    categories = (
+        await db.execute(
+            select(InvoiceLineItem.category_name)
+            .where(InvoiceLineItem.category_name.is_not(None), InvoiceLineItem.category_name != "")
+            .distinct()
+            .order_by(InvoiceLineItem.category_name)
+        )
+    ).scalars().all()
+    level_query = select(ImpactLevel.level_code, ImpactLevel.level_name).where(ImpactLevel.is_deprecated.is_(False))
+    try:
+        version = await get_active_policy_version(today_ist(), db)
+        level_query = level_query.where(ImpactLevel.policy_version_id == version.id)
+    except HTTPException:
+        pass
+    levels = {code: name for code, name in (await db.execute(level_query)).all()}
+    return {
+        "departments": list(departments),
+        "expense_categories": list(categories),
+        "impact_levels": [{"code": code, "name": levels[code]} for code in sorted(levels, key=_level_sort_key)],
+    }
+
+
+def _level_sort_key(code: str) -> tuple:
+    """L1, L2, L3A, L3B, … L10 in that order (numbers compared as numbers)."""
+    import re
+
+    return tuple(int(part) if part.isdigit() else part for part in re.split(r"(\d+)", code or ""))

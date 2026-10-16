@@ -98,6 +98,8 @@ class DuplicateCheckOut(BaseModel):
 
 class ClaimDraftIn(BaseModel):
     claim_id: int | None = None
+    # Relocation claims (trip purpose "Relocation"): the approved relocation this claim is raised against.
+    relocation_request_id: int | None = None
     # Which "New Claim" entry point created this draft — TRAVEL (default) or GENERAL. The
     # claim's *effective* routing category can still end up RELOCATION if any linked
     # invoice is tagged that way (see reimbursement_service._resolve_claim_reimbursement_category);
@@ -171,6 +173,8 @@ class ClaimSubmitIn(BaseModel):
     wizard's submit modal. Empty when nothing on the claim is flagged."""
 
     exceptions: list[ClaimSubmitExceptionIn] = Field(default_factory=list)
+    # Relocation claims only: the employee ticked "I accept" on the relocation undertaking.
+    undertaking_accepted: bool = False
 
 
 class ClaimDraftOut(BaseModel):
@@ -179,6 +183,8 @@ class ClaimDraftOut(BaseModel):
     id: int
     employee_user_id: int
     employee_id: str | None = None
+    # Only filled in on the company-wide list (GET /claims?all_claims=true) for Finance/reports.
+    employee_name: str | None = None
     trip_purpose: str | None = None
     travel_type: str = "NON_PROJECT"
     project_code: str | None = None
@@ -193,6 +199,9 @@ class ClaimDraftOut(BaseModel):
     status: ClaimStatus
     claim_reference: str | None = None
     current_approval_stage: int | None = None
+    relocation_request_id: int | None = None
+    undertaking_accepted_at: datetime | None = None
+    undertaking_text: str | None = None
     approved_amount: Decimal | None = None
     payment_utr: str | None = None
     payment_amount: Decimal | None = None

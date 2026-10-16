@@ -64,7 +64,7 @@ export default function ArchivedInvoices() {
           <div>
             <h1 className="text-lg font-bold text-ink">Archived Invoices</h1>
             <p className="mt-0.5 text-sm text-slate-500">
-              Invoices attached to a claim that&apos;s in approval, already paid, or was rejected. Re-upload the
+              Invoices attached to a claim that&apos;s been paid or was rejected. Re-upload the
               same file on the Upload Invoices page to use it on a new claim.
             </p>
           </div>
@@ -84,7 +84,7 @@ export default function ArchivedInvoices() {
         <EmptyState
           icon={Archive}
           title="No archived invoices"
-          description="Invoices move here once their claim enters approval, gets paid, or is rejected."
+          description="Invoices move here once their claim is paid or rejected. Until then they stay under “On a claim” on the Upload Invoices page."
         />
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">

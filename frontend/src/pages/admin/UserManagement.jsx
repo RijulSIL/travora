@@ -32,7 +32,7 @@ function ToggleSwitch({ checked, onChange, disabled }) {
   );
 }
 
-const roles = ['EMPLOYEE', 'REPORTING_MANAGER', 'HRBP_HR', 'PAYROLL', 'FINANCE', 'IT_ADMIN', 'CEO', 'GROUP_HEAD_HR'];
+const roles = ['EMPLOYEE', 'REPORTING_MANAGER', 'HRBP_HR', 'PAYROLL', 'FINANCE', 'IT_ADMIN', 'CEO', 'GROUP_HEAD_HR', 'RECRUITER'];
 
 const departmentsList = [
   'Engineering',

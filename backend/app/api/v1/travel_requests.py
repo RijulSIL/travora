@@ -21,6 +21,7 @@ from app.schemas.travel_request import (
     DeskQueueItemOut,
     EntitlementNoteOut,
     SupportingDocumentUploadOut,
+    TravelApproveIn,
     TravelExceptionSummaryOut,
     TravelOptionOut,
     TravelOptionsOut,
@@ -187,6 +188,7 @@ async def manager_pending_requests(
                 request=tout,
                 employee_display_name=e["employee_display_name"],
                 impact_level_code=e["impact_level_code"],
+                sla_passed_over=e.get("sla_passed_over", []),
             )
         )
     return out
@@ -311,6 +313,29 @@ async def city_suggestions(
 
 
 @router.get(
+    "/tickets/{ticket_id}",
+    dependencies=[
+        Depends(require_any_permission("submit_claim", "view_reports", "process_payments"))
+    ],
+)
+async def ticket_details(
+    ticket_id: int,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Details shown beside a ticket in the preview — same access rule as the file itself."""
+    from fastapi.encoders import jsonable_encoder
+
+    from app.models.travel_request import TravelRequestTicket
+
+    ticket = await db.get(TravelRequestTicket, ticket_id)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    await svc.assert_can_download_ticket(int(claims["sub"]), _role(claims), ticket, db)
+    return jsonable_encoder(await svc.ticket_details(ticket, db))
+
+
+@router.get(
     "/tickets/{ticket_id}/file",
     dependencies=[
         Depends(require_any_permission("submit_claim", "view_reports", "process_payments"))
@@ -429,11 +454,13 @@ async def approval_chain(
 )
 async def approve_request(
     request_id: int,
+    body: TravelApproveIn | None = None,
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ) -> TravelRequestOut:
     role = _role(claims)
-    row = await svc.approve_travel_request(request_id, int(claims["sub"]), role, db)
+    comment = (body.comment or "").strip() or None if body else None
+    row = await svc.approve_travel_request(request_id, int(claims["sub"]), role, db, comment=comment)
     return _build_request_out(row)
 
 

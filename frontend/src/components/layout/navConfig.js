@@ -34,7 +34,23 @@ const ADMIN_READONLY_PERMISSIONS = ['configure_policy', 'view_admin_readonly'];
 const PENDING_APPROVALS_SUBMENU = [
   { to: '/claims/pending?tab=claims', label: 'Claims', icon: 'clipboard', badge: 'pending_claims', scopeGate: 'claims' },
   { to: '/claims/pending?tab=travel', label: 'Travel Requests', icon: 'plane', badge: 'pending_travel', scopeGate: 'travel_request' },
+  { to: '/claims/pending?tab=relocation', label: 'Relocation', icon: 'relocation', badge: 'pending_relocation', scopeGate: 'relocation' },
 ];
+
+/** Relocation approvals as a flat entry, for roles without the claim-approval permissions that
+ * gate the shared "Pending Approvals" item (Recruiter) or without that item at all (Finance).
+ * Gated only by the live Approval Matrix (Relocation Approval workflow) — the relocation queue
+ * itself isn't permission-gated, its stage roles decide who can act (see api/v1/relocation.py). */
+function relocationApprovalsItem() {
+  return {
+    to: '/claims/pending?tab=relocation',
+    label: 'Relocation Approvals',
+    icon: 'relocation',
+    badge: 'pending_relocation',
+    badgeVariant: 'red',
+    scopeGate: 'relocation',
+  };
+}
 
 /** Builds the "Pending Approvals"-style entry shared by every role that can land on this queue —
  * same path/submenu/scope everywhere, only the label differs per role ("HR Review Queue",
@@ -82,8 +98,7 @@ function policyAdminItems() {
  * see AppSidebar's NavRow, which renders `children` as an expandable group instead of a
  * plain link when present. `getFlatNavItems` below flattens this to two rows for mobile,
  * where there's no room to expand inline. Relocation isn't a separate entry point here —
- * a Relocation-tagged invoice is picked up by the General Reimbursement wizard alongside
- * General ones (see GeneralReimbursementWizard.jsx's visibleInvoices filter). */
+ * it's a Travel Claim with trip purpose Relocation (see ClaimRelocationSteps.jsx). */
 const NEW_CLAIM_ITEM = {
   label: 'New Claim',
   icon: 'add',
@@ -227,6 +242,7 @@ export const navByRole = {
           scopeGate: 'travel_request',
           anyOf: APPROVAL_QUEUE_PERMISSIONS,
         },
+        relocationApprovalsItem(),
         { to: '/finance/gst-dashboard', label: 'GST Dashboard', icon: 'chart', anyOf: ['view_reports'] },
         { to: '/reports', label: 'Reports', icon: 'trend', anyOf: ['view_reports'] },
         { to: '/finance/erp-ledger', label: 'ERP Ledger', icon: 'bank', anyOf: ['view_reports'] },
@@ -261,6 +277,19 @@ export const navByRole = {
       { title: 'My Claims & Travel', items: SELF_SERVICE_ITEMS },
     ],
     mobile: ['/dashboard', '/admin/users', '/admin/policy-versions', '/admin/audit-logs'],
+  },
+
+  // An employee who also approves relocation requests (Relocation Approval workflow's first
+  // stage by default, pooled — any Recruiter can act).
+  RECRUITER: {
+    sections: [
+      ...S([
+        { to: '/dashboard', label: 'Home', icon: 'home', end: true },
+        relocationApprovalsItem(),
+      ]),
+      { title: 'My Claims & Travel', items: SELF_SERVICE_ITEMS },
+    ],
+    mobile: ['/dashboard', '/claims/pending?tab=relocation', '/claims/my', '/travel-requests'],
   },
 };
 
@@ -307,6 +336,7 @@ const DELEGATABLE_NAV_BY_ROLE = {
   CEO: [pendingApprovalsItem('Pending Approvals'), exceptionRequestsItem()],
   GROUP_HEAD_HR: [pendingApprovalsItem('Pending Approvals'), exceptionRequestsItem()],
   IT_ADMIN: [],
+  RECRUITER: [],
 };
 
 /**
@@ -372,9 +402,10 @@ function flattenChildren(items) {
 function scopeAllows(scopeGate, scope) {
   if (!scopeGate) return true;
   if (!scope) return true; // profile not loaded yet — show everything rather than flash-hide
-  if (scopeGate === 'approvals') return Boolean(scope.claims || scope.travel_request);
+  if (scopeGate === 'approvals') return Boolean(scope.claims || scope.travel_request || scope.relocation);
   if (scopeGate === 'claims') return Boolean(scope.claims);
   if (scopeGate === 'travel_request') return Boolean(scope.travel_request);
+  if (scopeGate === 'relocation') return Boolean(scope.relocation);
   if (scopeGate === 'exceptions') return Boolean(scope.exceptions?.length);
   return true;
 }

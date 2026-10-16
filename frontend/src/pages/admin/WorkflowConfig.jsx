@@ -93,7 +93,7 @@ const STAGE_CATEGORIES = [
   { value: 'DEFAULT', label: 'Default (all categories)' },
   { value: 'TRAVEL', label: 'Travel claims' },
   { value: 'GENERAL', label: 'General reimbursements' },
-  { value: 'RELOCATION', label: 'Relocations' },
+  { value: 'RELOCATION', label: 'Relocation claims' },
 ];
 
 // Travel requests have their own approval chain, separate from claim reimbursement — no
@@ -103,7 +103,24 @@ const TRAVEL_REQUEST_DEFAULT_STAGES = [
   { number: 1, label: 'Manager Review', route_role: 'REPORTING_MANAGER', sla_hours: 48 },
 ];
 
-const ALLOWED_STAGE_ROLES = ['REPORTING_MANAGER', 'HRBP_HR', 'PAYROLL', 'FINANCE', 'CEO', 'GROUP_HEAD_HR', 'IT_ADMIN'];
+// Relocation requests (an employee asking for relocation approval before claiming relocation
+// expenses) — like travel requests, no finance stage; same as
+// workflow_service.RELOCATION_REQUEST_DEFAULT_STAGES when nothing is configured.
+const RELOCATION_REQUEST_DEFAULT_STAGES = [
+  { number: 1, label: 'Recruiter Review', route_role: 'RECRUITER', sla_hours: 48 },
+  { number: 2, label: 'CEO Approval', route_role: 'CEO', sla_hours: 48 },
+  { number: 3, label: 'HRBP Review', route_role: 'HRBP_HR', sla_hours: 48 },
+  { number: 4, label: 'Payroll Review', route_role: 'PAYROLL', sla_hours: 48 },
+];
+
+// Workflow types stored as a category override (category_overrides[key]) but shown as their own
+// top-level "Workflow Type" rather than a claim category.
+const STANDALONE_STAGE_WORKFLOWS = {
+  TRAVEL_REQUEST: { title: 'Approval Stages — Travel Requests', defaults: TRAVEL_REQUEST_DEFAULT_STAGES },
+  RELOCATION_REQUEST: { title: 'Approval Stages — Relocation Requests', defaults: RELOCATION_REQUEST_DEFAULT_STAGES },
+};
+
+const ALLOWED_STAGE_ROLES = ['REPORTING_MANAGER', 'HRBP_HR', 'PAYROLL', 'FINANCE', 'CEO', 'GROUP_HEAD_HR', 'IT_ADMIN', 'RECRUITER'];
 const STAGE_ROLE_LABELS = {
   REPORTING_MANAGER: 'Reporting Manager',
   HRBP_HR: 'HRBP / HR',
@@ -112,6 +129,7 @@ const STAGE_ROLE_LABELS = {
   CEO: 'CEO',
   GROUP_HEAD_HR: 'Group Head HR',
   IT_ADMIN: 'IT Admin',
+  RECRUITER: 'Recruiter',
 };
 
 /** Which of ALLOWED_STAGE_ROLES to actually offer for a row's dropdown — `eligibleRoles` is
@@ -140,7 +158,7 @@ function sanitizeStageRoles(stageList) {
 // role from the matrix entirely" save-time warning below. REPORTING_MANAGER is included even
 // though it's relative-to-employee — see workflow_service.get_approver_scope's identical
 // reasoning: a user holding that role is still the kind of user this token routes to.
-const ROLES_WORTH_WARNING_ABOUT = ['REPORTING_MANAGER', 'HRBP_HR', 'PAYROLL', 'FINANCE', 'CEO', 'GROUP_HEAD_HR'];
+const ROLES_WORTH_WARNING_ABOUT = ['REPORTING_MANAGER', 'HRBP_HR', 'PAYROLL', 'FINANCE', 'CEO', 'GROUP_HEAD_HR', 'RECRUITER'];
 
 function roleLabel(role) {
   return String(role || '')
@@ -186,6 +204,9 @@ export default function WorkflowConfig() {
   const [stages, setStages] = useState([]);
   const [categoryOverrides, setCategoryOverrides] = useState({});
   const [exceptionChains, setExceptionChains] = useState({});
+  // Per-step SLA (working hours) for each exception chain, aligned with exceptionChains[type];
+  // a missing entry means the default 48h.
+  const [exceptionSlaHours, setExceptionSlaHours] = useState({});
   // Per-type on/off switch — a disabled type is never flagged/blocked anywhere it would
   // otherwise apply (travel-request creation, flight/train search, claim submission, ...);
   // missing from this map means enabled, same as a fresh deployment with nothing configured.
@@ -196,24 +217,26 @@ export default function WorkflowConfig() {
   const [exceptionSubmissionMode, setExceptionSubmissionMode] = useState({});
   // What a category override "falls back to" when unconfigured — every claim category shares
   // the main `stages` list, but Travel Request has its own, unrelated default.
-  const defaultStagesForCategory = (category) =>
-    category === 'TRAVEL_REQUEST' ? TRAVEL_REQUEST_DEFAULT_STAGES : stages;
+  const defaultStagesForCategory = (category) => STANDALONE_STAGE_WORKFLOWS[category]?.defaults || stages;
   // Travel Request approval is stored the same way as a claim category override
   // (category_overrides.TRAVEL_REQUEST) — it's just surfaced as its own top-level "Workflow
   // Type" instead of nested in the claim "Applies to" selector, so it behaves exactly like one
   // throughout the stage editor below, just keyed by 'TRAVEL_REQUEST' instead of selectedCategory.
+  // Relocation Approval (category_overrides.RELOCATION_REQUEST) works exactly the same way.
   const isTravelRequestWorkflow = selectedWorkflow === 'TRAVEL_REQUEST';
+  const isRelocationWorkflow = selectedWorkflow === 'RELOCATION_REQUEST';
+  const isStandaloneStageWorkflow = isTravelRequestWorkflow || isRelocationWorkflow;
   // Not an exception type, but stored in the same exception_chains dict (see
   // workflow_service.EXCEPTION_APPROVAL_CHAINS["POLICY_APPROVAL"]) and rendered through the
   // exact same chain-editor path below as any exception type — only the dropdown placement,
   // heading text, and which permission gates its role options differ.
   const isPolicyApprovalWorkflow = selectedWorkflow === 'POLICY_APPROVAL';
-  const isCategoryOverride = (selectedWorkflow === 'STANDARD' && selectedCategory !== 'DEFAULT') || isTravelRequestWorkflow;
-  const overrideKey = isTravelRequestWorkflow ? 'TRAVEL_REQUEST' : selectedCategory;
-  // Claim and Travel Request stages are full {label, route_role, sla_hours} objects with
-  // editable label/SLA — exception chains are just a bare ordered list of roles, so those two
+  const isCategoryOverride = (selectedWorkflow === 'STANDARD' && selectedCategory !== 'DEFAULT') || isStandaloneStageWorkflow;
+  const overrideKey = isStandaloneStageWorkflow ? selectedWorkflow : selectedCategory;
+  // Claim, Travel Request and Relocation stages are full {label, route_role, sla_hours} objects
+  // with editable label/SLA — exception chains are just a bare ordered list of roles, so those two
   // fields stay fixed/disabled for them.
-  const isStageBasedWorkflow = selectedWorkflow === 'STANDARD' || isTravelRequestWorkflow;
+  const isStageBasedWorkflow = selectedWorkflow === 'STANDARD' || isStandaloneStageWorkflow;
   const [draggedIdx, setDraggedIdx] = useState(null);
   const [submission, setSubmission] = useState({
     max_working_days_after_return: 5,
@@ -268,7 +291,7 @@ export default function WorkflowConfig() {
 
       const loadedOverrides = cfg.category_overrides || {};
       const sanitizedOverrides = {};
-      for (const cat of ['TRAVEL', 'GENERAL', 'RELOCATION', 'TRAVEL_REQUEST']) {
+      for (const cat of ['TRAVEL', 'GENERAL', 'RELOCATION', 'TRAVEL_REQUEST', 'RELOCATION_REQUEST']) {
         if (loadedOverrides[cat]?.stages?.length) {
           sanitizedOverrides[cat] = { stages: sanitizeStageRoles(loadedOverrides[cat].stages) };
         }
@@ -276,6 +299,7 @@ export default function WorkflowConfig() {
       setCategoryOverrides(sanitizedOverrides);
       setSelectedCategory('DEFAULT');
       setExceptionChains(cfg.exception_chains || {});
+      setExceptionSlaHours(cfg.exception_sla_hours || {});
       setExceptionEnabled(cfg.exception_enabled || {});
       setExceptionSubmissionMode(cfg.exception_submission_mode || {});
 
@@ -324,6 +348,13 @@ export default function WorkflowConfig() {
       exception_chains: exceptionChains,
       exception_enabled: exceptionEnabled,
       exception_submission_mode: exceptionSubmissionMode,
+      // Only chains that still exist, each trimmed/padded to its chain's length.
+      exception_sla_hours: Object.fromEntries(
+        Object.entries(exceptionChains).map(([type, chain]) => [
+          type,
+          (chain || []).map((_, i) => sanitizeSlaHours(exceptionSlaHours[type]?.[i] ?? 48)),
+        ]),
+      ),
     };
 
     if (lastLoadedConfig) {
@@ -333,7 +364,7 @@ export default function WorkflowConfig() {
       if (dropped.length) {
         const names = dropped.map(roleLabel).join(', ');
         const proceed = window.confirm(
-          `After this save, ${names} will no longer be assigned to any claim stage, travel-request stage, or exception chain anywhere in the Approval Matrix. Anyone holding ${dropped.length > 1 ? 'these roles' : 'this role'} will lose access to Pending Approvals and Exception Requests entirely.\n\nSave anyway?`
+          `After this save, ${names} will no longer be assigned to any claim stage, travel-request stage, relocation stage, or exception chain anywhere in the Approval Matrix. Anyone holding ${dropped.length > 1 ? 'these roles' : 'this role'} will lose access to Pending Approvals and Exception Requests entirely.\n\nSave anyway?`
         );
         if (!proceed) return;
       }
@@ -395,6 +426,7 @@ export default function WorkflowConfig() {
           <select className="field min-w-64 bg-slate-50 py-1.5 text-sm" value={selectedWorkflow} onChange={(event) => setSelectedWorkflow(event.target.value)}>
             <option value="STANDARD">Claim Approval</option>
             <option value="TRAVEL_REQUEST">Travel Request Approval</option>
+            <option value="RELOCATION_REQUEST">Relocation Approval</option>
             <option value="POLICY_APPROVAL">Policy Approval</option>
             <optgroup label="Exception Workflows — Claims">
               {Object.entries(EXCEPTION_TYPES)
@@ -432,7 +464,7 @@ export default function WorkflowConfig() {
         <section className="panel mb-4 flex flex-wrap items-center justify-between gap-3 p-4">
           {categoryOverrides[overrideKey]?.stages?.length ? (
             <span className="badge bg-brand/10 text-brand">
-              Custom route configured{isTravelRequestWorkflow ? '' : ' for this category'}
+              Custom route configured{isStandaloneStageWorkflow ? '' : ' for this category'}
             </span>
           ) : (
             <span className="badge bg-slate-100 text-slate-700">Using the shared default route below</span>
@@ -534,16 +566,22 @@ export default function WorkflowConfig() {
         <h2 className="mb-3 text-base font-semibold text-ink">
           {selectedWorkflow === 'STANDARD'
             ? `Approval Stages — ${STAGE_CATEGORIES.find((c) => c.value === selectedCategory)?.label}`
-            : isTravelRequestWorkflow
-              ? 'Approval Stages — Travel Requests'
+            : isStandaloneStageWorkflow
+              ? STANDALONE_STAGE_WORKFLOWS[selectedWorkflow].title
               : isPolicyApprovalWorkflow
                 ? 'Approval Chain — Policy Versions'
                 : EXCEPTION_TYPES[selectedWorkflow]}
         </h2>
         <p className="mb-3 text-xs text-slate-500">
-          {isTravelRequestWorkflow
+          {isStandaloneStageWorkflow || !isStageBasedWorkflow
             ? 'Stages run in order. Maximum 6 stages.'
             : 'Stages run in order. Finance must be the final stage. Maximum 6 stages.'}
+          {isRelocationWorkflow
+            ? ' An employee who doesn’t already have relocation approval sends a request through these stages; once the last one approves, they can raise relocation claims against it. The claims themselves follow Claim Approval → Relocations, ending with Finance.'
+            : ''}
+          {!isPolicyApprovalWorkflow
+            ? ' SLA hours count working days only (weekends and Holiday Calendar days are skipped). If an approver misses their SLA it passes to the next stage — except the last stage, which keeps getting reminders every 4 working hours.'
+            : ''}
         </p>
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-center text-[11px] font-bold uppercase tracking-wider text-slate-500">
@@ -566,7 +604,7 @@ export default function WorkflowConfig() {
                   : (exceptionChains[selectedWorkflow] || []).map((r, i) => ({
                       label: `Exception Approval ${i + 1}`,
                       route_role: r,
-                      sla_hours: 48,
+                      sla_hours: exceptionSlaHours[selectedWorkflow]?.[i] ?? 48,
                     }));
 
               const updateCurrentStages = (newStages) => {
@@ -579,6 +617,11 @@ export default function WorkflowConfig() {
                     ...exceptionChains,
                     [selectedWorkflow]: newStages.map(s => s.route_role),
                   });
+                  // SLA hours travel with their step when steps are reordered or removed.
+                  setExceptionSlaHours((prev) => ({
+                    ...prev,
+                    [selectedWorkflow]: newStages.map((s) => sanitizeSlaHours(s.sla_hours ?? 48)),
+                  }));
                 }
               };
 
@@ -632,7 +675,11 @@ export default function WorkflowConfig() {
                     }}
                   >
                     {(() => {
-                      const eligibleRoles = isStageBasedWorkflow
+                      // Relocation stages aren't permission-gated (the stage role alone decides
+                      // who acts, e.g. a Recruiter with no approval permission) — offer every role.
+                      const eligibleRoles = isRelocationWorkflow
+                        ? null
+                        : isStageBasedWorkflow
                         ? claimApproverEligibleRoles
                         : isPolicyApprovalWorkflow
                           ? policyApproverEligibleRoles
@@ -652,7 +699,7 @@ export default function WorkflowConfig() {
                       className="w-20 text-center rounded-lg border border-transparent bg-slate-50 px-3 py-1.5 text-sm hover:border-slate-200 focus:border-brand focus:bg-white focus:ring-1 focus:ring-brand/30 transition-all outline-none disabled:opacity-50 disabled:bg-slate-100 disabled:text-slate-500"
                       type="number"
                       min="1"
-                      disabled={isViewOnly || !isStageBasedWorkflow}
+                      disabled={isViewOnly || isPolicyApprovalWorkflow}
                       value={stage.sla_hours ?? ''}
                       onChange={(e) => {
                         const next = [...currentStages];
@@ -743,6 +790,13 @@ export default function WorkflowConfig() {
                   ...exceptionChains,
                   [selectedWorkflow]: [...(exceptionChains[selectedWorkflow] || []), 'HRBP_HR']
                 });
+                setExceptionSlaHours((prev) => ({
+                  ...prev,
+                  [selectedWorkflow]: [
+                    ...(exceptionChains[selectedWorkflow] || []).map((_, i) => prev[selectedWorkflow]?.[i] ?? 48),
+                    48,
+                  ],
+                }));
               }
             }}
           >

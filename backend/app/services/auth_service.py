@@ -119,25 +119,35 @@ async def create_refresh_token(user_id: int, db: AsyncSession) -> str:
     return raw_token
 
 
+# How long a just-swapped refresh token is still accepted. Covers requests that were already on
+# their way with it: a page's double load in development, two tabs refreshing at the same moment.
+REFRESH_ROTATION_GRACE = timedelta(seconds=30)
+
+
 async def rotate_refresh_token(old_token: str, db: AsyncSession) -> tuple[str, User]:
+    """Swap a refresh token for a new one and cancel the old one, so a copied token stops
+    working as soon as the real browser refreshes. A token swapped less than
+    REFRESH_ROTATION_GRACE ago is still accepted (and gets its own new token) rather than
+    logging the user out; one cancelled by logout, or swapped longer ago, is refused."""
     result = await db.execute(
         select(RefreshToken).where(RefreshToken.token_hash == hash_token(old_token))
     )
     stored_token = result.scalar_one_or_none()
-    if (
-        stored_token is None
-        or stored_token.revoked
-        or stored_token.expires_at <= _utcnow()
+    now = _utcnow()
+    if stored_token is None or stored_token.expires_at <= now:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+    if stored_token.revoked and (
+        stored_token.rotated_at is None or now - stored_token.rotated_at > REFRESH_ROTATION_GRACE
     ):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
-
-
 
     user = await db.get(User, stored_token.user_id)
     if user is None or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user")
 
-    # stored_token.revoked = True
+    if not stored_token.revoked:
+        stored_token.revoked = True
+        stored_token.rotated_at = now
 
     new_refresh = await create_refresh_token(user.id, db)
     return new_refresh, user

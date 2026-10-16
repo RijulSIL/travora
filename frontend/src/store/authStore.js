@@ -38,6 +38,16 @@ export const useAuthStore = create((set) => ({
 }));
 
 
+// Another tab swapped the refresh token (each refresh cancels the old one) — keep this tab's copy
+// current so it never sends the cancelled one.
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (event) => {
+    if (event.key === 'refresh_token' && event.newValue) {
+      useAuthStore.setState({ refreshToken: event.newValue });
+    }
+  });
+}
+
 export const getAccessToken = () => useAuthStore.getState().accessToken;
 export const setSession = (session) => useAuthStore.getState().setSession(session);
 export const clearSession = () => useAuthStore.getState().clearSession();

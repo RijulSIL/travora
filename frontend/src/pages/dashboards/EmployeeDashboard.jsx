@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { FileText, PlusCircle, ReceiptIndianRupee, Plane, Briefcase, ShieldCheck, ArrowRight } from 'lucide-react';
 
-import ClaimApprovalStepper from '../../components/claims/ClaimApprovalStepper';
+import { ClaimListRow, claimStanding } from '../../components/claims/ClaimListRow';
 import MyLimitsModal from '../../components/dashboard/MyLimitsModal';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { hasPermission } from '../../services/permissions';
@@ -17,19 +17,9 @@ function money(value) {
   });
 }
 
-const STATUS_LABELS = {
-  DRAFT: 'Draft',
-  SUBMITTED: 'Submitted',
-  IN_APPROVAL: 'In approval',
-  READY_FOR_PAYMENT: 'Ready for payment',
-  SENT_BACK: 'Sent back',
-  REJECTED: 'Rejected',
-  ON_HOLD: 'On hold',
-  PAID: 'Paid',
-};
-
 export default function EmployeeDashboard() {
   useSetPageTitle('Home');
+  const navigate = useNavigate();
   const permissions = useAuthStore((s) => s.profile?.permissions);
   const canSubmit = hasPermission(permissions, 'submit_claim');
   const profile = useAuthStore((s) => s.profile);
@@ -88,11 +78,6 @@ export default function EmployeeDashboard() {
 
   const openCount = claims.filter((c) => !['PAID', 'REJECTED'].includes(c.status)).length;
   const latest = claims[0];
-  const stages = chainData?.stages ?? [];
-  const current = chainData?.current_approval_stage;
-  const report = latest?.compliance_report || {};
-  const total = report.total_claimed || 0;
-  const net = report.net_payable ?? total;
 
   return (
     <div className="space-y-6">
@@ -162,57 +147,46 @@ export default function EmployeeDashboard() {
       <div className={`grid gap-6 ${canSubmit ? 'lg:grid-cols-[1fr_320px]' : 'lg:grid-cols-1'}`}>
         {/* Latest claim */}
         <section className="panel p-6">
-          <div className="mb-4 flex flex-wrap justify-between gap-3">
+          <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
             <div>
               <h3 className="text-[15px] font-bold text-ink">Latest claim</h3>
-              <p className="text-xs text-slate-400">
-                Mirrors the progression stepper shown on{' '}
-                <Link className="text-brand hover:underline" to="/claims/my">My Claims</Link>.
-              </p>
+              <p className="text-xs text-slate-400">Where your most recent claim stands.</p>
             </div>
             {latest ? (
-              <Link className="btn-secondary text-xs" to={`/claims/${latest.id}`}>
-                Open detail
+              <Link className="inline-flex items-center gap-1 text-[13px] font-semibold text-brand hover:underline" to="/claims/my">
+                All my claims <ArrowRight className="h-3.5 w-3.5" />
               </Link>
             ) : null}
           </div>
 
           {loading ? <p className="text-sm text-slate-500">Loading latest claim…</p> : null}
 
-          {!loading && !claims.length ? (
-            <p className="text-sm text-slate-500">No claims submitted yet.</p>
-          ) : null}
+          {!loading && !claims.length ? <p className="text-sm text-slate-500">No claims submitted yet.</p> : null}
 
           {!loading && latest ? (
-            <div className="rounded-xl border border-slate-100 bg-slate-50/60 p-4">
-              <div className="flex flex-wrap justify-between gap-4">
-                <div>
-                  <div className="text-sm font-bold text-ink">
-                    {latest.claim_reference || `Claim #${latest.id}`}
-                  </div>
-                  <div className="mt-1 text-xs text-slate-500">
-                    {STATUS_LABELS[latest.status] || latest.status} · ₹{money(total)}{' '}
-                    <span className="text-slate-300">/</span> Net ₹{money(net)}
-                  </div>
-                </div>
-              </div>
-              {latest.status !== 'DRAFT' ? (
-                <div className="mt-4">
-                  <ClaimApprovalStepper
-                    stages={stages}
-                    currentStageNumber={current}
-                    claimStatus={latest.status}
-                    emptyHint="Approval stages will appear once the claim is routed."
-                  />
-                </div>
-              ) : (
-                <div className="mt-4 flex items-center justify-between">
-                  <p className="text-xs text-slate-500">Draft — submit when ready.</p>
-                  <Link className="btn-primary text-xs" to={claimEditPath(latest)}>
-                    Edit Draft
-                  </Link>
-                </div>
-              )}
+            <div className="overflow-hidden rounded-[14px] border border-slate-200 bg-white">
+              <ClaimListRow
+                compact
+                claim={latest}
+                standing={claimStanding(latest, chainData)}
+                onOpen={() => navigate(latest.status === 'DRAFT' ? claimEditPath(latest) : `/claims/${latest.id}`)}
+                actions={
+                  latest.status === 'DRAFT' || latest.status === 'SENT_BACK' ? (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        navigate(claimEditPath(latest));
+                      }}
+                      className={`inline-flex h-7 items-center whitespace-nowrap rounded-lg px-2.5 text-[11.5px] font-bold text-white ${
+                        latest.status === 'SENT_BACK' ? 'bg-rose-700 hover:bg-rose-800' : 'bg-brand hover:bg-brand/90'
+                      }`}
+                    >
+                      {latest.status === 'SENT_BACK' ? 'Fix & resubmit' : 'Continue'}
+                    </button>
+                  ) : null
+                }
+              />
             </div>
           ) : null}
         </section>

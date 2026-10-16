@@ -164,7 +164,15 @@ async def get_permission_config(db: AsyncSession) -> dict:
     row = await db.get(RolePermissionConfig, 1)
     if row is None or not row.config_json:
         return _default_config()
-    return row.config_json
+    # A role added to the app after this config was last saved (e.g. RECRUITER) starts from its
+    # code defaults until an admin edits it — otherwise it would have no permissions at all and
+    # the next save would fail validation for the missing role.
+    defaults = _default_config()
+    config = row.config_json
+    return {
+        section: {**defaults[section], **(config.get(section) or {})}
+        for section in ("permissions", "delegatable_permissions")
+    }
 
 
 async def get_effective_permission_matrix(db: AsyncSession) -> dict[Role, set[str]]:

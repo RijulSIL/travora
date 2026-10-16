@@ -51,6 +51,7 @@ from app.models.travel_booking import (
     TravelTrip,
     TripStatus,
 )
+from app.models.relocation import RelocationApprovalStage, RelocationRequest
 from app.models.travel_request import (
     ProjectNotificationRecipient,
     TravelRequest,
@@ -62,6 +63,8 @@ from app.models.travel_request import (
 )
 
 __all__ = [
+    "RelocationApprovalStage",
+    "RelocationRequest",
     "AdvanceRequest",
     "AirEligibility",
     "AirClass",

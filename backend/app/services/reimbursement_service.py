@@ -81,11 +81,22 @@ SUPPORTED_CONTENT_TYPES = {
 OPTIONAL_INVOICE_FIELD_KEYS = {"supplier_gstin", "company_gstin"}
 GSTIN_PATTERN = re.compile(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$")
 
-# A claim in any of these states retires its invoices from reuse (assert_invoices_eligible_
-# for_claim) and moves them to the Archived Invoices view (app/api/v1/invoices.py) — the
-# same set also blocks further edits to the invoice's extracted fields below, so a receipt
-# that's already been through approval/payment/rejection can't quietly change afterwards.
+# A claim in any of these states moves its invoices to the Archived Invoices view
+# (app/api/v1/invoices.py), off the Upload Invoices page and out of its 30-invoice count.
+# Until then — submitted, in exception review, in approval, approved — they stay on the Upload
+# Invoices page under "On a claim", so the employee can follow them until they're paid.
+INVOICE_ARCHIVING_CLAIM_STATUSES = {
+    ClaimStatus.PAID,
+    ClaimStatus.REJECTED,
+}
+
+# A claim in any of these states blocks further edits to its invoices' extracted fields and
+# payment proof (below), so a receipt that's already been submitted can't quietly change
+# afterwards. Every post-submit status belongs here. Only DRAFT and SENT_BACK leave them editable.
 INVOICE_LOCKING_CLAIM_STATUSES = {
+    ClaimStatus.SUBMITTED,
+    ClaimStatus.PENDING_EXCEPTION,
+    ClaimStatus.ON_HOLD,
     ClaimStatus.IN_APPROVAL,
     ClaimStatus.READY_FOR_PAYMENT,
     ClaimStatus.PAID,
@@ -1505,11 +1516,28 @@ async def _build_claim_expenses(
         "incidental": "INCIDENTAL_DEVIATION",
         "day_visit": "DAY_VISIT_EXTERNAL_MEETING",
     }
+    # Policy exceptions don't apply to relocation claims (for now): no caps, no flags.
+    no_policy_checks = claim.reimbursement_category == ReimbursementCategory.RELOCATION
     expenses: list[ClaimExpense] = []
     for (category_id, category_name), amount in grouped.items():
         cap_amount = None
         policy_status = "OK"
         field = _category_limit_field(category_name)
+        if no_policy_checks:
+            expense = ClaimExpense(
+                claim_id=claim.id,
+                expense_category_id=category_id,
+                category_name=category_name,
+                amount=amount,
+                taxable_value=grouped_taxable.get((category_id, category_name), Decimal("0.00")),
+                cap_amount=None,
+                policy_status="OK",
+                exception_requested=False,
+                exception_type=None,
+            )
+            db.add(expense)
+            expenses.append(expense)
+            continue
         if limit_row and field and is_exception_enabled(cfg, field_exception_types.get(field, field)):
             cap_amount = getattr(limit_row, f"{field}_cap")
             if twin_sharing_active and field == "hotel" and cap_amount:
@@ -1614,21 +1642,10 @@ async def assert_invoices_eligible_for_claim(
         inv_label = inv.original_filename or f"Invoice {iid}"
         if inv.uploader_user_id != user_id:
             raise HTTPException(status_code=403, detail=f"{inv_label} cannot be linked to this claim")
-        # Travel claims draw only from Travel-tagged invoices. General Reimbursement's wizard
-        # is also where Relocation-tagged invoices are picked (they share one trip-less
-        # picker — see GeneralReimbursementWizard.jsx's visibleInvoices — since Relocation
-        # isn't a distinct "New Claim" entry point), so a claim that started as GENERAL — or
-        # has already been promoted to RELOCATION by _resolve_claim_reimbursement_category
-        # below — accepts either.
-        wants_general_pool = claim_category in (
-            ReimbursementCategory.GENERAL,
-            ReimbursementCategory.RELOCATION,
-        )
-        is_general_pool_invoice = inv.reimbursement_category in (
-            ReimbursementCategory.GENERAL,
-            ReimbursementCategory.RELOCATION,
-        )
-        if claim_category is not None and wants_general_pool != is_general_pool_invoice:
+        # Each claim type draws only from invoices tagged for it: Travel claims from Travel,
+        # General Reimbursement from General, relocation claims (Travel Claim form, trip purpose
+        # Relocation) from Relocation — the three never mix.
+        if claim_category is not None and inv.reimbursement_category != claim_category:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=(
@@ -1710,31 +1727,6 @@ async def delete_claim_draft(claim_id: int, user_id: int, db: AsyncSession) -> N
     await db.commit()
 
 
-async def _resolve_claim_reimbursement_category(
-    claim: ClaimDraft, invoice_ids: list[int], db: AsyncSession
-) -> None:
-    """Relocation is tagged per-invoice, not chosen at claim-creation time — it's picked
-    from the same trip-less General Reimbursement wizard/picker (see
-    GeneralReimbursementWizard.jsx's visibleInvoices), not a distinct "New Claim" entry point.
-    If any linked invoice is tagged RELOCATION, that takes precedence over the GENERAL entry
-    point that created this claim, since it's the one that drives approval routing (see
-    workflow_service.get_workflow_config's category param). Travel claims never go through
-    this picker, so this only ever promotes GENERAL -> RELOCATION, never touches a TRAVEL
-    claim (assert_invoices_eligible_for_claim already keeps Travel's invoice pool separate)."""
-    if not invoice_ids or claim.reimbursement_category == ReimbursementCategory.TRAVEL:
-        return
-    has_relocation = (
-        await db.execute(
-            select(Invoice.id).where(
-                Invoice.id.in_(invoice_ids),
-                Invoice.reimbursement_category == ReimbursementCategory.RELOCATION,
-            )
-        )
-    ).first()
-    if has_relocation:
-        claim.reimbursement_category = ReimbursementCategory.RELOCATION
-
-
 async def _create_or_update_claim_draft_impl(
     payload: ClaimDraftIn, user_id: int, db: AsyncSession
 ) -> tuple[ClaimDraft, list[ClaimExpense], list[int], list[int]]:
@@ -1757,6 +1749,31 @@ async def _create_or_update_claim_draft_impl(
         # Re-open sent-back claims for correction/resubmission.
         claim.status = ClaimStatus.DRAFT
         claim.current_approval_stage = None
+
+    # Relocation: started from the Travel Claim form with trip purpose "Relocation". It's its own
+    # claim type (RELOCATION), raised against an approved relocation, with Relocation invoices only
+    # and no trips; origin/destination come from that relocation approval.
+    from app.services.relocation_service import RELOCATION_TRIP_PURPOSE, assert_usable_for_claim
+
+    relocation = None
+    if (
+        payload.trip_purpose == RELOCATION_TRIP_PURPOSE
+        or payload.reimbursement_category == ReimbursementCategory.RELOCATION
+        or payload.relocation_request_id
+    ):
+        relocation = await assert_usable_for_claim(payload.relocation_request_id, user_id, db)
+        payload = payload.model_copy(
+            update={
+                "reimbursement_category": ReimbursementCategory.RELOCATION,
+                "trip_purpose": RELOCATION_TRIP_PURPOSE,
+                "travel_type": "NON_PROJECT",
+                "project_code": None,
+                "trip_ids": [],
+                "from_city": relocation.origin_city,
+                "destination_city": relocation.destination_city,
+                "office_location": payload.office_location or relocation.destination_city,
+            }
+        )
 
     if payload.invoice_ids:
         await assert_invoices_eligible_for_claim(
@@ -1789,6 +1806,7 @@ async def _create_or_update_claim_draft_impl(
     for key, value in payload.model_dump(exclude=exclude_keys).items():
         if hasattr(claim, key):
             setattr(claim, key, value)
+    claim.relocation_request_id = relocation.id if relocation else None
 
     if payload.destination_city and payload.departure_date:
         claim.destination_city_group = await resolve_city_group(
@@ -1807,8 +1825,6 @@ async def _create_or_update_claim_draft_impl(
         if not user_may_attach_trip_to_claim(trip, user):
             raise HTTPException(status_code=403, detail=f"Trip {trip_id} cannot be linked to this claim")
         db.add(ClaimTrip(claim_id=claim.id, trip_id=trip_id))
-
-    await _resolve_claim_reimbursement_category(claim, payload.invoice_ids, db)
 
     expenses, gst_summary = await _build_claim_expenses(claim, payload.invoice_ids, db)
     exceptions = [
@@ -1952,6 +1968,7 @@ async def submit_claim(
     user_id: int,
     db: AsyncSession,
     exception_reasons: list[dict] | None = None,
+    undertaking_accepted: bool = False,
 ) -> ClaimDraft:
     """Submit a draft (or sent-back) claim. Every flagged expense still needing an exception
     must come with a reason in `exception_reasons` ({exception_type, category_name, reason}) —
@@ -1975,6 +1992,17 @@ async def submit_claim(
             exclude_claim_id=claim.id,
             claim_category=claim.reimbursement_category,
         )
+
+    relocation = None
+    if claim.reimbursement_category == ReimbursementCategory.RELOCATION:
+        from app.services.relocation_service import assert_usable_for_claim
+
+        relocation = await assert_usable_for_claim(claim.relocation_request_id, user_id, db)
+        if not undertaking_accepted:
+            raise HTTPException(
+                status_code=422,
+                detail="Accept the relocation undertaking to submit this claim",
+            )
 
     cfg = await get_workflow_config(db)
     needing = [expense for expense in expenses if expense.exception_reason_required]
@@ -2042,6 +2070,16 @@ async def submit_claim(
         claim.compliance_report = rep
         
     claim.submitted_at = _now()
+    if relocation is not None:
+        from app.services.relocation_service import render_undertaking
+
+        # Saved exactly as accepted — with this claim's origin, destination and amount.
+        claim.undertaking_accepted_at = claim.submitted_at
+        claim.undertaking_text = render_undertaking(
+            relocation.origin_city,
+            relocation.destination_city,
+            sum((Decimal(str(e.amount)) for e in expenses), Decimal("0")),
+        )
     # Anything still pending here predates exceptions-on-submit (raised mid-wizard on a draft) —
     # superseded by the reasons given now.
     await cancel_pending_claim_exceptions(claim.id, "Superseded by the reason given at submission.", db)

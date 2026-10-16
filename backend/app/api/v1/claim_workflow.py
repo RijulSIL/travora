@@ -1,11 +1,16 @@
-from fastapi import APIRouter, Depends
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.encoders import jsonable_encoder
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.rbac import get_current_claims, require_any_permission, require_permission
+from app.models.auth import User
 from app.models.reimbursement import Invoice
+from app.models.relocation import RelocationRequest
 from app.models.travel_booking import TravelTrip
 from app.schemas.reimbursement import ClaimDraftOut, InvoiceOut
 from app.schemas.travel_booking import TripOut
@@ -19,6 +24,7 @@ from app.schemas.workflow import (
 )
 from app.services.claim_response_builder import claim_workflow_bundle_dict
 from app.services.reimbursement_service import get_claim_bundle
+from app.services.relocation_service import relocation_summary_for_claim
 from app.services.travel_request_service import desk_ticket_ids_for_trips
 from app.services.workflow_service import (
     approve_claim_stage,
@@ -80,7 +86,33 @@ async def get_claim_detail(
             if tid in trip_by_id
         ]
 
-    return jsonable_encoder({**bundle, "linked_invoices": linked_invoices, "linked_trips": linked_trips})
+    # Relocation claims: the approval (or uploaded evidence) behind it, claimed vs estimate, and
+    # the accepted undertaking — so approvers and Finance review it all in one place.
+    relocation = await relocation_summary_for_claim(_claim, db)
+    owner = await db.get(User, _claim.employee_user_id)
+    return jsonable_encoder(
+        {
+            **bundle,
+            "linked_invoices": linked_invoices,
+            "linked_trips": linked_trips,
+            "relocation": relocation,
+            "employee_name": (owner.full_name or owner.email) if owner else None,
+        }
+    )
+
+
+@router.get("/{claim_id}/relocation-evidence")
+async def claim_relocation_evidence(
+    claim_id: int,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> FileResponse:
+    """The prior-approval evidence behind a relocation claim, for anyone who can view the claim."""
+    claim = await assert_user_can_view_claim_workflow(claim_id, int(claims["sub"]), db)
+    row = await db.get(RelocationRequest, claim.relocation_request_id) if claim.relocation_request_id else None
+    if row is None or not row.evidence_path or not Path(row.evidence_path).exists():
+        raise HTTPException(status_code=404, detail="No approval evidence on this claim")
+    return FileResponse(row.evidence_path, media_type=row.evidence_content_type, filename=row.evidence_filename)
 
 
 @router.get("/{claim_id}/approval-chain")

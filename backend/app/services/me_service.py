@@ -13,6 +13,7 @@ from app.models.employee import Employee
 from app.models.expense_category import CompanyProfile
 from app.models.policy import CityGroupTier, ExpenseLimit, ImpactLevel, PolicyVersion
 from app.schemas.me import ApproverScopeOut, CityTierLimitsOut, MeOut, MyPolicyLimitsOut, PolicyCapOut
+from app.services.advance_service import get_outstanding_advance
 from app.services.claim_submission_rules import parse_auto_approve_threshold
 from app.services.policy_engine import get_active_policy_version, get_expense_limits
 from app.services.workflow_service import get_approver_scope, get_workflow_config, list_pending_approvals
@@ -157,7 +158,12 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
     travel_reqs = await list_pending_travel_requests_for_approver(user_id, db)
     pending_travel_requests_count = len(travel_reqs)
 
-    pending_count = pending_claims_count + pending_travel_requests_count
+    # Relocation requests waiting on this user (Relocation Approval workflow — stage roles decide,
+    # e.g. any Recruiter), same stage-aware check as above.
+    from app.services.relocation_service import list_pending_for_approver as list_pending_relocations
+    pending_relocation_count = len(await list_pending_relocations(user_id, db))
+
+    pending_count = pending_claims_count + pending_travel_requests_count + pending_relocation_count
 
     travel_desk_queue_count = 0
     if user.role == Role.HRBP_HR or Role.HRBP_HR in delegated_roles:
@@ -211,16 +217,19 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
     scope_categories = set(own_scope["claim_categories"])
     scope_travel_request = own_scope["travel_request"]
     scope_exceptions = set(own_scope["exceptions"])
+    scope_relocation = own_scope["relocation"]
     for delegated_role in delegated_roles:
         d_scope = await get_approver_scope(delegated_role, db)
         scope_categories |= set(d_scope["claim_categories"])
         scope_travel_request = scope_travel_request or d_scope["travel_request"]
         scope_exceptions |= set(d_scope["exceptions"])
+        scope_relocation = scope_relocation or d_scope["relocation"]
     approver_scope = ApproverScopeOut(
         claims=bool(scope_categories),
         claim_categories=sorted(scope_categories),
         travel_request=scope_travel_request,
         exceptions=sorted(scope_exceptions),
+        relocation=scope_relocation,
     )
 
     # The single source the frontend trusts for "can I see/use this page" — replaces its own
@@ -246,6 +255,7 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
         pending_approvals_count=pending_count,
         pending_claims_count=pending_claims_count,
         pending_travel_requests_count=pending_travel_requests_count,
+        pending_relocation_count=pending_relocation_count,
         hotel_cap_group_a=hotel_cap_group_a,
         payment_queue_total_inr=pq_total_str,
         exception_requests_pending_count=int(exc_pending),
@@ -261,4 +271,5 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
         org_auto_approve_ceiling=org_auto_approve_ceiling_str,
         approver_scope=approver_scope,
         permissions=permissions,
+        outstanding_advance=_fmt_inr(await get_outstanding_advance(user.id, db)),
     )

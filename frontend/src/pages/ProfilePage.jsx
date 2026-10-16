@@ -1,26 +1,544 @@
-import { useState, useEffect } from 'react';
+import { Check, Eye, EyeOff, Search, X } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Users, Search, Calendar, Trash2, Plus, AlertCircle, Shield, Lock, KeyRound, Eye, EyeOff, Check, IndianRupee, Network } from 'lucide-react';
-import { format } from 'date-fns';
 
-import EmptyState from '../components/ui/EmptyState';
-import OrgChart from '../components/profile/OrgChart';
-import { useAuthStore } from '../store/authStore';
+import { roleAccent, roleChip } from '../components/layout/roleAccent';
+import { Pill } from '../components/approvals/ApprovalQueueParts';
+import { BTN_GHOST, BTN_MAIN, BTN_NO, CARD, CardHead, FIELD, LABEL } from '../components/policy/PolicyAdminParts';
 import { useSetPageTitle } from '../context/PageTitleContext';
-import { reimbursementApi } from '../services/reimbursementApi';
-import api from '../services/api';
 import useToast from '../hooks/useToast';
+import api from '../services/api';
+import { reimbursementApi } from '../services/reimbursementApi';
+import { useAuthStore } from '../store/authStore';
 import { formatRole } from '../utils/formatters';
 
+const SPECIAL = /[!@#$%^&*()_+={}[\]|\\:;"'<>,.?/~`-]/;
+const PASSWORD_RULES = [
+  ['8+ characters', (v) => v.length >= 8, 'Password must be at least 8 characters long'],
+  ['An uppercase letter', (v) => /[A-Z]/.test(v), 'Password must contain at least one uppercase letter'],
+  ['A lowercase letter', (v) => /[a-z]/.test(v), 'Password must contain at least one lowercase letter'],
+  ['A number', (v) => /[0-9]/.test(v), 'Password must contain at least one number'],
+  ['A special character', (v) => SPECIAL.test(v), 'Password must contain at least one special character'],
+];
+const inr = (v) => `₹${Number(v || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+const fmtDay = (v) => new Date(v).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+const errorText = (err, fallback) => err?.response?.data?.detail || fallback;
+const EYEBROW = 'text-[10.5px] font-extrabold uppercase tracking-[0.07em] text-slate-400';
 
+function Avatar({ name, className, size = 'h-[30px] w-[30px] text-xs' }) {
+  return (
+    <span className={`grid shrink-0 place-items-center rounded-full font-extrabold text-white ${size} ${className}`}>
+      {(name || 'U').trim().charAt(0).toUpperCase()}
+    </span>
+  );
+}
 
-function validatePasswordComplexity(pwd) {
-  if (pwd.length < 8) return 'Password must be at least 8 characters long';
-  if (!/[A-Z]/.test(pwd)) return 'Password must contain at least one uppercase letter';
-  if (!/[a-z]/.test(pwd)) return 'Password must contain at least one lowercase letter';
-  if (!/[0-9]/.test(pwd)) return 'Password must contain at least one number';
-  if (!/[!@#$%^&*()_+={}[\]|\\:;"'<>,.?/~`-]/.test(pwd)) return 'Password must contain at least one special character';
+/** A password box with an eye button on the right to show or hide what's typed. */
+function PasswordField({ id, value, onChange, disabled, autoComplete }) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <div className="relative">
+      <input id={id} type={visible ? 'text' : 'password'} required autoComplete={autoComplete} className={`${FIELD} pr-10`} value={value} onChange={onChange} disabled={disabled} />
+      <button
+        type="button"
+        aria-label={visible ? 'Hide password' : 'Show password'}
+        aria-pressed={visible}
+        title={visible ? 'Hide password' : 'Show password'}
+        onClick={() => setVisible((v) => !v)}
+        className="absolute inset-y-0 right-0 grid w-10 place-items-center text-slate-400 hover:text-slate-600"
+      >
+        {visible ? <EyeOff size={16} /> : <Eye size={16} />}
+      </button>
+    </div>
+  );
+}
+
+function Problem({ children }) {
+  if (!children) return null;
+  return (
+    <div role="alert" className="rounded-[10px] border border-rose-200 bg-rose-50 px-3 py-2 text-[12.5px] text-rose-700">
+      {children}
+    </div>
+  );
+}
+
+function Fact({ label, value }) {
+  return (
+    <div className="border-slate-100 px-[18px] py-3 [&:nth-child(n+3)]:border-t sm:[&:nth-child(n+3)]:border-t-0 sm:[&:not(:first-child)]:border-l [&:nth-child(2n)]:border-l">
+      <dt className="text-[11px] font-bold uppercase tracking-[0.06em] text-slate-400">{label}</dt>
+      <dd className={`mt-[3px] text-[13.5px] font-bold ${value ? 'text-ink' : 'font-semibold text-slate-400'}`}>{value || 'Not set'}</dd>
+    </div>
+  );
+}
+
+/** Walks the org chart down to the viewer: the people above them, then them. */
+function pathToViewer(node, trail = []) {
+  if (node.is_viewer) return [...trail, node];
+  for (const child of node.children || []) {
+    const found = pathToViewer(child, [...trail, node]);
+    if (found) return found;
+  }
   return null;
+}
+const countUnder = (node) => (node.children || []).reduce((n, c) => n + 1 + countUnder(c), 0);
+
+function ReportingLine({ roots, error, accent, roleLabel }) {
+  const path = roots?.length ? pathToViewer(roots[0]) : null;
+  const up = path ? path.slice(0, -1) : [];
+  const you = path ? path[path.length - 1] : null;
+  const reports = you?.children || [];
+  return (
+    <section aria-label="Reporting line" className={CARD}>
+      <CardHead title="Reporting line" sub="Who you report to, and who reports to you" />
+      <div className="flex flex-col gap-3 px-4 py-3.5">
+        {error ? <p className="text-[13px] text-slate-500">Couldn&apos;t load your reporting line. Try refreshing the page.</p> : null}
+        {!error && roots == null ? <p className="text-[13px] text-slate-500">Loading…</p> : null}
+        {!error && roots && !you ? <p className="text-[13px] text-slate-500">Your reporting line will appear once your employee record is set up.</p> : null}
+        {you ? (
+          <>
+            <ol className="flex flex-col">
+              {up.map((p, i) => (
+                <li key={p.employee_id} className="relative grid grid-cols-[30px_minmax(0,1fr)_auto] items-center gap-2.5 py-[7px] after:absolute after:bottom-[-7px] after:left-[14px] after:top-[37px] after:w-0.5 after:bg-slate-200">
+                  <Avatar name={p.full_name} className="bg-slate-400" />
+                  <span className="min-w-0">
+                    <b className="block truncate text-[13px] text-ink">{p.full_name}</b>
+                    <small className="block text-[11.5px] leading-snug text-slate-500">{p.department || p.designation || 'No department'}</small>
+                  </span>
+                  <Pill>{i === up.length - 1 ? 'Your manager' : 'Higher up'}</Pill>
+                </li>
+              ))}
+              <li className="-mx-2 grid grid-cols-[30px_minmax(0,1fr)] items-center gap-2.5 rounded-xl bg-brand/10 px-2 py-[7px]">
+                <Avatar name={you.full_name} className={accent} />
+                <span className="min-w-0">
+                  <b className="block truncate text-[13px] text-ink">
+                    {you.full_name} <span className="ml-1 text-[10px] font-extrabold uppercase tracking-[0.06em] text-brand">You</span>
+                  </b>
+                  <small className="block text-[11.5px] leading-snug text-slate-500">{you.department || roleLabel}</small>
+                </span>
+              </li>
+            </ol>
+            <p className={EYEBROW}>Reports to you ({reports.length})</p>
+            {reports.length ? (
+              <ul className="grid gap-2 sm:grid-cols-2">
+                {reports.map((r) => {
+                  const under = countUnder(r);
+                  return (
+                    <li key={r.employee_id} className="flex min-w-0 items-center gap-2.5 rounded-xl border border-slate-200 px-2.5 py-2">
+                      <Avatar name={r.full_name} className="bg-slate-400" />
+                      <span className="min-w-0">
+                        <b className="block truncate text-[12.5px] text-ink">{r.full_name}</b>
+                        <small className="block text-[11.5px] leading-snug text-slate-500">
+                          {r.department || r.designation || 'No department'}
+                          {under ? ` · ${under} under them` : ''}
+                        </small>
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <p className="rounded-xl border border-dashed border-slate-200 px-3 py-3.5 text-center text-[12.5px] text-slate-500">Nobody reports to you directly.</p>
+            )}
+          </>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function PasswordCard({ email }) {
+  const { showToast } = useToast();
+  const [step, setStep] = useState(1);
+  const [current, setCurrent] = useState('');
+  const [otp, setOtp] = useState('');
+  const [next, setNext] = useState('');
+  const [again, setAgain] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  const reset = () => {
+    setStep(1);
+    setCurrent('');
+    setOtp('');
+    setNext('');
+    setAgain('');
+    setError(null);
+  };
+  const requestCode = async (e) => {
+    e.preventDefault();
+    if (!current) return;
+    setError(null);
+    setBusy(true);
+    try {
+      await api.post('/auth/change-password/request-otp', { current_password: current });
+      setStep(2);
+      showToast('We emailed you a code', 'success');
+    } catch (err) {
+      setError(errorText(err, 'Failed to send OTP'));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const confirm = async (e) => {
+    e.preventDefault();
+    if (next !== again) return setError('Passwords do not match');
+    const broken = PASSWORD_RULES.find(([, ok]) => !ok(next));
+    if (broken) return setError(broken[2]);
+    setError(null);
+    setBusy(true);
+    try {
+      await api.post('/auth/change-password/confirm', { otp_code: otp, new_password: next });
+      showToast('Password changed successfully', 'success');
+      reset();
+    } catch (err) {
+      setError(errorText(err, 'Failed to change password. The code may be expired or invalid.'));
+    } finally {
+      setBusy(false);
+    }
+    return undefined;
+  };
+
+  return (
+    <section aria-label="Password" className={CARD}>
+      <div className="border-b border-slate-100 px-4 py-[13px]">
+        <div className="min-w-0">
+          <h2 className="text-sm font-extrabold text-ink">Password</h2>
+          <p className="mt-0.5 text-xs text-slate-500">{step === 1 ? 'Confirm your current password and we’ll email you a code.' : `Enter the code sent to ${email || 'your email'} and your new password.`}</p>
+        </div>
+      </div>
+      {step === 1 ? (
+        <form onSubmit={requestCode} className="flex flex-col gap-3 px-4 py-3.5">
+          <Problem>{error}</Problem>
+          <div>
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <label className={`${LABEL} mb-0`} htmlFor="pw-current">
+                Current password
+              </label>
+              <Link to="/forgot-password" className="text-xs font-bold text-brand hover:underline">
+                Forgot your password?
+              </Link>
+            </div>
+            <PasswordField id="pw-current" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} disabled={busy} />
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="submit" className={BTN_MAIN} disabled={!current || busy}>
+              {busy ? 'Sending…' : 'Send OTP'}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <form onSubmit={confirm} className="flex flex-col gap-3 px-4 py-3.5">
+          <Problem>{error}</Problem>
+          <div>
+            <label className={LABEL} htmlFor="pw-otp">
+              Code from the email
+            </label>
+            <input
+              id="pw-otp"
+              required
+              maxLength={6}
+              autoComplete="one-time-code"
+              className={`${FIELD} text-center font-mono text-[15px] uppercase tracking-[0.4em]`}
+              value={otp}
+              onChange={(e) => {
+                setOtp(e.target.value.toUpperCase());
+                setError(null);
+              }}
+              disabled={busy}
+            />
+          </div>
+          <div className="grid gap-2.5 sm:grid-cols-2">
+            <div>
+              <label className={LABEL} htmlFor="pw-new">
+                New password
+              </label>
+              <PasswordField id="pw-new" autoComplete="new-password" value={next} onChange={(e) => { setNext(e.target.value); setError(null); }} disabled={busy} />
+            </div>
+            <div>
+              <label className={LABEL} htmlFor="pw-again">
+                Type it again
+              </label>
+              <PasswordField id="pw-again" autoComplete="new-password" value={again} onChange={(e) => { setAgain(e.target.value); setError(null); }} disabled={busy} />
+            </div>
+          </div>
+          <ul aria-label="Password rules" className="grid gap-x-3 gap-y-1 text-xs font-semibold sm:grid-cols-2">
+            {PASSWORD_RULES.map(([label, ok]) => (
+              <li key={label} className={`flex items-center gap-1.5 ${ok(next) ? 'text-emerald-700' : 'text-slate-400'}`}>
+                {ok(next) ? <Check size={12} strokeWidth={3} /> : <span className="ml-0.5 mr-[3px] h-1.5 w-1.5 rounded-full border border-current" />}
+                {label}
+              </li>
+            ))}
+          </ul>
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="submit" className={BTN_MAIN} disabled={!otp || !next || !again || busy}>
+              {busy ? 'Changing…' : 'Change password'}
+            </button>
+            <button type="button" className={BTN_GHOST} onClick={reset} disabled={busy}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+    </section>
+  );
+}
+
+function AdvanceCard({ amount }) {
+  const left = Number(amount || 0);
+  return (
+    <section aria-label="Advance" className={CARD}>
+      <CardHead title="Advance" sub="Money Finance gave you ahead of your expenses" />
+      <div className="flex flex-col gap-2 px-4 py-3.5">
+        <div className="flex flex-wrap items-baseline gap-2.5">
+          <b className={`font-mono text-2xl tabular-nums ${left > 0 ? 'text-ink' : 'text-slate-400'}`}>{inr(left)}</b>
+          <span className="text-[13px] text-slate-500">{left > 0 ? 'left to use' : 'no advance left to use'}</span>
+        </div>
+        <p className="text-xs text-slate-500">
+          {left > 0 ? 'When a claim of yours is paid, this is used first and the rest is paid to you.' : 'If Finance gives you an advance, it shows here. When a claim is paid, any advance is used first.'}
+        </p>
+      </div>
+    </section>
+  );
+}
+
+function AutoApproveCard({ threshold, ceiling, onSaved }) {
+  const { showToast } = useToast();
+  const [value, setValue] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const on = threshold != null && Number(threshold) > 0;
+  useEffect(() => {
+    setValue(threshold != null && Number(threshold) > 0 ? String(Number(threshold)) : '');
+  }, [threshold]);
+
+  const save = async (amount) => {
+    setError(null);
+    setBusy(true);
+    try {
+      const res = await reimbursementApi.updateAutoApproveThreshold(amount);
+      onSaved(res.data);
+      showToast(amount == null ? 'Auto-approve is off: every claim waits for your review' : 'Auto-approve amount saved', 'success');
+    } catch (err) {
+      setError(errorText(err, 'Failed to update the auto-approve amount'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section aria-label="Auto-approve" className={CARD}>
+      <CardHead title="Auto-approve" sub="Claims under your amount are approved for you once they reach you">
+        <Pill tone={on ? 'ok' : 'slate'}>{on ? 'On' : 'Off'}</Pill>
+      </CardHead>
+      <form
+        className="flex flex-col gap-3 px-4 py-3.5"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (value !== '') save(Number(value));
+        }}
+      >
+        <Problem>{error}</Problem>
+        <div className={`rounded-xl px-3 py-2.5 ${on ? 'border border-emerald-200 bg-emerald-50' : 'border border-slate-200 bg-slate-50'}`}>
+          <b className="block text-[13px] text-ink">{on ? `Claims under ${inr(threshold)} are approved for you` : 'Every claim waits for your review'}</b>
+          <p className="mt-0.5 text-xs text-slate-500">{on ? 'Bigger ones still wait for you.' : 'Set an amount to approve smaller claims automatically.'}</p>
+        </div>
+        <div>
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <label className={`${LABEL} mb-0`} htmlFor="auto-amount">
+              Approve claims under
+            </label>
+            <small className="text-[11px] text-slate-400">up to {inr(ceiling)}</small>
+          </div>
+          <div className="flex items-center overflow-hidden rounded-[10px] border border-slate-200 bg-white focus-within:border-brand focus-within:ring-[3px] focus-within:ring-brand/10">
+            <span className="pl-3 pr-1.5 text-slate-400">₹</span>
+            <input id="auto-amount" type="number" min="0" max={Number(ceiling)} step="0.01" className="h-9 w-full bg-transparent font-mono text-[13px] outline-none" placeholder="e.g. 2000" value={value} onChange={(e) => { setValue(e.target.value); setError(null); }} disabled={busy} />
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button type="submit" className={BTN_MAIN} disabled={busy || value === '' || Number(value) === Number(threshold)}>
+            Save
+          </button>
+          {threshold != null ? (
+            <button type="button" className={BTN_GHOST} disabled={busy} onClick={() => save(null)}>
+              Turn off
+            </button>
+          ) : null}
+        </div>
+      </form>
+    </section>
+  );
+}
+
+function OutOfOfficeCard() {
+  const { showToast } = useToast();
+  const [rows, setRows] = useState(null);
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
+  const [person, setPerson] = useState(null);
+  const [start, setStart] = useState('');
+  const [end, setEnd] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [confirmId, setConfirmId] = useState(null);
+
+  useEffect(() => {
+    reimbursementApi
+      .getDelegations()
+      .then((res) => setRows(res.data))
+      .catch(() => {
+        setRows([]);
+        showToast('Failed to load delegations', 'error');
+      });
+  }, []);
+
+  const search = async (q) => {
+    setQuery(q);
+    if (q.length < 2) return setResults([]);
+    try {
+      setResults((await api.get('/me/users-search', { params: { q } })).data);
+    } catch {
+      /* keep the last results */
+    }
+    return undefined;
+  };
+  const create = async (e) => {
+    e.preventDefault();
+    if (!person || !start || !end) return;
+    setBusy(true);
+    try {
+      const res = await reimbursementApi.createDelegation({ delegatee_id: person.id, start_date: new Date(start).toISOString(), end_date: new Date(end).toISOString() });
+      setRows((current) => [res.data, ...(current || [])]);
+      showToast('Delegation created successfully', 'success');
+      setPerson(null);
+      setStart('');
+      setEnd('');
+    } catch (err) {
+      showToast(errorText(err, 'Failed to create delegation'), 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const remove = async (id) => {
+    try {
+      await reimbursementApi.deleteDelegation(id);
+      setRows((current) => current.filter((d) => d.id !== id));
+      showToast('Delegation removed', 'success');
+    } catch {
+      showToast('Failed to remove delegation', 'error');
+    } finally {
+      setConfirmId(null);
+    }
+  };
+  const now = new Date();
+
+  return (
+    <section aria-label="Out of office" className={CARD}>
+      <CardHead title="Out of office" sub="Hand your approvals to someone else for a set of dates" />
+      <div className="flex flex-col gap-3 px-4 py-3.5">
+        {rows == null ? <p className="text-[13px] text-slate-500">Loading…</p> : null}
+        {rows && rows.length === 0 ? <p className="rounded-xl border border-dashed border-slate-200 px-3 py-3.5 text-center text-[12.5px] text-slate-500">You haven&apos;t handed off your approvals to anyone.</p> : null}
+        {rows && rows.length ? (
+          <ul className="flex flex-col divide-y divide-slate-100 rounded-xl border border-slate-200">
+            {rows.map((d) => {
+              const live = d.is_active && new Date(d.start_date) <= now && new Date(d.end_date) >= now;
+              const upcoming = d.is_active && new Date(d.start_date) > now;
+              return (
+                <li key={d.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5">
+                  <span className="min-w-0">
+                    <b className="block truncate text-[13px] text-ink">{d.delegatee_name || 'Unknown'}</b>
+                    <small className="text-xs text-slate-500">
+                      {fmtDay(d.start_date)} – {fmtDay(d.end_date)}
+                      {d.delegatee_email ? ` · ${d.delegatee_email}` : ''}
+                    </small>
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <Pill tone={live ? 'ok' : upcoming ? 'sky' : 'slate'}>{live ? 'Covering now' : upcoming ? 'Upcoming' : 'Ended'}</Pill>
+                    {confirmId === d.id ? (
+                      <>
+                        <button type="button" className={`${BTN_NO} h-7 rounded-lg px-2.5 text-[11.5px]`} onClick={() => remove(d.id)}>
+                          Remove
+                        </button>
+                        <button type="button" className={`${BTN_GHOST} h-7 rounded-lg px-2.5 text-[11.5px]`} onClick={() => setConfirmId(null)}>
+                          Keep
+                        </button>
+                      </>
+                    ) : (
+                      <button type="button" aria-label={`Remove hand-off to ${d.delegatee_name || 'this person'}`} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-600" onClick={() => setConfirmId(d.id)}>
+                        <X size={14} />
+                      </button>
+                    )}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        ) : null}
+        <form onSubmit={create} className="flex flex-col gap-3">
+          <p className={EYEBROW}>New hand-off</p>
+          <div className="relative">
+            <span className={LABEL}>Hand off to</span>
+            {person ? (
+              <div className="flex h-9 items-center justify-between gap-2 rounded-[10px] border border-brand/30 bg-brand/5 px-3">
+                <span className="min-w-0 truncate text-[13px]">
+                  <b className="text-brand">{person.full_name}</b> <small className="text-brand/70">{person.email}</small>
+                </span>
+                <button type="button" className="text-xs font-bold text-slate-500 hover:text-rose-600" onClick={() => setPerson(null)}>
+                  Change
+                </button>
+              </div>
+            ) : (
+              <>
+                <label className="relative block">
+                  <span className="sr-only">Search by name or email</span>
+                  <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input className={`${FIELD} pl-8`} placeholder="Search by name or email" value={query} onChange={(e) => search(e.target.value)} />
+                </label>
+                {results.length ? (
+                  <ul className="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white py-1 shadow-lg">
+                    {results.map((u) => (
+                      <li key={u.id}>
+                        <button
+                          type="button"
+                          className="block w-full px-3 py-2 text-left hover:bg-slate-50"
+                          onClick={() => {
+                            setPerson(u);
+                            setQuery('');
+                            setResults([]);
+                          }}
+                        >
+                          <b className="block text-[13px] text-ink">{u.full_name}</b>
+                          <small className="text-xs text-slate-500">{u.email}</small>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </>
+            )}
+          </div>
+          <div className="grid grid-cols-2 gap-2.5">
+            <div>
+              <label className={LABEL} htmlFor="ooo-from">
+                From
+              </label>
+              <input id="ooo-from" type="date" required className={FIELD} value={start} onChange={(e) => setStart(e.target.value)} />
+            </div>
+            <div>
+              <label className={LABEL} htmlFor="ooo-until">
+                Until
+              </label>
+              <input id="ooo-until" type="date" required min={start || undefined} className={FIELD} value={end} onChange={(e) => setEnd(e.target.value)} />
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="submit" className={BTN_MAIN} disabled={!person || !start || !end || busy}>
+              {busy ? 'Saving…' : 'Hand off'}
+            </button>
+            <span className="text-xs text-slate-500">They&apos;ll see your queue during these dates; you can cancel it any time.</span>
+          </div>
+        </form>
+      </div>
+    </section>
+  );
 }
 
 export default function ProfilePage() {
@@ -28,707 +546,81 @@ export default function ProfilePage() {
   const profile = useAuthStore((s) => s.profile);
   const user = useAuthStore((s) => s.user);
   const setProfile = useAuthStore((s) => s.setProfile);
-  const addToast = useToast();
-  const { showToast } = useToast();
+  const role = profile?.role || user?.role || 'EMPLOYEE';
+  const accent = roleAccent(role);
+  const roleLabel = formatRole(role);
+  const name = profile?.full_name || user?.full_name || user?.email || 'User';
+  const email = profile?.email || user?.email;
 
-  // Auto-approve threshold (Reporting Manager only)
-  const [threshold, setThreshold] = useState('');
-  const [thresholdSaving, setThresholdSaving] = useState(false);
-  const [thresholdError, setThresholdError] = useState(null);
-
-  useEffect(() => {
-    setThreshold(profile?.auto_approve_threshold ?? '');
-  }, [profile?.auto_approve_threshold]);
-
-  async function handleSaveThreshold(e) {
-    e.preventDefault();
-    if (threshold === '') return;
-    setThresholdError(null);
-    setThresholdSaving(true);
-    try {
-      const res = await reimbursementApi.updateAutoApproveThreshold(Number(threshold));
-      setProfile(res.data);
-      showToast('Auto-approve threshold updated', 'success');
-    } catch (err) {
-      setThresholdError(err.response?.data?.detail || 'Failed to update threshold');
-    } finally {
-      setThresholdSaving(false);
-    }
-  }
-
-  async function handleDisableThreshold() {
-    setThresholdError(null);
-    setThresholdSaving(true);
-    try {
-      const res = await reimbursementApi.updateAutoApproveThreshold(null);
-      setProfile(res.data);
-      setThreshold('');
-      showToast('Auto-approve threshold disabled — claims will always wait for your manual review', 'success');
-    } catch (err) {
-      showToast(err.response?.data?.detail || 'Failed to disable threshold', 'error');
-    } finally {
-      setThresholdSaving(false);
-    }
-  }
-
-  const [delegations, setDelegations] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const canSeeOrgChart = Boolean(profile?.role) && profile.role !== 'EMPLOYEE';
+  // Shown only when turned on: delegation by the org-wide admin switch, auto-approve when the
+  // organisation's auto-approve limit is above ₹0 (a manager can still have their own amount off).
+  const showOutOfOffice = Boolean(profile?.can_create_delegation) && profile?.delegation_feature_enabled !== false;
+  const showAutoApprove = profile?.role === 'REPORTING_MANAGER' && Number(profile?.org_auto_approve_ceiling || 0) > 0;
 
   const [orgChart, setOrgChart] = useState(null);
   const [orgChartError, setOrgChartError] = useState(false);
-  const canSeeOrgChart = Boolean(profile?.role) && profile.role !== 'EMPLOYEE';
-  const canDelegate = Boolean(profile?.can_create_delegation);
-  const delegationFeatureEnabled = profile?.delegation_feature_enabled !== false;
-
   useEffect(() => {
     if (!canSeeOrgChart) return;
-    (async () => {
-      try {
-        const res = await api.get('/me/org-chart');
-        setOrgChart(res.data?.roots || []);
-      } catch (err) {
-        setOrgChartError(true);
-      }
-    })();
+    api
+      .get('/me/org-chart')
+      .then((res) => setOrgChart(res.data?.roots || []))
+      .catch(() => setOrgChartError(true));
   }, [canSeeOrgChart]);
 
-  // Form state
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState([]);
-  const [selectedUser, setSelectedUser] = useState(null);
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
-
-  // Change password state
-  const [pwStep, setPwStep] = useState('idle'); // 'idle' | 'otp-sent'
-  const [currentPassword, setCurrentPassword] = useState('');
-  const [otpCode, setOtpCode] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [confirmNewPassword, setConfirmNewPassword] = useState('');
-  const [showPw, setShowPw] = useState(false);
-  const [pwLoading, setPwLoading] = useState(false);
-  const [pwError, setPwError] = useState(null);
-
-  const resetPasswordForm = () => {
-    setPwStep('idle');
-    setCurrentPassword('');
-    setOtpCode('');
-    setNewPassword('');
-    setConfirmNewPassword('');
-    setPwError(null);
-  };
-
-  const handleRequestPasswordOtp = async (e) => {
-    e.preventDefault();
-    if (!currentPassword) return;
-
-    setPwError(null);
-    setPwLoading(true);
-    try {
-      await api.post('/auth/change-password/request-otp', { current_password: currentPassword });
-      setPwStep('otp-sent');
-      showToast('OTP sent to your email', 'success');
-    } catch (err) {
-      setPwError(err.response?.data?.detail || 'Failed to send OTP');
-    } finally {
-      setPwLoading(false);
-    }
-  };
-
-  const handleConfirmPasswordChange = async (e) => {
-    e.preventDefault();
-
-    if (newPassword !== confirmNewPassword) {
-      setPwError('Passwords do not match');
-      return;
-    }
-    const complexityError = validatePasswordComplexity(newPassword);
-    if (complexityError) {
-      setPwError(complexityError);
-      return;
-    }
-
-    setPwError(null);
-    setPwLoading(true);
-    try {
-      await api.post('/auth/change-password/confirm', { otp_code: otpCode, new_password: newPassword });
-      showToast('Password changed successfully', 'success');
-      resetPasswordForm();
-    } catch (err) {
-      setPwError(err.response?.data?.detail || 'Failed to change password. The OTP may be expired or invalid.');
-    } finally {
-      setPwLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchDelegations();
-  }, []);
-
-  const fetchDelegations = async () => {
-    try {
-      const res = await reimbursementApi.getDelegations();
-      setDelegations(res.data);
-    } catch (err) {
-      addToast('Failed to load delegations', 'error');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleSearch = async (e) => {
-    const q = e.target.value;
-    setSearchQuery(q);
-    if (q.length < 2) {
-      setSearchResults([]);
-      return;
-    }
-    try {
-      const res = await api.get('/me/users-search', { params: { q } });
-      setSearchResults(res.data);
-    } catch (err) {
-      // ignore
-    }
-  };
-
-  const selectUser = (u) => {
-    setSelectedUser(u);
-    setSearchQuery('');
-    setSearchResults([]);
-  };
-
-  const createDelegation = async (e) => {
-    e.preventDefault();
-    if (!selectedUser || !startDate || !endDate) return;
-    
-    setIsSubmitting(true);
-    try {
-      const res = await reimbursementApi.createDelegation({
-        delegatee_id: selectedUser.id,
-        start_date: new Date(startDate).toISOString(),
-        end_date: new Date(endDate).toISOString(),
-      });
-      setDelegations([res.data, ...delegations]);
-      addToast('Delegation created successfully', 'success');
-      setSelectedUser(null);
-      setStartDate('');
-      setEndDate('');
-    } catch (err) {
-      addToast(err.response?.data?.detail || 'Failed to create delegation', 'error');
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const deleteDelegation = async (id) => {
-    if (!window.confirm('Are you sure you want to remove this delegation?')) return;
-    try {
-      await reimbursementApi.deleteDelegation(id);
-      setDelegations(delegations.filter((d) => d.id !== id));
-      addToast('Delegation removed', 'success');
-    } catch (err) {
-      addToast('Failed to remove delegation', 'error');
-    }
-  };
+  const left = [];
+  const right = [];
+  if (canSeeOrgChart) left.push(<ReportingLine key="line" roots={orgChart} error={orgChartError} accent={accent} roleLabel={roleLabel} />);
+  if (showOutOfOffice) left.push(<OutOfOfficeCard key="ooo" />);
+  right.push(<PasswordCard key="pw" email={email} />);
+  right.push(<AdvanceCard key="adv" amount={profile?.outstanding_advance} />);
+  if (showAutoApprove) right.push(<AutoApproveCard key="auto" threshold={profile.auto_approve_threshold} ceiling={profile.org_auto_approve_ceiling} onSaved={setProfile} />);
+  // Nothing for the left column (employees): password on the left, the rest on the right.
+  if (!left.length) left.push(right.shift());
 
   return (
-    <div className="space-y-6">
-      {/* Profile Summary */}
-      <div className="panel p-6">
-        <div className="flex items-start gap-4">
-          <div className="h-16 w-16 bg-brand/10 text-brand rounded-full flex items-center justify-center text-2xl font-semibold">
-            {(profile?.full_name || user?.email || 'U')[0].toUpperCase()}
-          </div>
-          <div>
-            <h1 className="text-2xl font-bold text-ink">{profile?.full_name || 'User'}</h1>
-            <p className="text-slate-500">{user?.email}</p>
-            <div className="mt-2 flex items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-700">
-                <Shield className="h-3.5 w-3.5 text-slate-400" />
-                {formatRole(profile?.role || user?.role || 'EMPLOYEE')}
-              </span>
-              {profile?.impact_level_code && (
-                <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-brand/10 text-brand">
-                  Level: {profile.impact_level_code}
-                </span>
-              )}
-            </div>
-            <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
-              <div>
-                <dt className="text-xs font-semibold uppercase tracking-wide text-slate-400">Employee ID</dt>
-                <dd className="mt-0.5 text-slate-700">{profile?.employee_id || '—'}</dd>
-              </div>
-              <div>
-                <dt className="text-xs font-semibold uppercase tracking-wide text-slate-400">Department</dt>
-                <dd className="mt-0.5 text-slate-700">{profile?.department || '—'}</dd>
-              </div>
-              <div>
-                <dt className="text-xs font-semibold uppercase tracking-wide text-slate-400">Reporting Manager</dt>
-                <dd className="mt-0.5 text-slate-700">{profile?.reporting_manager_name || '—'}</dd>
-              </div>
-            </dl>
-          </div>
-        </div>
+    <section className="flex flex-col gap-3.5">
+      <div>
+        <h1 className="text-xl font-extrabold text-ink">My profile</h1>
+        <p className="mt-0.5 text-[13px] text-slate-500">
+          Your details, password and advance{showOutOfOffice ? ', and who covers your approvals when you’re away' : ''}.
+        </p>
       </div>
 
-      {/* Organization Chart */}
-      {canSeeOrgChart ? (
-        <div className="panel overflow-hidden">
-          <div className="p-6 border-b border-slate-200">
-            <h2 className="text-lg font-semibold text-ink flex items-center gap-2">
-              <Network className="h-5 w-5 text-brand" />
-              Organization Chart
-            </h2>
-            <p className="text-sm text-slate-500 mt-1">
-              Your reporting line — from the top of your chain down through your own reports.
-            </p>
-          </div>
-          {orgChartError ? (
-            <div className="p-6">
-              <EmptyState icon={Network} title="Couldn't load the org chart" description="Please try refreshing the page." />
-            </div>
-          ) : !orgChart ? (
-            <div className="p-6 text-center text-sm text-slate-500">Loading...</div>
-          ) : orgChart.length === 0 ? (
-            <div className="p-6">
-              <EmptyState icon={Network} title="No employee data yet" description="The org chart will appear once employee records are set up." />
-            </div>
-          ) : (
-            <OrgChart roots={orgChart} />
-          )}
-        </div>
-      ) : null}
-
-      {/* Change Password Section */}
-      <div className="panel overflow-hidden">
-        <div className="p-6 border-b border-slate-200">
-          <h2 className="text-lg font-semibold text-ink flex items-center gap-2">
-            <Lock className="h-5 w-5 text-brand" />
-            Change Password
-          </h2>
-          <p className="text-sm text-slate-500 mt-1">
-            {pwStep === 'idle'
-              ? 'Confirm your current password to receive a one-time code by email.'
-              : `Enter the code sent to ${user?.email || 'your email'} along with your new password.`}
-          </p>
-        </div>
-
-        <div className="p-6">
-          {pwError && (
-            <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 flex items-start gap-2 text-red-700 text-sm font-medium">
-              <AlertCircle size={16} className="shrink-0 mt-0.5" />
-              <span>{pwError}</span>
-            </div>
-          )}
-
-          {pwStep === 'idle' ? (
-            <form onSubmit={handleRequestPasswordOtp} className="max-w-sm space-y-5">
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <label className="block text-xs font-bold text-slate-700">Current Password</label>
-                  <Link
-                    to="/forgot-password"
-                    className="text-xs font-semibold text-brand hover:underline"
-                  >
-                    Forgot your password?
-                  </Link>
-                </div>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
-                    <Lock size={16} />
-                  </div>
-                  <input
-                    type={showPw ? 'text' : 'password'}
-                    required
-                    className="field !pl-9 !pr-10"
-                    placeholder="••••••••"
-                    value={currentPassword}
-                    onChange={(e) => setCurrentPassword(e.target.value)}
-                    disabled={pwLoading}
-                  />
-                  <button
-                    type="button"
-                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600"
-                    onClick={() => setShowPw((v) => !v)}
-                  >
-                    {showPw ? <EyeOff size={16} /> : <Eye size={16} />}
-                  </button>
-                </div>
-              </div>
-              <button
-                type="submit"
-                disabled={!currentPassword || pwLoading}
-                className="btn-primary w-full sm:w-auto"
-              >
-                {pwLoading ? (
-                  <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-                ) : (
-                  <KeyRound className="h-4 w-4" />
-                )}
-                Send OTP
-              </button>
-            </form>
-          ) : (
-            <form onSubmit={handleConfirmPasswordChange} className="max-w-sm space-y-4">
-              <div className="space-y-1.5">
-                <label className="block text-xs font-bold text-slate-700">OTP Code</label>
-                <input
-                  type="text"
-                  required
-                  maxLength={6}
-                  className="field font-mono tracking-[0.3em] text-center uppercase"
-                  placeholder="------"
-                  value={otpCode}
-                  onChange={(e) => {
-                    setOtpCode(e.target.value.toUpperCase());
-                    if (pwError) setPwError(null);
-                  }}
-                  disabled={pwLoading}
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="block text-xs font-bold text-slate-700">New Password</label>
-                <div className="relative">
-                  <input
-                    type={showPw ? 'text' : 'password'}
-                    required
-                    className="field !pr-10"
-                    placeholder="••••••••"
-                    value={newPassword}
-                    onChange={(e) => {
-                      setNewPassword(e.target.value);
-                      if (pwError) setPwError(null);
-                    }}
-                    disabled={pwLoading}
-                  />
-                  <button
-                    type="button"
-                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600"
-                    onClick={() => setShowPw((v) => !v)}
-                  >
-                    {showPw ? <EyeOff size={16} /> : <Eye size={16} />}
-                  </button>
-                </div>
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="block text-xs font-bold text-slate-700">Confirm New Password</label>
-                <input
-                  type={showPw ? 'text' : 'password'}
-                  required
-                  className="field"
-                  placeholder="••••••••"
-                  value={confirmNewPassword}
-                  onChange={(e) => {
-                    setConfirmNewPassword(e.target.value);
-                    if (pwError) setPwError(null);
-                  }}
-                  disabled={pwLoading}
-                />
-              </div>
-
-              <div className="rounded-lg border border-slate-200 bg-slate-50/50 p-3 text-[11px] font-medium text-slate-500 space-y-1.5">
-                <div className={`flex items-center gap-2 ${newPassword.length >= 8 ? 'text-emerald-600' : 'text-red-500'}`}>
-                  {newPassword.length >= 8 ? <Check size={13} strokeWidth={3} /> : <div className="h-1.5 w-1.5 rounded-full bg-red-400 ml-1 mr-0.5" />}
-                  <span>At least 8 characters</span>
-                </div>
-                <div className={`flex items-center gap-2 ${/[A-Z]/.test(newPassword) ? 'text-emerald-600' : 'text-red-500'}`}>
-                  {/[A-Z]/.test(newPassword) ? <Check size={13} strokeWidth={3} /> : <div className="h-1.5 w-1.5 rounded-full bg-red-400 ml-1 mr-0.5" />}
-                  <span>At least 1 uppercase letter</span>
-                </div>
-                <div className={`flex items-center gap-2 ${/[a-z]/.test(newPassword) ? 'text-emerald-600' : 'text-red-500'}`}>
-                  {/[a-z]/.test(newPassword) ? <Check size={13} strokeWidth={3} /> : <div className="h-1.5 w-1.5 rounded-full bg-red-400 ml-1 mr-0.5" />}
-                  <span>At least 1 lowercase letter</span>
-                </div>
-                <div className={`flex items-center gap-2 ${/[0-9]/.test(newPassword) ? 'text-emerald-600' : 'text-red-500'}`}>
-                  {/[0-9]/.test(newPassword) ? <Check size={13} strokeWidth={3} /> : <div className="h-1.5 w-1.5 rounded-full bg-red-400 ml-1 mr-0.5" />}
-                  <span>At least 1 number</span>
-                </div>
-                <div className={`flex items-center gap-2 ${/[!@#$%^&*()_+={}[\]|\\:;"'<>,.?/~`-]/.test(newPassword) ? 'text-emerald-600' : 'text-red-500'}`}>
-                  {/[!@#$%^&*()_+={}[\]|\\:;"'<>,.?/~`-]/.test(newPassword) ? <Check size={13} strokeWidth={3} /> : <div className="h-1.5 w-1.5 rounded-full bg-red-400 ml-1 mr-0.5" />}
-                  <span>At least 1 special character</span>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-3">
-                <button
-                  type="submit"
-                  disabled={!otpCode || !newPassword || !confirmNewPassword || pwLoading}
-                  className="btn-primary"
-                >
-                  {pwLoading ? (
-                    <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-                  ) : (
-                    <Lock className="h-4 w-4" />
-                  )}
-                  Change Password
-                </button>
-                <button
-                  type="button"
-                  onClick={resetPasswordForm}
-                  disabled={pwLoading}
-                  className="text-sm font-medium text-slate-500 hover:text-slate-700"
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>
-          )}
-        </div>
-      </div>
-
-      {/* Auto-Approve Threshold (Reporting Manager only) */}
-      {profile?.role === 'REPORTING_MANAGER' ? (
-        <div className="panel overflow-hidden">
-          <div className="p-6 border-b border-slate-200">
-            <h2 className="text-lg font-semibold text-ink flex items-center gap-2">
-              <IndianRupee className="h-5 w-5 text-brand" />
-              Auto-Approve Threshold
-            </h2>
-            <p className="text-sm text-slate-500 mt-1">
-              Claims below this amount skip your manual review and are approved automatically once they reach you.
-              {profile.org_auto_approve_ceiling ? (
-                <> Capped at your organization&apos;s ceiling of ₹{profile.org_auto_approve_ceiling}.</>
+      <section aria-label="Your details" className={CARD}>
+        <div className="grid grid-cols-1 items-center gap-4 px-[18px] pb-4 pt-[18px] sm:grid-cols-[auto_minmax(0,1fr)]">
+          <Avatar name={name} className={accent} size="h-[60px] w-[60px] text-2xl" />
+          <div className="min-w-0">
+            <p className="truncate text-xl font-extrabold text-ink">{name}</p>
+            <p className="truncate text-[13px] text-slate-500">{email}</p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              <span className={`inline-flex items-center rounded-full px-[9px] py-0.5 text-[11.5px] font-bold ${roleChip(role)}`}>{roleLabel}</span>
+              {profile?.impact_level_code ? (
+                <Pill tone="brand">
+                  {profile.impact_level_code}
+                  {profile.impact_level_name ? ` · ${profile.impact_level_name}` : ''}
+                </Pill>
               ) : null}
-            </p>
-          </div>
-
-          <div className="p-6">
-            {thresholdError && (
-              <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 flex items-start gap-2 text-red-700 text-sm font-medium">
-                <AlertCircle size={16} className="shrink-0 mt-0.5" />
-                <span>{thresholdError}</span>
-              </div>
-            )}
-
-            <form onSubmit={handleSaveThreshold} className="max-w-sm space-y-4">
-              <div className="space-y-1.5">
-                <label className="block text-xs font-bold text-slate-700">Your threshold (₹)</label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
-                    <IndianRupee size={16} />
-                  </div>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    className="field !pl-9"
-                    placeholder="Disabled — always require manual review"
-                    value={threshold}
-                    onChange={(e) => {
-                      setThreshold(e.target.value);
-                      if (thresholdError) setThresholdError(null);
-                    }}
-                    disabled={thresholdSaving}
-                  />
-                </div>
-              </div>
-
-              <div className="flex items-center gap-3">
-                <button
-                  type="submit"
-                  disabled={thresholdSaving || threshold === ''}
-                  className="btn-primary"
-                >
-                  {thresholdSaving ? (
-                    <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-                  ) : (
-                    <Check className="h-4 w-4" />
-                  )}
-                  Save
-                </button>
-                {profile.auto_approve_threshold != null ? (
-                  <button
-                    type="button"
-                    onClick={handleDisableThreshold}
-                    disabled={thresholdSaving}
-                    className="text-sm font-medium text-slate-500 hover:text-slate-700"
-                  >
-                    Disable (always review manually)
-                  </button>
-                ) : null}
-              </div>
-            </form>
+            </div>
           </div>
         </div>
-      ) : null}
+        <dl className="grid grid-cols-2 border-t border-slate-100 sm:grid-cols-4">
+          {[
+            ['Employee ID', profile?.employee_id],
+            ['Department', profile?.department],
+            ['Reports to', profile?.reporting_manager_name],
+            ['Office', profile?.office_location],
+          ].map(([label, value]) => (
+            <Fact key={label} label={label} value={value} />
+          ))}
+        </dl>
+        <p className="border-t border-slate-100 bg-slate-50 px-[18px] py-2.5 text-xs text-slate-500">These details come from your employee record. To change any of them, ask HR.</p>
+      </section>
 
-      {/* Delegation / Out of Office Section — only for roles with a "current approval
-          queue" to hand off (regular employees have nothing to delegate), and only while
-          the org-wide admin toggle is on (fully hidden otherwise, not just read-only). */}
-      {canDelegate && delegationFeatureEnabled ? (
-      <div className="panel overflow-hidden">
-        <div className="p-6 border-b border-slate-200">
-          <h2 className="text-lg font-semibold text-ink flex items-center gap-2">
-            <Users className="h-5 w-5 text-brand" />
-            Delegation / Out of Office
-          </h2>
-          <p className="text-sm text-slate-500 mt-1">
-            Temporarily assign your approval responsibilities to another employee while you are away.
-          </p>
-        </div>
-
-        <div className="p-6 bg-slate-50 border-b border-slate-200">
-          <form onSubmit={createDelegation} className="space-y-4">
-            <h3 className="text-sm font-medium text-ink">Create New Delegation</h3>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
-              <div className="relative space-y-1.5">
-                <label className="block text-xs font-bold text-slate-700">Delegate To</label>
-                {!selectedUser ? (
-                  <>
-                    <div className="relative">
-                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-                      <input
-                        type="text"
-                        className="field !pl-10"
-                        placeholder="Search employee by name or email..."
-                        value={searchQuery}
-                        onChange={handleSearch}
-                      />
-                    </div>
-                    {searchResults.length > 0 && (
-                      <div className="absolute z-10 w-full mt-1 bg-white rounded-xl shadow-lg border border-slate-200 max-h-48 overflow-y-auto">
-                        {searchResults.map((su) => (
-                          <div
-                            key={su.id}
-                            className="px-4 py-2 hover:bg-slate-50 cursor-pointer"
-                            onClick={() => selectUser(su)}
-                          >
-                            <div className="text-sm font-medium text-ink">{su.full_name}</div>
-                            <div className="text-xs text-slate-500">{su.email}</div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <div className="flex items-center justify-between px-3 border border-brand/30 bg-brand/5 rounded-lg shadow-sm h-10">
-                    <div className="flex items-center gap-2 truncate">
-                      <div className="text-sm font-bold text-brand truncate">{selectedUser.full_name}</div>
-                      <div className="text-[10px] text-brand/70 truncate pt-0.5">{selectedUser.email}</div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedUser(null)}
-                      className="text-xs text-slate-500 hover:text-red-500"
-                    >
-                      Clear
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-bold text-slate-700">Start Date</label>
-                  <input
-                    type="date"
-                    required
-                    value={startDate}
-                    onChange={(e) => setStartDate(e.target.value)}
-                    className="field"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-bold text-slate-700">End Date</label>
-                  <input
-                    type="date"
-                    required
-                    value={endDate}
-                    onChange={(e) => setEndDate(e.target.value)}
-                    className="field"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="flex justify-end">
-              <button
-                type="submit"
-                disabled={!selectedUser || !startDate || !endDate || isSubmitting}
-                className="btn-primary"
-              >
-                {isSubmitting ? (
-                  <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-                ) : (
-                  <Plus className="h-4 w-4" />
-                )}
-                Add Delegation
-              </button>
-            </div>
-          </form>
-        </div>
-
-        <div className="p-6">
-          <h3 className="text-sm font-medium text-ink mb-4">Active & Past Delegations</h3>
-          {loading ? (
-            <div className="text-center py-4 text-slate-500">Loading...</div>
-          ) : delegations.length === 0 ? (
-            <EmptyState icon={Users} title="No delegations configured" description="Create a delegation above to hand off your approvals while you're away." />
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm text-left">
-                <thead className="text-xs text-slate-500 uppercase bg-slate-50">
-                  <tr className="text-center">
-                    <th className="px-4 py-3 font-medium">Delegatee</th>
-                    <th className="px-4 py-3 font-medium">Duration</th>
-                    <th className="px-4 py-3 font-medium">Status</th>
-                    <th className="px-4 py-3 font-medium">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200">
-                  {delegations.map((del) => {
-                    const isCurrentlyActive =
-                      del.is_active &&
-                      new Date(del.start_date) <= new Date() &&
-                      new Date(del.end_date) >= new Date();
-
-                    return (
-                      <tr key={del.id} className="hover:bg-slate-50/50">
-                        <td className="px-4 py-3 text-center">
-                          <div className="font-medium text-ink">{del.delegatee_name || 'Unknown'}</div>
-                          <div className="text-xs text-slate-500">{del.delegatee_email}</div>
-                        </td>
-                        <td className="px-4 py-3 text-center">
-                          <div className="flex items-center justify-center gap-1.5 text-slate-600">
-                            <Calendar className="h-3.5 w-3.5" />
-                            {format(new Date(del.start_date), 'MMM d, yyyy')} -{' '}
-                            {format(new Date(del.end_date), 'MMM d, yyyy')}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 text-center">
-                          {isCurrentlyActive ? (
-                            <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20">
-                              Active
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center rounded-full bg-slate-50 px-2 py-0.5 text-xs font-medium text-slate-600 ring-1 ring-inset ring-slate-500/20">
-                              Inactive
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-center">
-                          <button
-                            onClick={() => deleteDelegation(del.id)}
-                            className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
-                            title="Remove Delegation"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
+      <div className="grid items-start gap-3.5 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
+        <div className="flex min-w-0 flex-col gap-3.5">{left}</div>
+        <div className="flex min-w-0 flex-col gap-3.5">{right}</div>
       </div>
-      ) : null}
-    </div>
+    </section>
   );
 }

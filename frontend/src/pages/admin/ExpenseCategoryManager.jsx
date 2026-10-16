@@ -1,192 +1,227 @@
-import { Plus, Save, Trash2 } from 'lucide-react';
+import { ChevronRight, CornerDownRight, Plus } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
-import PageHeader from '../../components/ui/PageHeader';
+import { Pill } from '../../components/approvals/ApprovalQueueParts';
+import {
+  BTN_MAIN,
+  BTN_NO,
+  CARD,
+  Check,
+  ChipInput,
+  ErrorNote,
+  FIELD,
+  LABEL,
+  PolicyHead,
+  Sheet,
+  VersionBar,
+  useCanConfigurePolicy,
+  usePolicyVersions,
+} from '../../components/policy/PolicyAdminParts';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
 import { adminApi } from '../../services/adminApi';
-import { hasPermission } from '../../services/permissions';
-import { useAuthStore } from '../../store/authStore';
 
-const createEmptyForm = (policyVersionId = '') => ({
-  name: '',
-  parent_category_id: '',
-  bill_mandatory: false,
-  gst_invoice_required: false,
-  blacklisted_items: '',
-  notes: '',
-  policy_version_id: policyVersionId,
-});
+const emptyForm = { name: '', parent_category_id: '', bill_mandatory: false, gst_invoice_required: false, blacklisted_items: [], notes: '' };
 
 function flatten(categories, depth = 0) {
-  return categories.flatMap((category) => [
-    { ...category, depth },
-    ...flatten(category.children || [], depth + 1),
-  ]);
+  return categories.flatMap((category) => [{ ...category, depth }, ...flatten(category.children || [], depth + 1)]);
+}
+
+/** A category and everything under it, so it can't be moved under itself. */
+function subtreeIds(rows, id) {
+  const ids = new Set([id]);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    rows.forEach((r) => {
+      if (r.parent_category_id && ids.has(r.parent_category_id) && !ids.has(r.id)) {
+        ids.add(r.id);
+        grew = true;
+      }
+    });
+  }
+  return ids;
+}
+
+function CategorySheet({ category, rows, versionId, versionNumber, readOnly, onSaved, onClose }) {
+  const [form, setForm] = useState(emptyForm);
+  useEffect(() => {
+    setForm(
+      category
+        ? { name: category.name, parent_category_id: category.parent_category_id || '', bill_mandatory: category.bill_mandatory, gst_invoice_required: category.gst_invoice_required, blacklisted_items: category.blacklisted_items || [], notes: category.notes || '' }
+        : emptyForm,
+    );
+  }, [category]);
+  const set = (patch) => setForm((f) => ({ ...f, ...patch }));
+  const blocked = category ? subtreeIds(rows, category.id) : new Set();
+
+  const saveAction = useAsyncAction(async () => {
+    const payload = {
+      ...form,
+      name: form.name.trim(),
+      parent_category_id: form.parent_category_id ? Number(form.parent_category_id) : null,
+      policy_version_id: versionId,
+      notes: form.notes.trim() || null,
+    };
+    if (category) await adminApi.updateExpenseCategory(category.id, payload);
+    else await adminApi.createExpenseCategory(payload);
+    await onSaved(category ? category.id : null);
+  });
+  const offAction = useAsyncAction(async () => {
+    await adminApi.deactivateExpenseCategory(category.id);
+    await onSaved(null);
+  });
+
+  return (
+    <Sheet
+      label="Category details"
+      title={category ? `${readOnly ? '' : 'Edit '}${category.name}` : 'Add a category'}
+      sub={readOnly ? 'Read-only in this version' : `In draft ${versionNumber}`}
+      onClose={category ? onClose : null}
+      footer={
+        readOnly ? null : (
+          <>
+            {category ? (
+              <button type="button" className={BTN_NO} disabled={offAction.loading} title="People can no longer claim under it in this version" onClick={() => offAction.run().catch(() => {})}>
+                Turn off
+              </button>
+            ) : null}
+            <button type="button" className={BTN_MAIN} disabled={!form.name.trim() || saveAction.loading} onClick={() => saveAction.run().catch(() => {})}>
+              {saveAction.loading ? 'Saving…' : category ? 'Save category' : 'Add category'}
+            </button>
+          </>
+        )
+      }
+    >
+      <ErrorNote error={saveAction.error || offAction.error} />
+      <div>
+        <label className={LABEL} htmlFor="cat-name">
+          Name
+        </label>
+        <input id="cat-name" className={FIELD} readOnly={readOnly} placeholder="e.g. Parking" value={form.name} onChange={(e) => set({ name: e.target.value })} />
+      </div>
+      <div>
+        <label className={LABEL} htmlFor="cat-parent">
+          Sits under
+        </label>
+        <select id="cat-parent" className={FIELD} disabled={readOnly} value={form.parent_category_id} onChange={(e) => set({ parent_category_id: e.target.value })}>
+          <option value="">Nothing (top level)</option>
+          {rows
+            .filter((r) => !blocked.has(r.id))
+            .map((r) => (
+              <option key={r.id} value={r.id}>
+                {`${'— '.repeat(r.depth)}${r.name}`}
+              </option>
+            ))}
+        </select>
+      </div>
+      <Check checked={form.bill_mandatory} onChange={(v) => set({ bill_mandatory: v })} disabled={readOnly} title="Bill needed" hint="A receipt or invoice must be attached" />
+      <Check checked={form.gst_invoice_required} onChange={(v) => set({ gst_invoice_required: v })} disabled={readOnly} title="GST invoice needed" hint="The bill must be a GST invoice" />
+      <div>
+        <span className={LABEL}>
+          Never allowed <small className="font-medium text-slate-400">(blocked items)</small>
+        </span>
+        <ChipInput label="Add a blocked item" items={form.blacklisted_items} onChange={(items) => set({ blacklisted_items: items })} disabled={readOnly} placeholder="Add, then Enter" />
+      </div>
+      <div>
+        <label className={LABEL} htmlFor="cat-notes">
+          Note for employees <small className="font-medium text-slate-400">(optional)</small>
+        </label>
+        <input id="cat-notes" className={FIELD} readOnly={readOnly} placeholder="e.g. Book at least 7 days ahead" value={form.notes} onChange={(e) => set({ notes: e.target.value })} />
+      </div>
+    </Sheet>
+  );
 }
 
 export default function ExpenseCategoryManager() {
   useSetPageTitle('Expense Categories');
+  const canConfigure = useCanConfigurePolicy();
+  const { versions, version, versionId, setVersionId, error: versionsError } = usePolicyVersions();
   const [categories, setCategories] = useState([]);
-  const [policyVersions, setPolicyVersions] = useState([]);
-  const [selectedPolicyVersionId, setSelectedPolicyVersionId] = useState('');
-  const [form, setForm] = useState(createEmptyForm());
-  const [editingId, setEditingId] = useState(null);
   const [loadError, setLoadError] = useState(null);
-  // The actual configure_policy permission, not a hardcoded role list — see ImpactLevelMaster.jsx.
-  const permissions = useAuthStore((state) => state.profile?.permissions);
-  const isViewOnly = !hasPermission(permissions, 'configure_policy');
+  const [selected, setSelected] = useState(null);
+  const readOnly = !canConfigure || version?.status !== 'DRAFT';
 
   const load = async () => {
+    if (!versionId) return;
     try {
       setLoadError(null);
-      const policyResponse = await adminApi.policyVersions();
-      const nextSelectedPolicyVersionId =
-        selectedPolicyVersionId ||
-        policyResponse.data.find((version) => version.status === 'DRAFT')?.id ||
-        '';
-      const categoryResponse = nextSelectedPolicyVersionId
-        ? await adminApi.expenseCategories({ policy_version_id: Number(nextSelectedPolicyVersionId) })
-        : { data: [] };
-
-      setCategories(categoryResponse.data);
-      setPolicyVersions(policyResponse.data);
-      setSelectedPolicyVersionId(nextSelectedPolicyVersionId);
-      setForm((current) => ({
-        ...current,
-        policy_version_id: current.policy_version_id || nextSelectedPolicyVersionId,
-      }));
+      setCategories((await adminApi.expenseCategories({ policy_version_id: versionId })).data);
     } catch (error) {
       setLoadError(error);
     }
   };
-
   useEffect(() => {
+    setSelected(null);
     load();
-  }, [selectedPolicyVersionId]);
+  }, [versionId]);
 
-  const rows = flatten(categories).filter(
-    (category) =>
-      !selectedPolicyVersionId || category.policy_version_id === Number(selectedPolicyVersionId),
-  );
-
-  const saveAction = useAsyncAction(async () => {
-    const policyVersionId = Number(form.policy_version_id || selectedPolicyVersionId);
-    const payload = {
-      ...form,
-      parent_category_id: form.parent_category_id ? Number(form.parent_category_id) : null,
-      policy_version_id: policyVersionId,
-      blacklisted_items: form.blacklisted_items
-        .split(',')
-        .map((item) => item.trim())
-        .filter(Boolean),
-      notes: form.notes.trim() || null,
-    };
-    if (editingId) await adminApi.updateExpenseCategory(editingId, payload);
-    else await adminApi.createExpenseCategory(payload);
-    setForm(createEmptyForm(selectedPolicyVersionId));
-    setEditingId(null);
-    await load();
-  });
-  const deactivateAction = useAsyncAction(async (id) => {
-    await adminApi.deactivateExpenseCategory(id);
-    await load();
-  });
-  const error = loadError || saveAction.error || deactivateAction.error;
+  const rows = flatten(categories).filter((c) => c.policy_version_id === versionId);
+  const category = rows.find((c) => c.id === selected) || null;
 
   return (
-    <>
-      <PageHeader
-        title=""
-        actions={
-          <>
-            {isViewOnly ? <span className="badge bg-slate-100 text-slate-700">View Only</span> : null}
-            {!isViewOnly ? <button
-              type="button"
-              className="btn-secondary"
-              onClick={() => {
-                setForm(createEmptyForm(selectedPolicyVersionId));
-                setEditingId(null);
-              }}
-            >
-              <Plus size={17} />Add Category
-            </button> : null}
-          </>
-        }
-      />
-      {error ? <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error.response?.data?.detail || error.message}</div> : null}
-      <div className="flex flex-col md:flex-row gap-4 mb-4">
-        <section className="panel flex-1 p-4 flex items-center gap-3">
-          <label className="text-sm font-semibold text-slate-700 whitespace-nowrap">
-            Draft Policy Version:
-          </label>
-          <select className="field min-w-48 bg-slate-50 py-1.5 text-sm" value={selectedPolicyVersionId} onChange={(event) => { setSelectedPolicyVersionId(event.target.value); setEditingId(null); setForm(createEmptyForm(event.target.value)); }}>
-            <option value="">Select draft version</option>
-            {policyVersions
-              .filter((version) => version.status === 'DRAFT')
-              .map((version) => (
-                <option key={version.id} value={version.id}>
-                  Policy {version.version_number}
-                </option>
-              ))}
-          </select>
+    <section className="flex flex-col gap-3.5">
+      <PolicyHead title="Expense categories" sub="What people can claim, what proof each needs, and what's never allowed in it. Sub-categories sit under their parent.">
+        {!readOnly ? (
+          <button type="button" className={BTN_MAIN} onClick={() => setSelected(null)}>
+            <Plus size={15} />
+            Add category
+          </button>
+        ) : null}
+      </PolicyHead>
+      <VersionBar versions={versions} versionId={versionId} onSelect={setVersionId} canConfigure={canConfigure} />
+      <ErrorNote error={versionsError || loadError} />
+      <div className="grid items-start gap-3.5 lg:grid-cols-[minmax(0,1fr)_380px]">
+        <section aria-label="Categories" className={CARD}>
+          {rows.map((c) => {
+            const on = c.id === selected;
+            return (
+              <button
+                key={c.id}
+                type="button"
+                aria-pressed={on}
+                onClick={() => setSelected(c.id)}
+                className={`grid w-full grid-cols-[minmax(0,1fr)_16px] items-center gap-3 border-t border-slate-100 px-4 py-[11px] text-left first:border-t-0 hover:bg-[#fbfdfc] ${on ? 'bg-[#f4faf7] shadow-[inset_3px_0_0] shadow-brand' : ''}`}
+              >
+                <span className="min-w-0" style={{ paddingLeft: `${c.depth * 22}px` }}>
+                  <b className="flex items-center gap-1.5 text-[13.5px] text-ink">
+                    {c.depth ? <CornerDownRight size={13} className="text-slate-400" /> : null}
+                    {c.name}
+                  </b>
+                  <span className="mt-[5px] flex flex-wrap items-center gap-[5px]">
+                    {c.bill_mandatory ? <Pill tone="sky">Bill needed</Pill> : <Pill>No bill needed</Pill>}
+                    {c.gst_invoice_required ? <Pill tone="violet">GST invoice</Pill> : null}
+                    {(c.blacklisted_items || []).map((b) => (
+                      <Pill key={b} tone="rose">
+                        ✕ {b}
+                      </Pill>
+                    ))}
+                    {c.notes ? <span className="text-xs text-slate-500">{c.notes}</span> : null}
+                  </span>
+                </span>
+                <ChevronRight size={15} className="text-slate-400" />
+              </button>
+            );
+          })}
+          {versionId && rows.length === 0 && !loadError ? <p className="px-4 py-6 text-center text-[13px] text-slate-500">No categories in this version yet.</p> : null}
         </section>
+        {readOnly && !category ? (
+          <aside className={`${CARD} px-4 py-6 text-center text-[13px] text-slate-500`}>Pick a category to see what it needs.</aside>
+        ) : (
+          <CategorySheet
+            category={category}
+            rows={rows}
+            versionId={versionId}
+            versionNumber={version?.version_number}
+            readOnly={readOnly}
+            onClose={() => setSelected(null)}
+            onSaved={async (id) => {
+              await load();
+              setSelected(id);
+            }}
+          />
+        )}
       </div>
-      
-      <section className="panel mb-4 p-4">
-        <div className="flex flex-wrap items-center gap-3">
-          <input className="field min-w-[200px] flex-1" readOnly={isViewOnly} placeholder="Category Name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
-          <select className="field min-w-[180px] flex-1" disabled={isViewOnly} value={form.parent_category_id} onChange={(event) => setForm({ ...form, parent_category_id: event.target.value })}>
-            <option value="">Root category</option>
-            {rows.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
-          </select>
-          <div className="flex items-center gap-4 px-2">
-            <label className="flex items-center gap-1.5 text-sm font-medium text-slate-600"><input type="checkbox" className="rounded border-slate-300 text-brand focus:ring-brand" disabled={isViewOnly} checked={form.bill_mandatory} onChange={(event) => setForm({ ...form, bill_mandatory: event.target.checked })} />Bill</label>
-            <label className="flex items-center gap-1.5 text-sm font-medium text-slate-600"><input type="checkbox" className="rounded border-slate-300 text-brand focus:ring-brand" disabled={isViewOnly} checked={form.gst_invoice_required} onChange={(event) => setForm({ ...form, gst_invoice_required: event.target.checked })} />GST</label>
-          </div>
-          <input className="field min-w-[200px] flex-1" readOnly={isViewOnly} placeholder="Blacklist tags (comma sep)" value={form.blacklisted_items} onChange={(event) => setForm({ ...form, blacklisted_items: event.target.value })} />
-          <input className="field min-w-[200px] flex-1" readOnly={isViewOnly} placeholder="Notes (e.g. book ≥ 7 days in advance)" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} />
-          <select className="field min-w-[150px] flex-1" disabled={isViewOnly} value={form.policy_version_id} onChange={(event) => setForm({ ...form, policy_version_id: event.target.value })}>
-            {policyVersions
-              .filter((version) => version.status === 'DRAFT')
-              .map((version) => (
-                <option key={version.id} value={version.id}>
-                  Policy {version.version_number}
-                </option>
-              ))}
-          </select>
-          {!isViewOnly ? <button className="btn-primary shrink-0" onClick={saveAction.run} disabled={!form.policy_version_id || saveAction.loading}><Save size={16} className="mr-1.5" />{saveAction.loading ? 'Saving' : 'Save Category'}</button> : null}
-        </div>
-      </section>
-      <section className="panel table-contain overflow-hidden">
-        <table className="w-full text-left text-sm">
-          <thead className="bg-slate-50 text-center text-[11px] font-bold uppercase tracking-wider text-slate-500">
-            <tr><th className="px-4 py-3 text-left">Category</th><th className="px-4 py-3">Bill</th><th className="px-4 py-3">GST</th><th className="px-4 py-3">Blacklist</th><th className="px-4 py-3">Notes</th><th className="px-4 py-3">Actions</th></tr>
-          </thead>
-          <tbody>
-            {rows.map((category) => (
-              <tr key={category.id} className="border-t border-line hover:bg-slate-50/50 transition-colors">
-                <td className="px-4 py-3 font-semibold text-slate-800" style={{ paddingLeft: `${16 + category.depth * 24}px` }}>{category.name}</td>
-                <td className="px-4 py-3 text-center">
-                  {category.bill_mandatory ? <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700 ring-1 ring-inset ring-emerald-600/20">Yes</span> : <span className="inline-flex items-center rounded-full bg-slate-50 px-2 py-0.5 text-[11px] font-bold text-slate-600 ring-1 ring-inset ring-slate-500/20">No</span>}
-                </td>
-                <td className="px-4 py-3 text-center">
-                  {category.gst_invoice_required ? <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700 ring-1 ring-inset ring-emerald-600/20">Yes</span> : <span className="inline-flex items-center rounded-full bg-slate-50 px-2 py-0.5 text-[11px] font-bold text-slate-600 ring-1 ring-inset ring-slate-500/20">No</span>}
-                </td>
-                <td className="px-4 py-3 text-center text-slate-600">{(category.blacklisted_items || []).join(', ') || '-'}</td>
-                <td className="px-4 py-3 text-center text-slate-500 max-w-[220px] truncate" title={category.notes || ''}>{category.notes || '-'}</td>
-                <td className="px-4 py-3 text-center">
-                  <div className="flex items-center justify-center gap-1.5">
-                    {!isViewOnly ? <button className="inline-flex items-center justify-center rounded-lg bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-sm ring-1 ring-inset ring-slate-300 hover:bg-slate-50 transition-all" onClick={() => { setForm({ ...category, parent_category_id: category.parent_category_id || '', policy_version_id: category.policy_version_id, blacklisted_items: (category.blacklisted_items || []).join(', '), notes: category.notes || '' }); setEditingId(category.id); }}>Edit</button> : null}
-                    {!isViewOnly ? <button className="inline-flex items-center justify-center rounded-lg bg-white p-1.5 text-slate-400 shadow-sm ring-1 ring-inset ring-slate-300 hover:bg-red-50 hover:text-red-600 disabled:opacity-50 transition-all" onClick={() => deactivateAction.run(category.id)} disabled={deactivateAction.loading} title="Disable Category"><Trash2 size={15} /></button> : null}
-                  </div>
-                </td>
-              </tr>
-            ))}
-            {rows.length === 0 ? <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-500">No categories found for this policy version.</td></tr> : null}
-          </tbody>
-        </table>
-      </section>
-    </>
+    </section>
   );
 }

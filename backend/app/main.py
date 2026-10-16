@@ -50,6 +50,7 @@ async def unhandled_exception_handler(_request: Request, exc: Exception) -> JSON
 async def _run_monitors():
     from app.core.database import AsyncSessionLocal
     from app.services.finance_reporting_service import run_scheduled_reports
+    from app.services.policy_engine import archive_replaced_policy_versions_job
     from app.services.workflow_service import process_auto_approvals
     from app.workers.advance_monitor import monitor_advances
     from app.workers.sla_monitor import monitor_slas
@@ -58,11 +59,23 @@ async def _run_monitors():
         while True:
             try:
                 async with AsyncSessionLocal() as db:
-                    await monitor_slas(db)
                     await monitor_advances(db)
+                async with AsyncSessionLocal() as db:
+                    await archive_replaced_policy_versions_job(db)
             except Exception as e:
                 logger.error(f"Error in hourly background monitors: {e}")
             await asyncio.sleep(3600)  # Run every hour
+
+    async def run_sla_monitor():
+        # Frequent enough that a breached SLA passes on, and 4-working-hour reminders go out,
+        # within a few minutes of being due.
+        while True:
+            try:
+                async with AsyncSessionLocal() as db:
+                    await monitor_slas(db)
+            except Exception as e:
+                logger.error(f"Error in SLA monitor: {e}")
+            await asyncio.sleep(300)
 
     async def run_frequent():
         while True:
@@ -83,6 +96,7 @@ async def _run_monitors():
             await asyncio.sleep(60)  # Check for due schedules every minute
 
     asyncio.create_task(run_hourly())
+    asyncio.create_task(run_sla_monitor())
     asyncio.create_task(run_frequent())
     asyncio.create_task(run_scheduled_reports_loop())
 

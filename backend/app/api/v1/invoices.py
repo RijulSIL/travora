@@ -20,6 +20,7 @@ from app.schemas.reimbursement import (
     InvoiceOut,
 )
 from app.services.reimbursement_service import (
+    INVOICE_ARCHIVING_CLAIM_STATUSES,
     INVOICE_LOCKING_CLAIM_STATUSES,
     delete_invoice,
     get_invoice_claim_link,
@@ -214,7 +215,7 @@ async def list_invoices(
             "linked_claim_id": claim_id,
             "linked_claim_reference": claim_reference,
             "linked_claim_status": claim_status.value if claim_status else None,
-            "is_archived": claim_status in INVOICE_LOCKING_CLAIM_STATUSES,
+            "is_archived": claim_status in INVOICE_ARCHIVING_CLAIM_STATUSES,
             "is_locked": claim_status in INVOICE_LOCKING_CLAIM_STATUSES,
             # Matches delete_invoice: a rejected-only history doesn't block deletion,
             # only a still-active (non-rejected) claim link does.
@@ -278,7 +279,7 @@ async def invoice_extraction(
     invoice_dict["linked_claim_id"] = claim_id
     invoice_dict["linked_claim_reference"] = claim_reference
     invoice_dict["linked_claim_status"] = claim_status.value if claim_status else None
-    invoice_dict["is_archived"] = claim_status in INVOICE_LOCKING_CLAIM_STATUSES
+    invoice_dict["is_archived"] = claim_status in INVOICE_ARCHIVING_CLAIM_STATUSES
     invoice_dict["is_locked"] = claim_status in INVOICE_LOCKING_CLAIM_STATUSES
     invoice_dict["can_delete"] = claim_status is None or claim_status == ClaimStatus.REJECTED
     return {
@@ -401,7 +402,7 @@ async def remove_invoice_from_draft(
     invoice_dict["linked_claim_id"] = claim_id
     invoice_dict["linked_claim_reference"] = claim_reference
     invoice_dict["linked_claim_status"] = claim_status.value if claim_status else None
-    invoice_dict["is_archived"] = claim_status in INVOICE_LOCKING_CLAIM_STATUSES
+    invoice_dict["is_archived"] = claim_status in INVOICE_ARCHIVING_CLAIM_STATUSES
     invoice_dict["is_locked"] = claim_status in INVOICE_LOCKING_CLAIM_STATUSES
     invoice_dict["can_delete"] = claim_status is None or claim_status == ClaimStatus.REJECTED
     return invoice_dict

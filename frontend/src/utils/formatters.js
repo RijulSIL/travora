@@ -31,6 +31,7 @@ export const ROLE_LABELS = {
   IT_ADMIN: 'IT Admin',
   CEO: 'CEO',
   GROUP_HEAD_HR: 'Group Head HR',
+  RECRUITER: 'Recruiter',
 };
 
 export const formatRole = (role) => ROLE_LABELS[role] || (role || '').replace(/_/g, ' ');

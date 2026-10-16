@@ -1,9 +1,9 @@
 import { Navigate, Outlet } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 
-import api from '../services/api';
+import api, { refreshSession } from '../services/api';
 import { showToast } from '../store/toastStore';
-import { setSession, useAuthStore } from '../store/authStore';
+import { useAuthStore } from '../store/authStore';
 import BounceLoader from './ui/BounceLoader';
 
 export default function ProtectedRoute() {
@@ -14,14 +14,7 @@ export default function ProtectedRoute() {
     const bootstrapSession = async () => {
       if (!useAuthStore.getState().isAuthenticated) {
         try {
-          const refreshToken = useAuthStore.getState().refreshToken;
-          const headers = refreshToken ? { 'X-Refresh-Token': refreshToken } : {};
-          const response = await api.post('/auth/refresh', {}, { headers });
-          setSession(response.data);
-
-
-
-
+          await refreshSession();
         } catch {
           /* allow redirect to public landing */
         }

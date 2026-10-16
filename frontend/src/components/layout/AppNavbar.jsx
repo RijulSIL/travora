@@ -2,22 +2,12 @@ import { Bell, ChevronDown, LogOut, Menu, User } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 
-import api from '../../services/api';
+import api, { currentRefreshToken } from '../../services/api';
 import { reimbursementApi } from '../../services/reimbursementApi';
 import { clearSession, selectResolvedRole, useAuthStore } from '../../store/authStore';
 import NotificationPanel from '../ui/NotificationPanel';
 import { ROLE_LABELS } from '../../utils/formatters';
-
-const ROLE_ACCENT = {
-  EMPLOYEE: 'bg-blue-500',
-  REPORTING_MANAGER: 'bg-amber-500',
-  HRBP_HR: 'bg-purple-500',
-  PAYROLL: 'bg-orange-500',
-  FINANCE: 'bg-green-500',
-  IT_ADMIN: 'bg-red-500',
-  CEO: 'bg-indigo-500',
-  GROUP_HEAD_HR: 'bg-purple-500',
-};
+import { roleAccent } from './roleAccent';
 
 export default function AppNavbar({ onOpenSidebar }) {
   const navigate = useNavigate();
@@ -28,7 +18,7 @@ export default function AppNavbar({ onOpenSidebar }) {
   const displayName = profile?.full_name ?? user?.full_name ?? user?.email ?? 'User';
   const firstName = displayName.split(' ')[0];
   const roleLabel = ROLE_LABELS[role] || role?.replace(/_/g, ' ') || '—';
-  const roleAccent = ROLE_ACCENT[role] || 'bg-slate-400';
+  const accent = roleAccent(role);
   const initial = displayName.trim().charAt(0).toUpperCase() || 'U';
 
   const [open, setOpen] = useState(false);
@@ -36,6 +26,37 @@ export default function AppNavbar({ onOpenSidebar }) {
   const [items, setItems] = useState([]);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const userMenuRef = useRef(null);
+  const [scrolledAway, setScrolledAway] = useState(false);
+
+  // Slides away while scrolling down, comes back on any scroll up (or near the top). Small
+  // movements are ignored so it doesn't flicker on trackpad jitter.
+  useEffect(() => {
+    let last = window.scrollY;
+    let frame = 0;
+    const onScroll = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        const y = window.scrollY;
+        const delta = y - last;
+        if (y < 56) setScrolledAway(false);
+        else if (delta > 6) setScrolledAway(true);
+        else if (delta < -6) setScrolledAway(false);
+        if (Math.abs(delta) > 6 || y < 56) last = y;
+      });
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', onScroll);
+      cancelAnimationFrame(frame);
+    };
+  }, []);
+  // Stays put while the notifications or account menu is open.
+  const hidden = scrolledAway && !open && !userMenuOpen;
+  // Lets things that stick below the bar (e.g. the Travel Desk side panel) move up with it.
+  useEffect(() => {
+    document.documentElement.style.setProperty('--app-nav-h', hidden ? '0px' : '56px');
+  }, [hidden]);
 
   // Notification refresh
   const refresh = async () => {
@@ -70,7 +91,9 @@ export default function AppNavbar({ onOpenSidebar }) {
 
   const handleLogout = async () => {
     try {
-      await api.post('/auth/logout');
+      // Send the saved token too: logout cancels it as well as the cookie's, which can differ.
+      const token = currentRefreshToken();
+      await api.post('/auth/logout', {}, { headers: token ? { 'X-Refresh-Token': token } : {} });
     } catch {
       /* proceed with local logout */
     }
@@ -86,7 +109,9 @@ export default function AppNavbar({ onOpenSidebar }) {
   };
 
   return (
-    <header className="sticky top-0 z-50 bg-white border-b border-slate-200/70 shadow-sm">
+    <header
+      className={`sticky top-0 z-50 bg-white border-b border-slate-200/70 shadow-sm transition-transform duration-200 ease-out focus-within:translate-y-0 motion-reduce:transition-none ${hidden ? '-translate-y-full' : ''}`}
+    >
       <div className="flex h-14 items-center gap-3 px-4 md:px-6">
         {/* Mobile hamburger (desktop nav lives in the sidebar instead) */}
         <button
@@ -143,7 +168,7 @@ export default function AppNavbar({ onOpenSidebar }) {
               onClick={() => setUserMenuOpen((v) => !v)}
               aria-label="Account menu"
             >
-              <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[13px] font-bold text-white ${roleAccent}`}>
+              <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[13px] font-bold text-white ${accent}`}>
                 {initial}
               </span>
               <span className="hidden flex-col items-start leading-tight md:flex">
@@ -160,7 +185,7 @@ export default function AppNavbar({ onOpenSidebar }) {
                 <div className="border-b border-slate-100 px-4 py-2.5">
                   <div className="truncate text-sm font-semibold text-ink">{displayName}</div>
                   <div className="mt-1 flex items-center gap-1.5">
-                    <span className={`h-1.5 w-1.5 rounded-full ${roleAccent}`} />
+                    <span className={`h-1.5 w-1.5 rounded-full ${accent}`} />
                     <span className="text-xs text-slate-500">{roleLabel}</span>
                   </div>
                 </div>

@@ -1,15 +1,32 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Search } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import ClaimStatusBadge from '../../components/ui/ClaimStatusBadge';
-import ReimbursementCategoryBadge from '../../components/ui/ReimbursementCategoryBadge';
-import PageHeader from '../../components/ui/PageHeader';
+import { PageHead, Pill, Tabs } from '../../components/approvals/ApprovalQueueParts';
+import { Empty, day, errorText, money, rupees } from '../../components/finance/FinanceParts';
+import { CARD } from '../../components/policy/PolicyAdminParts';
+import { CLAIM_STAGE } from '../../components/reports/statusPalette';
 import Pagination from '../../components/ui/Pagination';
 import Skeleton from '../../components/ui/Skeleton';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { usePagination } from '../../hooks/usePagination';
 import { reimbursementApi } from '../../services/reimbursementApi';
-import { formatCurrency, formatDate } from '../../utils/formatters';
+
+const CATEGORY = { TRAVEL: ['Travel', 'sky'], GENERAL: ['General', 'violet'], RELOCATION: ['Relocation', 'orange'] };
+const TAB_ORDER = ['PENDING_EXCEPTION', 'IN_APPROVAL', 'ON_HOLD', 'READY_FOR_PAYMENT', 'PAID', 'SENT_BACK', 'REJECTED'];
+const INPUT = 'h-8 rounded-[10px] border border-slate-200 bg-white px-2.5 text-[12.5px] text-ink outline-none focus:border-brand';
+const COLS = 'lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_150px_130px]';
+const shortDay = (v) => (v ? new Date(v).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '');
+
+function StatusPill({ status }) {
+  const [label, color] = CLAIM_STAGE[status] || [String(status || '').replace(/_/g, ' '), '#94a3b8'];
+  return (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-bold" style={{ backgroundColor: `${color}1a`, color }}>
+      <i className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />
+      {label}
+    </span>
+  );
+}
 
 export default function AllClaimsPage() {
   useSetPageTitle('All Claims');
@@ -17,157 +34,147 @@ export default function AllClaimsPage() {
   const [claims, setClaims] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [filters, setFilters] = useState({
-    status: '',
-    category: '',
-    department: '',
-    from_date: '',
-    to_date: '',
-    employee: '',
-  });
+  const [tab, setTab] = useState('all');
+  const [category, setCategory] = useState('');
+  const [query, setQuery] = useState('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await reimbursementApi.claims({ all_claims: true });
-      setClaims(res.data || []);
+      setClaims((await reimbursementApi.claims({ all_claims: true })).data || []);
     } catch (e) {
-      setError(e?.response?.data?.detail || e.message || 'Failed to load claims');
+      setError(errorText(e, e.message || 'Failed to load claims'));
     } finally {
       setLoading(false);
     }
   }, []);
-
   useEffect(() => {
     load();
   }, [load]);
 
-  const filtered = claims.filter((c) => {
-    if (filters.status && c.status !== filters.status) return false;
-    if (filters.category && (c.reimbursement_category || 'TRAVEL') !== filters.category) return false;
-    const subDate = c.submitted_at ? String(c.submitted_at).slice(0, 10) : '';
-    if (filters.from_date && subDate && subDate < filters.from_date) return false;
-    if (filters.to_date && subDate && subDate > filters.to_date) return false;
-    return true;
-  });
+  // Category, search and dates narrow the list first; the tabs then count within that.
+  const narrowed = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return claims.filter((c) => {
+      if (category && (c.reimbursement_category || 'TRAVEL') !== category) return false;
+      const sub = c.submitted_at ? String(c.submitted_at).slice(0, 10) : '';
+      if (from && sub && sub < from) return false;
+      if (to && sub && sub > to) return false;
+      if (q && ![c.claim_reference, c.employee_id, c.employee_name, c.destination_city].filter(Boolean).some((v) => String(v).toLowerCase().includes(q))) return false;
+      return true;
+    });
+  }, [claims, category, query, from, to]);
+  const shown = tab === 'all' ? narrowed : narrowed.filter((c) => c.status === tab);
+  const { page, setPage, totalPages, pageItems, startIndex, pageSize, total } = usePagination(shown);
 
-  const { page, setPage, totalPages, pageItems, startIndex, pageSize, total } = usePagination(filtered);
+  const statuses = [...TAB_ORDER, ...new Set(claims.map((c) => c.status).filter((s) => !TAB_ORDER.includes(s)))];
+  const tabs = [{ key: 'all', label: 'All', count: narrowed.length }, ...statuses.map((s) => ({ key: s, label: (CLAIM_STAGE[s] || [s.replace(/_/g, ' ')])[0], count: narrowed.filter((c) => c.status === s).length }))];
+  const claimed = claims.reduce((n, c) => n + Number(c.compliance_report?.total_claimed || 0), 0);
+  const open = claims.filter((c) => !['PAID', 'REJECTED'].includes(c.status)).length;
 
   return (
-    <div className="space-y-4">
-      <PageHeader title="" />
+    <section className="flex flex-col gap-3.5">
+      <PageHead
+        title="All claims"
+        sub="Every claim across the company, view only. Click one to open it."
+        stats={[
+          { label: 'Claims', value: claims.length },
+          { label: 'Claimed', value: rupees(claimed) },
+          { label: 'Still open', value: open },
+        ]}
+      />
       {error ? (
-        <div className="panel rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+        <div role="alert" className="rounded-[10px] border border-amber-200 bg-amber-50 px-3 py-2.5 text-[13px] text-amber-900">
           {error}
         </div>
       ) : null}
-
-      <section className="panel rounded p-4">
-        <div className="grid gap-3 md:grid-cols-5">
-          <select
-            className="field"
-            value={filters.status}
-            onChange={(e) => setFilters({ ...filters, status: e.target.value })}
-          >
-            <option value="">All status</option>
-            {['DRAFT', 'SUBMITTED', 'IN_APPROVAL', 'READY_FOR_PAYMENT', 'SENT_BACK', 'REJECTED', 'PAID'].map(
-              (s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ),
-            )}
-          </select>
-          <select
-            className="field"
-            value={filters.category}
-            onChange={(e) => setFilters({ ...filters, category: e.target.value })}
-          >
-            <option value="">All categories</option>
-            <option value="TRAVEL">Travel</option>
-            <option value="GENERAL">General</option>
-            <option value="RELOCATION">Relocation</option>
-          </select>
-          <input
-            className="field"
-            type="date"
-            placeholder="From date"
-            value={filters.from_date}
-            onChange={(e) => setFilters({ ...filters, from_date: e.target.value })}
-          />
-          <input
-            className="field"
-            type="date"
-            placeholder="To date"
-            value={filters.to_date}
-            onChange={(e) => setFilters({ ...filters, to_date: e.target.value })}
-          />
+      <Tabs label="Status" tabs={tabs} value={tab} onChange={setTab} />
+      <div role="group" aria-label="Filters" className="flex flex-wrap items-center gap-2 rounded-[14px] border border-slate-200 bg-white px-3 py-2.5">
+        <select aria-label="Type" className="h-8 rounded-[10px] border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700" value={category} onChange={(e) => setCategory(e.target.value)}>
+          <option value="">All types</option>
+          <option value="TRAVEL">Travel</option>
+          <option value="GENERAL">General</option>
+          <option value="RELOCATION">Relocation</option>
+        </select>
+        <label className="relative">
+          <span className="sr-only">Search</span>
+          <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input className={`${INPUT} w-[230px] pl-8`} placeholder="Search claim, employee or city" value={query} onChange={(e) => setQuery(e.target.value)} />
+        </label>
+        <span className="text-xs text-slate-500">Submitted</span>
+        <input aria-label="Submitted from" type="date" className={INPUT} value={from} onChange={(e) => setFrom(e.target.value)} />
+        <span className="text-xs text-slate-500">to</span>
+        <input aria-label="Submitted until" type="date" className={INPUT} value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} />
+        {category || query || from || to ? (
           <button
             type="button"
-            className="btn-secondary"
-            onClick={() =>
-              setFilters({ status: '', category: '', department: '', from_date: '', to_date: '', employee: '' })
-            }
+            className="text-xs font-bold text-brand hover:underline"
+            onClick={() => {
+              setCategory('');
+              setQuery('');
+              setFrom('');
+              setTo('');
+            }}
           >
-            Reset
+            Clear filters
           </button>
-        </div>
-      </section>
+        ) : null}
+      </div>
 
-      <section className="panel table-contain mt-4 overflow-hidden rounded">
-        <table className="w-full text-left text-sm">
-          <thead className="bg-slate-100 text-center text-xs uppercase text-slate-500">
-            <tr>
-              <th className="px-4 py-3 whitespace-nowrap">S. No</th>
-              <th className="px-4 py-3">Claim Ref</th>
-              <th className="px-4 py-3">Employee ID</th>
-              <th className="px-4 py-3">Category</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Amount</th>
-              <th className="px-4 py-3">Net Payable</th>
-              <th className="px-4 py-3">Submitted</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr>
-                <td colSpan={8} className="px-4 py-6">
-                  <Skeleton variant="table" rows={5} columns={8} />
-                </td>
-              </tr>
-            ) : (
-              pageItems.map((claim, index) => {
-                const report = claim.compliance_report || {};
-                return (
-                  <tr
-                    key={claim.id}
-                    className="cursor-pointer border-t border-line hover:bg-slate-50"
-                    onClick={() => navigate(`/claims/${claim.id}`)}
-                  >
-                    <td className="px-4 py-3 text-center text-slate-500">{startIndex + index + 1}</td>
-                    <td className="px-4 py-3 text-center font-medium">{claim.claim_reference || `CLM-${claim.id}`}</td>
-                    <td className="px-4 py-3 text-center">{claim.employee_id || '-'}</td>
-                    <td className="px-4 py-3 text-center"><ReimbursementCategoryBadge category={claim.reimbursement_category} /></td>
-                    <td className="px-4 py-3 text-center"><ClaimStatusBadge status={claim.status} /></td>
-                    <td className="px-4 py-3 text-center">{formatCurrency(report.total_claimed || 0)}</td>
-                    <td className="px-4 py-3 text-center">{formatCurrency(report.net_payable || 0)}</td>
-                    <td className="px-4 py-3 text-center">{claim.submitted_at ? formatDate(claim.submitted_at) : '-'}</td>
-                  </tr>
-                );
-              })
-            )}
-            {!loading && filtered.length === 0 ? (
-              <tr>
-                <td colSpan={8} className="px-4 py-4 text-center text-slate-500">
-                  No claims found.
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
+      <section aria-label="Claims" className={CARD}>
+        <div className={`hidden gap-3.5 bg-slate-50 px-4 py-[9px] text-[11px] font-bold text-slate-500 lg:grid ${COLS}`}>
+          <span>Claim</span>
+          <span>Trip / type</span>
+          <span className="text-right">Amount</span>
+          <span>Status</span>
+        </div>
+        {loading ? (
+          <div className="p-4">
+            <Skeleton variant="table" rows={5} columns={4} />
+          </div>
+        ) : shown.length ? (
+          pageItems.map((c) => {
+            const [catLabel, catTone] = CATEGORY[c.reimbursement_category] || CATEGORY.TRAVEL;
+            const report = c.compliance_report || {};
+            const trip = c.destination_city
+              ? `${c.office_location || c.from_city || '—'} → ${c.destination_city}${c.departure_date ? ` · ${shortDay(c.departure_date)}–${day(c.return_date || c.departure_date)}` : ''}`
+              : `${catLabel} reimbursement`;
+            return (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => navigate(`/claims/${c.id}`)}
+                className={`grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3.5 gap-y-1.5 border-t border-slate-100 px-4 py-3 text-left first:border-t-0 hover:bg-[#fbfdfc] ${COLS}`}
+              >
+                <span className="min-w-0">
+                  <b className="flex flex-wrap items-center gap-[7px] text-[13.5px] text-ink">
+                    {c.claim_reference || `CLM-${c.id}`} <Pill tone={catTone}>{catLabel}</Pill>
+                  </b>
+                  <span className="block text-xs text-slate-500">
+                    {c.employee_name || 'Employee'}
+                    {c.employee_id ? ` (${c.employee_id})` : ''} · {c.submitted_at ? `submitted ${day(c.submitted_at)}` : 'not submitted'}
+                  </span>
+                  <span className="block text-xs text-slate-500 lg:hidden">{trip}</span>
+                </span>
+                <span className="hidden text-xs text-slate-500 lg:block">{trip}</span>
+                <span className="text-right">
+                  <b className="block font-mono text-[13px] font-semibold tabular-nums text-ink">{money(report.total_claimed)}</b>
+                  {c.status === 'PAID' && c.payment_amount != null ? <span className="text-xs text-slate-500">paid {money(c.payment_amount)}</span> : null}
+                </span>
+                <span className="col-span-2 lg:col-span-1">
+                  <StatusPill status={c.status} />
+                </span>
+              </button>
+            );
+          })
+        ) : (
+          <Empty title={claims.length ? 'No claims here' : 'No claims yet'}>{claims.length ? 'Try another tab or clear the filters.' : 'Submitted claims show up here.'}</Empty>
+        )}
         <Pagination page={page} totalPages={totalPages} onPageChange={setPage} total={total} pageSize={pageSize} startIndex={startIndex} />
       </section>
-    </div>
+    </section>
   );
 }

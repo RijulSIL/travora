@@ -171,6 +171,7 @@ export default function ReimbursementDraft() {
                                 const name = `${t.reference_id}-ticket.bin`;
                                 setPreview({
                                   open: true,
+                                  ticketId: t.desk_ticket_id,
                                   blob: resp.data,
                                   name,
                                   type: resp.headers['content-type'] || '',
@@ -348,6 +349,7 @@ export default function ReimbursementDraft() {
 
         <TicketPreviewDrawer
           open={preview.open}
+          ticketId={preview.ticketId}
           onClose={() => setPreview((p) => ({ ...p, open: false }))}
           blob={preview.blob}
           contentType={preview.type}

@@ -11,6 +11,37 @@ const api = axios.create({
 
 let refreshPromise = null;
 
+/** The refresh token as last saved by any tab (tabs share local storage), not this tab's copy. */
+export function currentRefreshToken() {
+  try {
+    return localStorage.getItem('refresh_token') || useAuthStore.getState().refreshToken;
+  } catch {
+    return useAuthStore.getState().refreshToken;
+  }
+}
+
+/**
+ * Get a new access token and save the new session. Every caller shares one request while it's in
+ * flight — the backend cancels a refresh token once it's swapped, so firing several at once with
+ * the same token (a page's double load in development, many calls expiring together) would only
+ * lean on its short grace period. Resolves with the session; rejects if the login has ended.
+ */
+export function refreshSession() {
+  if (!refreshPromise) {
+    const token = currentRefreshToken();
+    refreshPromise = api
+      .post('/auth/refresh', {}, { headers: token ? { 'X-Refresh-Token': token } : {} })
+      .then((response) => {
+        setSession(response.data);
+        return response.data;
+      })
+      .finally(() => {
+        refreshPromise = null;
+      });
+  }
+  return refreshPromise;
+}
+
 // Request interceptor for debugging and auth
 api.interceptors.request.use((config) => {
   console.log('[DEBUG_API] Requesting:', config.method?.toUpperCase(), config.url);
@@ -54,18 +85,10 @@ api.interceptors.response.use(
 
     originalRequest._retry = true;
     try {
-      const refreshToken = useAuthStore.getState().refreshToken;
-      const headers = refreshToken ? { 'X-Refresh-Token': refreshToken } : {};
-      refreshPromise ||= api.post('/auth/refresh', {}, { headers });
-      const response = await refreshPromise;
-
-
-      refreshPromise = null;
-      setSession(response.data);
-      originalRequest.headers.Authorization = `Bearer ${response.data.access_token}`;
+      const session = await refreshSession();
+      originalRequest.headers.Authorization = `Bearer ${session.access_token}`;
       return api(originalRequest);
     } catch (refreshError) {
-      refreshPromise = null;
       clearSession();
       showToast('Your session has expired. Please log in again.', 'error');
       window.location.assign('/');

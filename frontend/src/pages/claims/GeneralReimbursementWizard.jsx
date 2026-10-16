@@ -1,7 +1,7 @@
-import { Check } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
+import ClaimWizardShell, { ClaimSummaryCard, netPayable, policyCounts } from '../../components/claims/ClaimWizardShell';
 import ClaimWizardStepEvidence from '../../components/claims/ClaimWizardStepEvidence';
 import ClaimWizardStepPolicyCheck from '../../components/claims/ClaimWizardStepPolicyCheck';
 import ClaimWizardStepSubmit from '../../components/claims/ClaimWizardStepSubmit';
@@ -11,14 +11,11 @@ import { useSetPageTitle } from '../../context/PageTitleContext';
 import useToast from '../../hooks/useToast';
 import { reimbursementApi } from '../../services/reimbursementApi';
 
-const STEP_LABELS = ['Invoices', 'Policy Check', 'Submit'];
+const STEP_LABELS = ['Invoices', 'Policy check', 'Submit'];
 const DRAFT_STORAGE_KEY = 'travora_general_reimbursement_draft';
-// Relocation isn't a trip either, so it shares this wizard rather than getting its own
-// entry point — a Relocation-tagged invoice shows up in the picker right alongside
-// General ones (see visibleInvoices below). Which of the two the claim actually routes as
-// is resolved server-side from the invoices actually attached (see
-// reimbursement_service._resolve_claim_reimbursement_category).
-const PICKER_CATEGORIES = ['GENERAL', 'RELOCATION'];
+// General Reimbursement draws only from General-tagged invoices. Relocation claims are raised
+// from the Travel Claim wizard (trip purpose Relocation) with Relocation-tagged invoices.
+const PICKER_CATEGORIES = ['GENERAL'];
 
 export default function GeneralReimbursementWizard() {
   useSetPageTitle('General Reimbursement');
@@ -104,9 +101,8 @@ export default function GeneralReimbursementWizard() {
     localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify({ selectedInvoiceIds, currentStep }));
   }, [selectedInvoiceIds, currentStep, effectiveEditId]);
 
-  // General and Relocation share this one picker (enforced server-side too, see
-  // assert_invoices_eligible_for_claim) — filter here so it never offers a Travel invoice
-  // that would fail validation on save.
+  // Enforced server-side too (assert_invoices_eligible_for_claim) — filter here so it never
+  // offers a Travel or Relocation invoice that would fail validation on save.
   const visibleInvoices = useMemo(
     () => invoices.filter((invoice) => PICKER_CATEGORIES.includes(invoice.reimbursement_category)),
     [invoices],
@@ -219,58 +215,27 @@ export default function GeneralReimbursementWizard() {
     }
   };
 
+  const selectedInvoiceRows = visibleInvoices.filter((invoice) => selectedInvoiceIds.includes(invoice.id));
+  const policyChecked = currentStep >= 2 && claim;
+
   return (
-    <section className="space-y-6">
-      <div>
-        <h1 className="text-lg font-bold text-ink">
-          {effectiveEditId ? 'Edit General Reimbursement' : 'New General Reimbursement'}
-        </h1>
-        <p className="mt-0.5 text-sm text-slate-500">For office expenses not tied to a trip — no travel details required.</p>
-      </div>
-
-      {/* Connected Progress Stepper Header */}
-      <div className="rounded-xl border border-slate-200 bg-white px-6 sm:px-10 py-5 shadow-sm">
-        <div className="relative grid grid-cols-3">
-          {/* Background Connected Track */}
-          <div className="absolute left-[16.6%] right-[16.6%] top-[18px] h-0.5 -translate-y-1/2 bg-slate-100">
-            {/* Foreground Progress Fill */}
-            <div
-              className="absolute left-0 top-0 h-full bg-brand transition-all duration-300"
-              style={{ width: `${((currentStep - 1) / (STEP_LABELS.length - 1)) * 100}%` }}
-            ></div>
-          </div>
-
-          {STEP_LABELS.map((label, idx) => {
-            const stepNum = idx + 1;
-            const isCompleted = currentStep > stepNum;
-            const isActive = currentStep === stepNum;
-
-            return (
-              <div key={label} className="relative z-10 flex flex-col items-center">
-                <div
-                  className={`flex h-9 w-9 items-center justify-center rounded-full border-2 text-xs font-bold transition-all duration-300 ${
-                    isCompleted
-                      ? 'border-emerald-500 bg-emerald-500 text-white'
-                      : isActive
-                        ? 'border-brand bg-brand text-white shadow-lg shadow-brand/10 ring-4 ring-brand/10'
-                        : 'border-slate-200 bg-white text-slate-400'
-                  }`}
-                >
-                  {isCompleted ? <Check size={14} /> : stepNum}
-                </div>
-                <span
-                  className={`mt-2 text-xs font-bold tracking-tight transition-colors duration-200 ${
-                    isActive ? 'text-brand' : isCompleted ? 'text-slate-700' : 'text-slate-400'
-                  }`}
-                >
-                  {label}
-                </span>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
+    <ClaimWizardShell
+      title={effectiveEditId ? 'Edit general reimbursement' : 'New general reimbursement'}
+      sub="For work expenses with no trip."
+      steps={STEP_LABELS}
+      current={currentStep}
+      onStepClick={setCurrentStep}
+      aside={
+        <ClaimSummaryCard
+          invoiceCount={selectedInvoiceRows.length}
+          invoiceTotal={selectedInvoiceRows.reduce((sum, invoice) => sum + Number(invoice.total_amount || 0), 0)}
+          policyStep={2}
+          policy={policyChecked ? policyCounts(claim) : null}
+          advance={claim?.advance_received}
+          payable={netPayable(claim)}
+        />
+      }
+    >
       {currentStep === 1 ? (
         <ClaimWizardStepEvidence
           invoices={visibleInvoices}
@@ -281,6 +246,8 @@ export default function GeneralReimbursementWizard() {
             )
           }
           onUploadInvoice={onUploadInvoice}
+          uploading={uploadingInvoice}
+          busy={saving}
           reviewWarning={reviewWarning}
           sentBackHint={sentBackHint}
           onNext={goStep2}
@@ -291,6 +258,7 @@ export default function GeneralReimbursementWizard() {
         <ClaimWizardStepPolicyCheck
           claim={claim}
           isGeneral
+          busy={saving}
           onBack={() => setCurrentStep(1)}
           onNext={goStep3}
         />
@@ -325,6 +293,6 @@ export default function GeneralReimbursementWizard() {
       {submittedClaim && (
         <ClaimSubmitAnimation claim={submittedClaim} onComplete={() => navigate('/claims/my')} />
       )}
-    </section>
+    </ClaimWizardShell>
   );
 }

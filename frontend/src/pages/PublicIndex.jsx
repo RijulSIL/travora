@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Navigate } from 'react-router-dom';
 
-import api from '../services/api';
-import { setSession, useAuthStore } from '../store/authStore';
+import { currentRefreshToken, refreshSession } from '../services/api';
+import { useAuthStore } from '../store/authStore';
 import LandingPage from './LandingPage';
 
 /**
@@ -17,13 +17,7 @@ export default function PublicIndex() {
     (async () => {
       if (!useAuthStore.getState().isAuthenticated) {
         try {
-          const refreshToken = useAuthStore.getState().refreshToken;
-          if (refreshToken) {
-            const headers = { 'X-Refresh-Token': refreshToken };
-            const response = await api.post('/auth/refresh', {}, { headers });
-            setSession(response.data);
-          }
-
+          if (currentRefreshToken()) await refreshSession();
         } catch {
           /* stay logged out */
         }

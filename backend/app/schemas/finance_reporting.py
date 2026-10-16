@@ -147,6 +147,8 @@ class ExceptionApprovalDecisionOut(BaseModel):
     status: str
     acted_by_user_id: int | None = None
     acted_at: datetime | None = None
+    acted_by_name: str | None = None
+    sla_deadline_at: datetime | None = None
     comment: str | None = None
 
 

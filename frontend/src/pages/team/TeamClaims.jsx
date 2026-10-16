@@ -1,20 +1,28 @@
-import { ArrowRight, Users } from 'lucide-react';
-import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Users } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
-import ClaimApprovalStepper from '../../components/claims/ClaimApprovalStepper';
-import ClaimStatusBadge from '../../components/ui/ClaimStatusBadge';
-import ReimbursementCategoryBadge from '../../components/ui/ReimbursementCategoryBadge';
+import { ClaimListRow, claimStanding } from '../../components/claims/ClaimListRow';
 import EmptyState from '../../components/ui/EmptyState';
 import Skeleton from '../../components/ui/Skeleton';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { reimbursementApi } from '../../services/reimbursementApi';
-import { formatCurrency, formatDate } from '../../utils/formatters';
+
+const TABS = [
+  { key: 'all', label: 'All' },
+  { key: 'progress', label: 'In progress' },
+  { key: 'action', label: 'Sent back' },
+  { key: 'paid', label: 'Paid' },
+  { key: 'done', label: 'Rejected' },
+];
+const GROUP_ORDER = { progress: 0, action: 1, draft: 2, paid: 3, done: 4 };
 
 export default function TeamClaims() {
   useSetPageTitle('My Team Claims');
+  const navigate = useNavigate();
   const [claims, setClaims] = useState([]);
   const [chains, setChains] = useState({});
+  const [tab, setTab] = useState('all');
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -28,8 +36,6 @@ export default function TeamClaims() {
         if (cancelled) return;
         const rows = res.data || [];
         setClaims(rows);
-        
-        // Fetch approval chains for claims
         const chainEntries = await Promise.all(
           rows
             .filter((c) => c.status && c.status !== 'DRAFT')
@@ -55,87 +61,78 @@ export default function TeamClaims() {
     };
   }, []);
 
+  const rows = useMemo(
+    () =>
+      claims
+        .map((claim) => ({ claim, standing: claimStanding(claim, chains[claim.id], null, 'approver') }))
+        .sort((a, b) => GROUP_ORDER[a.standing.group] - GROUP_ORDER[b.standing.group] || b.claim.id - a.claim.id),
+    [claims, chains],
+  );
+  const counts = useMemo(() => {
+    const c = { all: rows.length };
+    rows.forEach((r) => {
+      c[r.standing.group] = (c[r.standing.group] || 0) + 1;
+    });
+    return c;
+  }, [rows]);
+  const shown = tab === 'all' ? rows : rows.filter((r) => r.standing.group === tab);
+
   return (
-    <div>
-      <div className="mb-6">
-        <p className="text-sm text-slate-600">
-          Track reimbursement claims submitted by your team members.
-        </p>
-      </div>
+    <div className="space-y-3.5">
+      <p className="text-sm text-slate-500">Claims your team members have submitted, and where each one stands.</p>
 
-      {loading ? <Skeleton variant="table" rows={4} columns={1} /> : null}
-      
-      {error ? (
-        <div className="panel rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-          {error}
-        </div>
+      {error ? <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">{error}</div> : null}
+      {loading ? <Skeleton variant="table" rows={5} columns={1} /> : null}
+
+      {!loading && !claims.length && !error ? (
+        <EmptyState icon={Users} title="No team claims yet" description="Claims submitted by your team will appear here." />
       ) : null}
 
-      {!loading && !claims.length ? (
-        <EmptyState
-          icon={Users}
-          title="No team claims yet"
-          description="Claims submitted by your team will appear here."
-        />
-      ) : null}
-
-      {claims.map((claim) => {
-        const report = claim.compliance_report || {};
-        const total = report.total_claimed || 0;
-        const net = report.net_payable ?? total;
-        const chain = chains[claim.id];
-        const stages = chain?.stages || [];
-        const current = chain?.current_approval_stage;
-
-        return (
-          <div key={claim.id} className="panel mb-4 rounded-lg border border-slate-200 bg-white p-5">
-            <div className="mb-4 flex flex-wrap justify-between gap-4">
-              <div>
-                <div className="text-sm font-bold text-ink">
-                  {claim.claim_reference || `Claim #${claim.id}`}
-                </div>
-                <div className="mt-1 text-xs text-slate-600">
-                  <span className="font-semibold text-slate-700">Employee ID: {claim.employee_user_id}</span>
-                  {claim.office_location || claim.destination_city ? ' · ' : ''}
-                  {[claim.office_location, claim.destination_city].filter(Boolean).join(' → ')}
-                  {claim.departure_date && claim.return_date
-                    ? ` · ${formatDate(claim.departure_date)}–${formatDate(claim.return_date)}`
-                    : ''}
-                </div>
-                <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                  <ClaimStatusBadge status={claim.status} />
-                  <ReimbursementCategoryBadge category={claim.reimbursement_category} />
-                </div>
-              </div>
-              <div className="text-right">
-                <div className="text-lg font-bold text-ink">{formatCurrency(total)}</div>
-                <div className="text-xs text-slate-600">Net payable: {formatCurrency(net)}</div>
-              </div>
-            </div>
-
-            {stages.length ? (
-              <ClaimApprovalStepper
-                stages={stages}
-                currentStageNumber={current}
-                claimStatus={claim.status}
-              />
-            ) : claim.status === 'PENDING_EXCEPTION' ? (
-              <ClaimApprovalStepper
-                stages={[]}
-                claimStatus="PENDING_EXCEPTION"
-              />
-            ) : claim.status !== 'DRAFT' ? (
-              <ClaimApprovalStepper stages={[]} emptyHint="Approval details unavailable." />
-            ) : null}
-
-            <div className="mt-3 border-t border-slate-100 pt-3">
-              <Link className="inline-flex items-center gap-1 text-sm font-semibold text-brand hover:underline" to={`/claims/${claim.id}`}>
-                View details <ArrowRight className="h-3.5 w-3.5" />
-              </Link>
-            </div>
+      {!loading && claims.length ? (
+        <>
+          <div className="flex flex-wrap gap-1 border-b border-slate-200" role="tablist" aria-label="Filter team claims">
+            {TABS.map((t) => {
+              const selected = tab === t.key;
+              return (
+                <button
+                  key={t.key}
+                  type="button"
+                  role="tab"
+                  aria-selected={selected}
+                  onClick={() => setTab(t.key)}
+                  className={`-mb-px inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-[12.5px] font-bold transition-colors ${
+                    selected ? 'border-brand text-brand' : 'border-transparent text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  {t.label}
+                  <span className={`rounded-full px-1.5 text-[10.5px] ${selected ? 'bg-brand/10 text-brand' : 'bg-slate-100 text-slate-500'}`}>
+                    {counts[t.key] || 0}
+                  </span>
+                </button>
+              );
+            })}
           </div>
-        );
-      })}
+
+          <div className="overflow-hidden rounded-[14px] border border-slate-200 bg-white">
+            {shown.map(({ claim, standing }) => (
+              <ClaimListRow
+                key={claim.id}
+                claim={claim}
+                standing={standing}
+                prefix={claim.employee_name || `Employee #${claim.employee_user_id}`}
+                onOpen={() => navigate(`/claims/${claim.id}`)}
+              />
+            ))}
+            {!shown.length ? <p className="px-4 py-8 text-center text-sm text-slate-500">Nothing here.</p> : null}
+          </div>
+          <div className="flex justify-between px-1 text-xs text-slate-500">
+            <span>
+              {shown.length} of {rows.length} claim{rows.length === 1 ? '' : 's'}
+            </span>
+            <span>{counts.progress || 0} in progress</span>
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }

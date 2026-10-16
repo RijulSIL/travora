@@ -17,6 +17,9 @@ class Role(str, enum.Enum):
     IT_ADMIN = "IT_ADMIN"
     CEO = "CEO"
     GROUP_HEAD_HR = "GROUP_HEAD_HR"
+    # Uses the app like a regular employee, and approves relocation requests (the first stage of
+    # the default Relocation Approval workflow — see workflow_service.RELOCATION_REQUEST_DEFAULT_STAGES).
+    RECRUITER = "RECRUITER"
 
 
 class User(Base):
@@ -49,6 +52,9 @@ class RefreshToken(Base):
     token_hash: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     revoked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # When this token was swapped for a new one (auth_service.rotate_refresh_token); NULL if it
+    # never was — e.g. cancelled by logging out, which gets no grace period.
+    rotated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class PasswordResetToken(Base):

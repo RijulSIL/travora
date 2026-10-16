@@ -33,8 +33,14 @@ from app.services.claim_submission_rules import (
 )
 from app.services.finance_reporting_service import post_ledger_entry_to_erp
 from app.services.notification_service import create_notification
+from app.services.working_time import sla_deadline
 
 STAGE_STATUS_NOT_STARTED = "NOT_STARTED"
+# An approval step whose approver didn't act within its SLA and was passed over — the request
+# moved on to the next approver (see app.workers.sla_monitor). Used for claim stages, travel
+# request stages and exception approval steps alike.
+STAGE_STATUS_SLA_SKIPPED = "SLA_SKIPPED"
+DEFAULT_SLA_HOURS = 48
 EXCEPTION_APPROVAL_CHAINS: dict[str, list[str]] = {
     # "Function Head" per the PRD is this employee's own Reporting Manager (no separate role) —
     # the REPORTING_MANAGER chain entry already resolves to that specific person, see
@@ -120,6 +126,39 @@ def exception_submission_mode(cfg: dict, exception_type: str) -> str:
     modes = {**DEFAULT_EXCEPTION_SUBMISSION_MODE, **(cfg.get("exception_submission_mode") or {})}
     mode = modes.get(exception_type) or modes.get("POLICY_EXCEPTION_GENERAL")
     return EXCEPTION_SUBMISSION_BLOCK if mode == EXCEPTION_SUBMISSION_BLOCK else EXCEPTION_SUBMISSION_ALLOW
+
+
+def exception_step_sla_hours(cfg: dict, exception_types: list[str], role: str) -> int:
+    """SLA (working hours) for `role`'s step in an exception chain — the Approval Matrix's
+    per-type, per-step `exception_sla_hours`, aligned with `exception_chains`; 48 when unset. A
+    combined request covering several types (travel) takes the longest SLA any of them gives
+    that role, matching how its merged chain asks each role once."""
+    chains = cfg.get("exception_chains") or EXCEPTION_APPROVAL_CHAINS
+    sla_cfg = cfg.get("exception_sla_hours") or {}
+    best = 0
+    for exc_type in exception_types:
+        key = exc_type if chains.get(exc_type) else "POLICY_EXCEPTION_GENERAL"
+        chain = _chain_for_type(chains, exc_type)
+        if role not in chain:
+            continue
+        hours_list = sla_cfg.get(key) or []
+        pos = chain.index(role)
+        try:
+            hours = int(hours_list[pos]) if pos < len(hours_list) else DEFAULT_SLA_HOURS
+        except (TypeError, ValueError):
+            hours = DEFAULT_SLA_HOURS
+        best = max(best, hours)
+    return best or DEFAULT_SLA_HOURS
+
+
+async def start_exception_step(approval: ExceptionApproval, req: ExceptionRequest, cfg: dict, db: AsyncSession) -> None:
+    """Make `approval` the active step of its exception chain, with its SLA clock started."""
+    now = _now()
+    approval.status = ExceptionRequestStatus.PENDING.value
+    hours = exception_step_sla_hours(cfg, req.exception_types or [req.exception_type], approval.required_role)
+    approval.sla_deadline_at = await sla_deadline(db, hours, now)
+    approval.last_notified_at = now
+    approval.sla_breached_at = None
 
 
 def is_exception_enabled(cfg: dict, exception_type: str) -> bool:
@@ -270,6 +309,7 @@ async def _user_ids_for_role(route_role: str, employee_id: str | None, db: Async
         Role.IT_ADMIN.value,
         Role.CEO.value,
         Role.GROUP_HEAD_HR.value,
+        Role.RECRUITER.value,
     }:
         result = await db.execute(select(User.id).where(User.role == Role(route_role)))
         return [int(user_id) for user_id in result.scalars().all()]
@@ -281,17 +321,23 @@ async def _user_ids_for_stage(claim: ClaimDraft, stage_def: dict, db: AsyncSessi
     return await _user_ids_for_role(route_role, claim.employee_id, db)
 
 
-async def _notify_stage_approver(claim: ClaimDraft, stage_def: dict, db: AsyncSession) -> None:
+async def _notify_stage_approver(
+    claim: ClaimDraft, stage_def: dict, db: AsyncSession, note: str | None = None
+) -> None:
+    """`note` is appended to the message — e.g. that the previous approver missed their SLA."""
     stage_number = int(stage_def.get("number", 0))
     recipients = await _user_ids_for_stage(claim, stage_def, db)
     if not recipients:
         return
     claim_ref = claim.claim_reference or f"CLM-{claim.id}"
+    body = f"Claim is awaiting action at stage {stage_number}."
+    if note:
+        body += f" {note}"
     for user_id in recipients:
         await create_notification(
             user_id=user_id,
             title=f"Approval required: {claim_ref}",
-            body=f"Claim is awaiting action at stage {stage_number}.",
+            body=body,
             link=f"/claims/{claim.id}/review",
             category=NotificationCategory.APPROVAL_REQUIRED.value,
             db=db,
@@ -299,7 +345,7 @@ async def _notify_stage_approver(claim: ClaimDraft, stage_def: dict, db: AsyncSe
 
 
 async def _notify_exception_approver(
-    claim: ClaimDraft, req: ExceptionRequest, role: str, db: AsyncSession
+    claim: ClaimDraft, req: ExceptionRequest, role: str, db: AsyncSession, note: str | None = None
 ) -> None:
     recipients = await _user_ids_for_exception_role(claim, role, db)
     claim_ref = claim.claim_reference or f"CLM-{claim.id}"
@@ -311,6 +357,8 @@ async def _notify_exception_approver(
         )
     if req.description:
         body += f" Reason: {req.description}"
+    if note:
+        body += f" {note}"
     for user_id in recipients:
         await create_notification(
             user_id=user_id,
@@ -365,10 +413,14 @@ _ALLOWED_WORKFLOW_ROLES = {
     Role.CEO.value,
     Role.GROUP_HEAD_HR.value,
     Role.IT_ADMIN.value,
+    Role.RECRUITER.value,
     "FUNCTION_HEAD",
 }
 
-_CATEGORY_OVERRIDE_KEYS = {c.value for c in ReimbursementCategory} | {"TRAVEL_REQUEST"}
+# Non-claim approval workflows stored alongside the claim category overrides (same stage shape,
+# no Finance stage): travel requests, and relocation approval requests.
+_NON_CLAIM_WORKFLOWS = {"TRAVEL_REQUEST", "RELOCATION_REQUEST"}
+_CATEGORY_OVERRIDE_KEYS = {c.value for c in ReimbursementCategory} | _NON_CLAIM_WORKFLOWS
 
 
 def _validate_stage_list(stages: Any, *, label_prefix: str = "Stage", require_finance_stage: bool = True) -> None:
@@ -419,7 +471,7 @@ def _validate_workflow_config(config: dict) -> None:
                 _validate_stage_list(
                     override["stages"],
                     label_prefix=f"{category} override stage",
-                    require_finance_stage=category != "TRAVEL_REQUEST",
+                    require_finance_stage=category not in _NON_CLAIM_WORKFLOWS,
                 )
 
     submission = config.get("submission")
@@ -496,6 +548,20 @@ def _validate_workflow_config(config: dict) -> None:
                 raise HTTPException(
                     status_code=422, detail=f"exception_enabled '{key}' must be true or false"
                 )
+
+    exception_sla = config.get("exception_sla_hours")
+    if exception_sla is not None:
+        if not isinstance(exception_sla, dict):
+            raise HTTPException(status_code=422, detail="exception_sla_hours must be a dictionary")
+        for key, hours_list in exception_sla.items():
+            if not isinstance(hours_list, list):
+                raise HTTPException(status_code=422, detail=f"exception_sla_hours '{key}' must be a list")
+            for hours in hours_list:
+                if isinstance(hours, bool) or not isinstance(hours, int) or not 1 <= hours <= 2000:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"exception_sla_hours '{key}' must be whole hours between 1 and 2000",
+                    )
 
     submission_modes = config.get("exception_submission_mode")
     if submission_modes is not None:
@@ -601,12 +667,14 @@ async def get_approver_scope(role: Role, db: AsyncSession) -> dict:
     base_cfg = await get_workflow_config(db)
     chains_cfg = base_cfg.get("exception_chains") or EXCEPTION_APPROVAL_CHAINS
     exceptions = [etype for etype, chain in chains_cfg.items() if role_val in chain]
+    relocation_roles = {str(s.get("route_role") or "") for s in relocation_request_stage_defs(base_cfg)}
 
     return {
         "claims": bool(claim_categories),
         "claim_categories": claim_categories,
         "travel_request": travel_request,
         "exceptions": exceptions,
+        "relocation": role_val in relocation_roles,
     }
 
 
@@ -705,7 +773,9 @@ async def _reassign_pending_claim_stages(
             continue
         stage.required_role = new_role
         stage.stage_label = str(new_def.get("label") or stage.stage_label)
-        stage.sla_deadline_at = now + timedelta(hours=int(new_def.get("sla_hours", 48)))
+        stage.sla_deadline_at = await sla_deadline(db, int(new_def.get("sla_hours", DEFAULT_SLA_HOURS)), now)
+        stage.last_notified_at = now
+        stage.sla_breached_at = None
         await _notify_stage_approver(claim, new_def, db)
         count += 1
     return count
@@ -734,7 +804,9 @@ async def _reassign_pending_travel_stages(swaps: dict[int, tuple[str, str, dict]
             continue
         stage.required_role = new_role
         stage.stage_label = str(new_def.get("label") or stage.stage_label)
-        stage.sla_deadline_at = now + timedelta(hours=int(new_def.get("sla_hours", 48)))
+        stage.sla_deadline_at = await sla_deadline(db, int(new_def.get("sla_hours", DEFAULT_SLA_HOURS)), now)
+        stage.last_notified_at = now
+        stage.sla_breached_at = None
         await _notify_travel_stage_approver(travel_request, new_def, db)
         count += 1
     return count
@@ -899,15 +971,19 @@ async def _activate_stage_rows(
     stage_number: int,
     now: datetime,
     db: AsyncSession,
+    note: str | None = None,
 ) -> None:
-    """Open the given stage's row(s) (one per parallel branch): PENDING, SLA clock started,
-    approver(s) notified."""
+    """Open the given stage's row(s) (one per parallel branch): PENDING, SLA clock started in
+    working hours, approver(s) notified (with `note` appended, if any)."""
+    deadline = await sla_deadline(db, _stage_hours(stage_defs, stage_number), now)
     for row in rows:
         row.status = ClaimApprovalStageStatus.PENDING.value
-        row.sla_deadline_at = now + timedelta(hours=_stage_hours(stage_defs, stage_number))
+        row.sla_deadline_at = deadline
+        row.last_notified_at = now
+        row.sla_breached_at = None
         row_def = next((sd for sd in row_defs if sd["route_role"] == row.required_role), None)
         if row_def:
-            await _notify_stage_approver(claim, row_def, db)
+            await _notify_stage_approver(claim, row_def, db, note)
 
 
 async def release_claim_to_finance(claim: ClaimDraft, db: AsyncSession) -> bool:
@@ -1130,6 +1206,8 @@ async def _can_user_act_on_claim_stage(
         return has_role
     if route_role == Role.GROUP_HEAD_HR.value:
         return has_role
+    if route_role == Role.RECRUITER.value:
+        return has_role
     if route_role == Role.IT_ADMIN.value:
         return has_role
     if route_role == "FUNCTION_HEAD":
@@ -1230,6 +1308,7 @@ async def init_claim_approval_chain(claim: ClaimDraft, db: AsyncSession) -> None
 
     min_n = min(int(s["number"]) for s in filtered_defs)
     claim.current_approval_stage = min_n
+    first_deadline = await sla_deadline(db, _stage_hours(filtered_defs, min_n), now)
 
     active_stages = []
     for stage in filtered_defs:
@@ -1241,11 +1320,8 @@ async def init_claim_approval_chain(claim: ClaimDraft, db: AsyncSession) -> None
             stage_label=str(stage["label"]),
             required_role=stage["route_role"],
             status=ClaimApprovalStageStatus.PENDING.value if is_active else STAGE_STATUS_NOT_STARTED,
-            sla_deadline_at=(
-                now + timedelta(hours=int(stage.get("sla_hours", 48)))
-                if is_active
-                else None
-            ),
+            sla_deadline_at=first_deadline if is_active else None,
+            last_notified_at=now if is_active else None,
         )
         db.add(row)
         if is_active:
@@ -1448,6 +1524,8 @@ def _event_rank(event: str) -> int:
         "sent_back": 5,
         "rejected": 6,
         "payment_processed": 7,
+        "sla_breached": 8,
+        "sla_passed_on": 8,
     }
     return order.get(event, 99)
 
@@ -1508,6 +1586,8 @@ async def get_claim_timeline(claim: ClaimDraft, db: AsyncSession) -> list[dict]:
         "reject_claim": "rejected",
         "reject_claim_via_exception": "rejected",
         "record_payment": "payment_processed",
+        "sla_passed_on": "sla_passed_on",
+        "sla_breached": "sla_breached",
     }
     for log in logs:
         event_name = event_by_action.get(log.action)
@@ -1979,6 +2059,16 @@ async def record_claim_payment(
     return claim
 
 
+def passed_over_stage_labels(stages: list, before_stage_number: int) -> list[str]:
+    """Labels of earlier stages (claim or travel) whose approver missed the SLA, so the request
+    was passed on — shown to the approver it reached so they know why it's with them."""
+    return [
+        s.stage_label
+        for s in stages
+        if s.status == STAGE_STATUS_SLA_SKIPPED and s.stage_number < before_stage_number
+    ]
+
+
 def _sla_remaining_hours(deadline: datetime | None) -> tuple[str | None, str]:
     if deadline is None:
         return None, "pending"
@@ -2038,38 +2128,8 @@ async def list_pending_approvals(user_id: int, db: AsyncSession) -> list[dict]:
 
         if not await _can_user_act_on_claim_stage(user, claim, stage_def, db, stage_row=pending, active_delegator_ids=active_delegator_ids):
             continue
+        # Reminders and breach emails come from app.workers.sla_monitor, not from viewing the queue.
         sla_label, sla_bucket = _sla_remaining_hours(pending.sla_deadline_at if pending else None)
-        if sla_bucket == "breached":
-            link = f"/claims/{claim.id}/review"
-            dedupe_cutoff = _now() - timedelta(hours=6)
-            existing = await db.execute(
-                select(AuditLog.id)
-                .where(
-                    AuditLog.entity_type == "notification",
-                    AuditLog.entity_id == str(claim.id),
-                    AuditLog.action == f"sla_breach_notified:{user_id}:{pending.stage_number}",
-                    AuditLog.timestamp >= dedupe_cutoff,
-                )
-                .limit(1)
-            )
-            if existing.scalar_one_or_none() is None:
-                await create_notification(
-                    user_id=user_id,
-                    title=f"SLA breach: {claim.claim_reference or f'CLM-{claim.id}'}",
-                    body=f"Stage {pending.stage_number} approval is overdue.",
-                    link=link,
-                    category=NotificationCategory.SLA_BREACH.value,
-                    db=db,
-                )
-                await log_event(
-                    entity_type="notification",
-                    entity_id=str(claim.id),
-                    action=f"sla_breach_notified:{user_id}:{pending.stage_number}",
-                    actor_id=None,
-                    old=None,
-                    new={"claim_id": claim.id, "stage_number": pending.stage_number, "user_id": user_id},
-                    db=db,
-                )
 
         emp = await db.get(Employee, claim.employee_id) if claim.employee_id else None
         exceptions = (claim.compliance_report or {}).get("exceptions") or []
@@ -2104,6 +2164,8 @@ async def list_pending_approvals(user_id: int, db: AsyncSession) -> list[dict]:
                 "sla_remaining_label": sla_label or ("SLA Breached" if sla_bucket == "breached" else "—"),
                 "sla_bucket": sla_bucket,
                 "sla_deadline_at": pending.sla_deadline_at.isoformat() if pending and pending.sla_deadline_at else None,
+                # Earlier stages whose approver missed their SLA, so the claim was passed on to here.
+                "sla_passed_over": passed_over_stage_labels(stages, pending.stage_number),
             }
         )
     return out
@@ -2176,13 +2238,18 @@ async def _user_ids_for_exception_role_for_travel(travel_request, role: str, db:
         return []
 
 
-async def _notify_travel_exception_approver(travel_request, req: ExceptionRequest, role: str, db: AsyncSession) -> None:
+async def _notify_travel_exception_approver(
+    travel_request, req: ExceptionRequest, role: str, db: AsyncSession, note: str | None = None
+) -> None:
     recipients = await _user_ids_for_exception_role_for_travel(travel_request, role, db)
+    body = f"Exception '{_exception_label(req)}' requires your review."
+    if note:
+        body += f" {note}"
     for user_id in recipients:
         await create_notification(
             user_id=user_id,
             title=f"Exception Approval Required: TR-{travel_request.id:04d}",
-            body=f"Exception '{_exception_label(req)}' requires your review.",
+            body=body,
             link="/hr/exceptions",
             category=NotificationCategory.EXCEPTION.value,
             db=db,
@@ -2196,25 +2263,46 @@ TRAVEL_REQUEST_DEFAULT_STAGES: list[dict] = [
 ]
 
 
+# Default route for relocation approval requests (Approval Matrix -> "Relocation Approval",
+# stored as category_overrides.RELOCATION_REQUEST). Like travel requests: no Finance stage.
+RELOCATION_REQUEST_DEFAULT_STAGES: list[dict] = [
+    {"number": 1, "label": "Recruiter Review", "sla_hours": 48, "route_role": Role.RECRUITER.value},
+    {"number": 2, "label": "CEO Approval", "sla_hours": 48, "route_role": Role.CEO.value},
+    {"number": 3, "label": "HRBP Review", "sla_hours": 48, "route_role": Role.HRBP_HR.value},
+    {"number": 4, "label": "Payroll Review", "sla_hours": 48, "route_role": Role.PAYROLL.value},
+]
+
+
+def relocation_request_stage_defs(config: dict) -> list[dict]:
+    override = (config.get("category_overrides") or {}).get("RELOCATION_REQUEST")
+    raw_stages = override.get("stages") if isinstance(override, dict) else None
+    return _normalize_stage_defs({"stages": raw_stages or RELOCATION_REQUEST_DEFAULT_STAGES})
+
+
 def _travel_request_stage_defs(config: dict) -> list[dict]:
     override = (config.get("category_overrides") or {}).get("TRAVEL_REQUEST")
     raw_stages = override.get("stages") if isinstance(override, dict) else None
     return _normalize_stage_defs({"stages": raw_stages or TRAVEL_REQUEST_DEFAULT_STAGES})
 
 
-async def _notify_travel_stage_approver(travel_request, stage_def: dict, db: AsyncSession) -> None:
+async def _notify_travel_stage_approver(
+    travel_request, stage_def: dict, db: AsyncSession, note: str | None = None
+) -> None:
     route_role = str(stage_def.get("route_role") or "")
     recipients = await _user_ids_for_exception_role_for_travel(travel_request, route_role, db)
     if not recipients:
         return
     ref = f"TR-{travel_request.id:04d}"
     stage_number = int(stage_def.get("number", 0))
+    body = f"Travel request is awaiting action at stage {stage_number}."
+    if note:
+        body += f" {note}"
     for user_id in recipients:
         await create_notification(
             user_id=user_id,
             title=f"Approval required: {ref}",
-            body=f"Travel request is awaiting action at stage {stage_number}.",
-            link="/pending-approvals",
+            body=body,
+            link="/claims/pending?tab=travel",
             category=NotificationCategory.APPROVAL_REQUIRED.value,
             db=db,
         )
@@ -2238,6 +2326,7 @@ async def init_travel_request_approval_chain(travel_request, db: AsyncSession) -
 
     min_n = min(int(s["number"]) for s in stage_defs)
     travel_request.current_approval_stage = min_n
+    first_deadline = await sla_deadline(db, _stage_hours(stage_defs, min_n), now)
 
     active_stage_def = None
     for stage in stage_defs:
@@ -2249,9 +2338,8 @@ async def init_travel_request_approval_chain(travel_request, db: AsyncSession) -
             stage_label=str(stage["label"]),
             required_role=stage["route_role"],
             status=ClaimApprovalStageStatus.PENDING.value if is_active else STAGE_STATUS_NOT_STARTED,
-            sla_deadline_at=(
-                now + timedelta(hours=int(stage.get("sla_hours", 48))) if is_active else None
-            ),
+            sla_deadline_at=first_deadline if is_active else None,
+            last_notified_at=now if is_active else None,
         )
         db.add(row)
         if is_active:
@@ -2271,6 +2359,29 @@ async def _load_travel_stages(request_id: int, db: AsyncSession) -> list:
         .order_by(TravelRequestApprovalStage.stage_number)
     )
     return list(result.scalars().all())
+
+
+async def _activate_travel_stage_rows(
+    travel_request,
+    stages: list,
+    stage_defs: list[dict],
+    stage_number: int,
+    now: datetime,
+    db: AsyncSession,
+    note: str | None = None,
+) -> None:
+    """Travel-request twin of _activate_stage_rows: open `stage_number`'s row(s) with the SLA
+    clock started in working hours, and notify the approver(s) (with `note`, if any)."""
+    deadline = await sla_deadline(db, _stage_hours(stage_defs, stage_number), now)
+    row_defs = [sd for sd in stage_defs if int(sd["number"]) == stage_number]
+    for row in [s for s in stages if s.stage_number == stage_number]:
+        row.status = ClaimApprovalStageStatus.PENDING.value
+        row.sla_deadline_at = deadline
+        row.last_notified_at = now
+        row.sla_breached_at = None
+        row_def = next((sd for sd in row_defs if sd["route_role"] == row.required_role), None)
+        if row_def:
+            await _notify_travel_stage_approver(travel_request, row_def, db, note)
 
 
 def _active_pending_travel_stage(travel_request, stages: list):
@@ -2358,15 +2469,8 @@ async def approve_travel_request_stage(request_id: int, user_id: int, comment: s
         req.current_approval_stage = None
         await _finalize_travel_request_approval(req, db)
     else:
-        next_stages = [s for s in stages if s.stage_number == next_stage_number]
-        next_stage_defs = [s for s in stage_defs if int(s["number"]) == next_stage_number]
         req.current_approval_stage = next_stage_number
-        for ns in next_stages:
-            ns.status = ClaimApprovalStageStatus.PENDING.value
-            ns.sla_deadline_at = now + timedelta(hours=_stage_hours(stage_defs, next_stage_number))
-            ns_def = next((sd for sd in next_stage_defs if sd["route_role"] == ns.required_role), None)
-            if ns_def:
-                await _notify_travel_stage_approver(req, ns_def, db)
+        await _activate_travel_stage_rows(req, stages, stage_defs, next_stage_number, now, db)
 
     await log_event(
         entity_type="travel_request",
@@ -2554,15 +2658,13 @@ async def create_travel_exception_request(
     cfg = await get_workflow_config(db)
     chains_cfg = cfg.get("exception_chains", EXCEPTION_APPROVAL_CHAINS)
     required_roles = _merge_exception_chains(exception_types, chains_cfg)
-    for i, role in enumerate(required_roles):
-        status_val = ExceptionRequestStatus.PENDING.value if i == 0 else "AWAITING"
-        db.add(
-            ExceptionApproval(
-                exception_request_id=row.id,
-                required_role=role,
-                status=status_val,
-            )
-        )
+    steps = [
+        ExceptionApproval(exception_request_id=row.id, required_role=role, status="AWAITING")
+        for role in required_roles
+    ]
+    db.add_all(steps)
+    if steps:
+        await start_exception_step(steps[0], row, cfg, db)
     await db.commit()
     await db.refresh(row)
 
@@ -2669,14 +2771,10 @@ async def raise_submitted_claim_exception(
     await db.flush()
 
     chain = _resolve_exception_chain(cfg, exception_type)
-    for i, role in enumerate(chain):
-        db.add(
-            ExceptionApproval(
-                exception_request_id=row.id,
-                required_role=role,
-                status=ExceptionRequestStatus.PENDING.value if i == 0 else "AWAITING",
-            )
-        )
+    steps = [ExceptionApproval(exception_request_id=row.id, required_role=role, status="AWAITING") for role in chain]
+    db.add_all(steps)
+    if steps:
+        await start_exception_step(steps[0], row, cfg, db)
     await db.flush()
 
     if chain:
@@ -2818,7 +2916,7 @@ async def decide_exception_request(
             next_stage = sorted_approvals[current_idx + 1]
 
         if next_stage and next_stage.status == "AWAITING":
-            next_stage.status = ExceptionRequestStatus.PENDING.value
+            await start_exception_step(next_stage, row, await get_workflow_config(db), db)
             row.status = ExceptionRequestStatus.PENDING.value
             # Notify the next stage approver
             if claim is not None:

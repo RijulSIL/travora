@@ -2,10 +2,8 @@ import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   AlertTriangle,
-  Check,
   CheckCircle2,
   ChevronDown,
-  ClipboardCheck,
   CreditCard,
   FileText,
   History as HistoryIcon,
@@ -20,7 +18,8 @@ import {
 import ClaimStatusBadge from '../ui/ClaimStatusBadge';
 import ReimbursementCategoryBadge from '../ui/ReimbursementCategoryBadge';
 import ClaimTimeline from './ClaimTimeline';
-import ConfirmDialog from '../ui/ConfirmDialog';
+import { RelocationClaimPanel } from './ClaimRelocationSteps';
+import { claimRouteItems } from './claimRoute';
 import InvoicePreviewDrawer from '../ui/InvoicePreviewDrawer';
 import Skeleton from '../ui/Skeleton';
 import TicketPreviewDrawer from '../ui/TicketPreviewDrawer';
@@ -29,6 +28,15 @@ import { useAsyncAction } from '../../hooks/useAsyncAction';
 import useToast from '../../hooks/useToast';
 import { normalizeApiError } from '../../utils/apiErrors';
 import { formatDate } from '../../utils/formatters';
+import {
+  ApprovalDetailGrid,
+  DecisionBox,
+  DetailColumn,
+  firstName,
+  NoticeBox,
+  OutcomeBox,
+  RouteTimeline,
+} from '../approvals/ApprovalDetail';
 import { hasAnyPermission, hasPermission } from '../../services/permissions';
 import { reimbursementApi } from '../../services/reimbursementApi';
 import { useAuthStore } from '../../store/authStore';
@@ -66,6 +74,7 @@ const ROLE_LABELS = {
   FINANCE: 'Finance',
   GROUP_HEAD_HR: 'Group Head HR',
   CEO: 'CEO',
+  RECRUITER: 'Recruiter',
 };
 
 function ExceptionStatusPill({ exception }) {
@@ -104,7 +113,6 @@ export default function ClaimReviewModal({ claimId, onClose }) {
 
   const [claim, setClaim] = useState(null);
   const [comment, setComment] = useState('');
-  const [rejectReason, setRejectReason] = useState('');
   const [utr, setUtr] = useState('');
   const [tdsDeduction, setTdsDeduction] = useState('0.00');
   // Outstanding advance is only relevant to whoever can record the payment (see advances_api.py)
@@ -118,10 +126,17 @@ export default function ClaimReviewModal({ claimId, onClose }) {
   const [invoiceExtractions, setInvoiceExtractions] = useState({});
   const [invoicePreview, setInvoicePreview] = useState(null);
   const [ticketPreview, setTicketPreview] = useState({ open: false, blob: null, name: '', type: '', title: '' });
-  const [confirmReject, setConfirmReject] = useState(false);
   // Exception requests raised with this claim at submit — each runs its own approver chain, and
   // together they replace the normal approval stages (see approval-chain's `exceptions`).
   const [claimExceptions, setClaimExceptions] = useState({ items: [], awaiting: false });
+  const [passedOver, setPassedOver] = useState([]);
+  const [chain, setChain] = useState(null);
+  // After a decision the window stays open with the outcome, and reloads so the route updates.
+  const [decided, setDecided] = useState(null);
+  const [rejectMode, setRejectMode] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+  const viewerName = useAuthStore((s) => s.profile?.full_name);
+  const now = Date.now();
 
   useEffect(() => {
     let cancelled = false;
@@ -134,11 +149,18 @@ export default function ClaimReviewModal({ claimId, onClose }) {
         ]);
         if (cancelled) return;
         setClaim(c.data);
+        setChain(ch.data || null);
         setTimeline(t.data || []);
         setClaimExceptions({
           items: ch.data?.exceptions || [],
           awaiting: Boolean(ch.data?.awaiting_exceptions),
         });
+        // Earlier stages whose approver missed the SLA, so the claim was passed on.
+        setPassedOver(
+          (ch.data?.stages || [])
+            .filter((s) => s.status === 'SLA_SKIPPED' && s.stage_number < (ch.data?.current_approval_stage ?? 0))
+            .map((s) => s.label),
+        );
         const authoritative =
           ch.data?.authoritative_payable_amount ??
           c.data?.approved_amount ??
@@ -168,26 +190,55 @@ export default function ClaimReviewModal({ claimId, onClose }) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [claimId]);
+  }, [claimId, reloadKey]);
 
   const onActionError = (error) => showToast(normalizeApiError(error).message, 'error');
 
+  const previewRelocationEvidence = async () => {
+    try {
+      const response = await reimbursementApi.claimRelocationEvidenceBlob(claimId);
+      setTicketPreview({
+        open: true,
+        blob: response.data,
+        name: claim?.relocation?.evidence_filename || 'relocation-approval',
+        type: response.headers['content-type'] || '',
+        title: `${claim?.relocation?.reference || 'Relocation'} · approval evidence`,
+      });
+    } catch (error) {
+      onActionError(error);
+    }
+  };
+
+  const employeeName = claim?.employee_name || 'the employee';
+  const pendingStage = (chain?.stages || []).find((s) => s.status === 'PENDING');
+  const nextStage = (chain?.stages || []).find(
+    (s) => pendingStage && s.stage_number > pendingStage.stage_number && s.status === 'NOT_STARTED',
+  );
+
   const { run: approve, loading: approving } = useAsyncAction(async () => {
-    await reimbursementApi.approveClaim(claimId, { comment: comment || undefined });
+    await reimbursementApi.approveClaim(claimId, { comment: comment.trim() || undefined });
     showToast('Claim approved', 'success');
-    onClose();
+    setDecided({
+      ok: true,
+      text: `Approved${comment.trim() ? ' with your comment' : ''}. ${
+        nextStage ? `It has moved on to ${nextStage.label}.` : 'It has moved on for payment.'
+      }`,
+    });
+    setReloadKey((k) => k + 1);
   });
 
   const { run: sendBack, loading: sending } = useAsyncAction(async () => {
-    await reimbursementApi.sendBackClaim(claimId, { comment });
+    await reimbursementApi.sendBackClaim(claimId, { comment: comment.trim() });
     showToast('Claim sent back', 'success');
-    onClose();
+    setDecided({ ok: false, text: `Sent back to ${employeeName} with your comment, to fix and resubmit.` });
+    setReloadKey((k) => k + 1);
   });
 
-  const { run: reject, loading: rejecting } = useAsyncAction(async () => {
-    await reimbursementApi.rejectClaim(claimId, { reason: rejectReason });
+  const { run: reject, loading: rejecting } = useAsyncAction(async (reason) => {
+    await reimbursementApi.rejectClaim(claimId, { reason });
     showToast('Claim rejected', 'success');
-    onClose();
+    setDecided({ ok: false, text: `Rejected. ${employeeName} has been told why.` });
+    setReloadKey((k) => k + 1);
   });
 
   const readyForPayment = claim?.status === 'READY_FOR_PAYMENT';
@@ -227,7 +278,8 @@ export default function ClaimReviewModal({ claimId, onClose }) {
       advance_deducted: advanceAmount,
     });
     showToast('Payment recorded', 'success');
-    onClose();
+    setDecided({ ok: true, text: `Payment of ₹${money(totalDue)} recorded (UTR ${utr.trim()}).` });
+    setReloadKey((k) => k + 1);
   });
 
   const linkedInvoices = claim?.linked_invoices ?? [];
@@ -236,7 +288,7 @@ export default function ClaimReviewModal({ claimId, onClose }) {
     claim?.from_city || claim?.destination_city || claim?.departure_date || claim?.trip_purpose,
   );
   // General Reimbursements and Relocation claims are never trip-linked, so the Trips tab
-  // has nothing to show for either (see GeneralReimbursementWizard.jsx, which both share).
+  // has nothing to show for either.
   const visibleTabs =
     claim?.reimbursement_category === 'GENERAL' || claim?.reimbursement_category === 'RELOCATION'
       ? TABS.filter((tab) => tab.key !== 'trips')
@@ -245,7 +297,7 @@ export default function ClaimReviewModal({ claimId, onClose }) {
   return createPortal(
     <div className="fixed inset-0 z-[95] grid place-items-center bg-slate-900/55 p-4 backdrop-blur-[1px]" onClick={onClose}>
       <div
-        className="flex h-[calc(80vh-20px)] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+        className="flex h-[90vh] w-full max-w-[1320px] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >
         {/* Header */}
@@ -261,7 +313,10 @@ export default function ClaimReviewModal({ claimId, onClose }) {
                   <ReimbursementCategoryBadge category={claim.reimbursement_category} />
                   <ClaimStatusBadge status={claim.status} />
                 </div>
-                <p className="text-sm text-slate-500">{claim.employee_id ? `Employee #${claim.employee_id}` : 'Employee'}</p>
+                <p className="text-sm text-slate-500">
+                  {claim.employee_name || 'Employee'}
+                  {claim.employee_id ? ` · Employee #${claim.employee_id}` : ''}
+                </p>
               </div>
             </div>
           ) : (
@@ -284,8 +339,9 @@ export default function ClaimReviewModal({ claimId, onClose }) {
             <Skeleton variant="card" height={220} />
           </div>
         ) : (
-          <div className="grid flex-1 items-start gap-6 overflow-y-auto p-6 lg:grid-cols-[1.7fr_1fr]">
-            <section className="space-y-4">
+          <div className="flex-1 overflow-y-auto p-5">
+            <ApprovalDetailGrid columns="grid-cols-1 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,1fr)]">
+            <DetailColumn first title="The claim" label="Claim details">
               <div className="flex gap-1.5 rounded-xl bg-slate-100 p-1">
                 {visibleTabs.map(({ key, label, icon: Icon }) => (
                   <button
@@ -370,6 +426,10 @@ export default function ClaimReviewModal({ claimId, onClose }) {
                       ) : null}
                     </div>
                   </div>
+
+                  {claim.relocation ? (
+                    <RelocationClaimPanel relocation={claim.relocation} onPreviewEvidence={previewRelocationEvidence} />
+                  ) : null}
 
                   {claimExceptions.items.length ? (
                     <div className="overflow-hidden rounded-xl border border-amber-200">
@@ -567,6 +627,7 @@ export default function ClaimReviewModal({ claimId, onClose }) {
                             const response = await reimbursementApi.travelTicketFileBlob(trip.desk_ticket_id);
                             setTicketPreview({
                               open: true,
+                              ticketId: trip.desk_ticket_id,
                               blob: response.data,
                               name: `${trip.reference_id || trip.id}-ticket`,
                               type: response.headers['content-type'] || '',
@@ -588,194 +649,179 @@ export default function ClaimReviewModal({ claimId, onClose }) {
               ) : null}
 
               {activeTab === 'history' ? <ClaimTimeline items={timeline} /> : null}
-            </section>
+            </DetailColumn>
 
-            <aside className="space-y-4">
-              {claim.status === 'PENDING_EXCEPTION' ? (
+            <DetailColumn title="Approval route" className="max-lg:border-l-0 max-lg:border-t">
+              {chain ? (
+                <RouteTimeline items={claimRouteItems(claim, chain, { viewerName, decided, now })} />
+              ) : (
+                <p className="text-xs text-slate-400">Loading the route…</p>
+              )}
+            </DetailColumn>
+
+            <DetailColumn
+              title={readyForPayment && !decided ? 'Payment' : 'Your decision'}
+              className="max-lg:border-l-0 max-lg:border-t"
+            >
+              {passedOver.length && !decided ? (
+                <NoticeBox tone="orange" title="SLA missed earlier">
+                  {passedOver.join(', ')} didn&apos;t act within the SLA, so this claim was passed on to the next approver.
+                </NoticeBox>
+              ) : null}
+              {decided ? (
+                <OutcomeBox ok={decided.ok}>{decided.text}</OutcomeBox>
+              ) : claim.status === 'PENDING_EXCEPTION' ? (
                 // A claim with policy exceptions has no normal approval stages — its exception
                 // approvers decide it (from Exception Requests), then it goes to Finance.
-                <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50/60 p-4 text-sm text-amber-900">
-                  <p className="font-semibold">Waiting on policy exceptions</p>
-                  <p className="text-xs leading-relaxed text-amber-800">
-                    This claim is approved by its exception approvers alone. They decide each exception from
-                    Exception Requests; once every one is approved, the claim goes to Finance for payment.
-                  </p>
-                </div>
-              ) : isApprover ? (
-                <>
-                  {!readyForPayment ? (
-                    <div className="space-y-3 rounded-xl border border-line bg-white p-4 shadow-sm">
-                      <h3 className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">
-                        <ClipboardCheck size={14} className="text-brand" />
-                        Decision
-                      </h3>
-                      <label className="block text-sm">
-                        <span className="font-medium text-slate-600">Comment (optional)</span>
-                        <textarea
-                          className="field !h-auto min-h-[4.5rem] mt-1.5 w-full py-2"
-                          rows={2}
-                          value={comment}
-                          onChange={(e) => setComment(e.target.value)}
-                          placeholder="Note for the audit trail"
-                        />
-                      </label>
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          disabled={approving}
-                          className="btn-primary inline-flex items-center gap-1.5"
-                          onClick={() => approve().catch(onActionError)}
-                        >
-                          <Check size={15} />
-                          {approving ? 'Approving…' : 'Approve'}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={sending || !comment.trim()}
-                          title={!comment.trim() ? 'Add a comment explaining what needs to change' : ''}
-                          className="inline-flex items-center gap-1.5 rounded-lg bg-amber-50 px-3.5 py-2 text-sm font-bold text-amber-800 ring-1 ring-inset ring-amber-200 transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
-                          onClick={() => sendBack().catch(onActionError)}
-                        >
-                          <Undo2 size={15} />
-                          {sending ? 'Sending…' : 'Send Back'}
-                        </button>
-                      </div>
+                <NoticeBox tone="amber" title="Waiting on policy exceptions">
+                  This claim is approved by its exception approvers alone. They decide each exception from
+                  Exception Requests; once every one is approved, the claim goes to Finance for payment.
+                </NoticeBox>
+              ) : isApprover && claim.status === 'IN_APPROVAL' ? (
+                <DecisionBox
+                  idPrefix={`claim-${claim.id}`}
+                  name={claim.employee_name}
+                  comment={comment}
+                  onCommentChange={setComment}
+                  rejectMode={rejectMode}
+                  onRejectModeChange={setRejectMode}
+                  busy={approving || sending || rejecting}
+                  onApprove={() => approve().catch(onActionError)}
+                  onReject={(reason) => reject(reason).catch(onActionError)}
+                  rejectLabel="Reject claim"
+                  commentPlaceholder="e.g. Checked against the trip dates"
+                  reasonPlaceholder="e.g. These expenses aren’t reimbursable under the policy"
+                  extraAction={{
+                    label: sending ? 'Sending…' : 'Send back',
+                    icon: Undo2,
+                    needsComment: true,
+                    title: 'Add a comment explaining what needs to change',
+                    onClick: () => sendBack().catch(onActionError),
+                  }}
+                  hint={
+                    <>
+                      {nextStage ? (
+                        <>
+                          Approving passes it to <b className="text-ink">{nextStage.label}</b>.
+                        </>
+                      ) : (
+                        <>Approving sends it on for payment.</>
+                      )}{' '}
+                      Send back returns it to {firstName(claim.employee_name)} to fix (add a comment first); rejecting
+                      ends it.
+                    </>
+                  }
+                />
+              ) : readyForPayment && isApprover ? (
+                <div className="rounded-xl border border-line bg-white p-4 shadow-sm">
+                  <div className="space-y-1.5 text-sm">
+                    <div className="flex justify-between text-slate-600">
+                      <span>Total Claimed</span>
+                      <span>₹{money(claim.compliance_report?.total_claimed)}</span>
                     </div>
-                  ) : null}
-
-                  {!readyForPayment ? (
-                    <details className="group rounded-xl border border-rose-200 bg-rose-50/40 p-4 open:pb-4">
-                      <summary className="flex cursor-pointer list-none items-center justify-between text-xs font-bold uppercase tracking-wide text-rose-700 [&::-webkit-details-marker]:hidden">
-                        <span>Reject Claim</span>
-                        <span className="text-rose-400 transition-transform group-open:rotate-180">⌄</span>
-                      </summary>
-                      <label className="mt-3 block text-sm">
-                        <span className="font-medium text-slate-600">Reason</span>
-                        <textarea
-                          className="field !h-auto min-h-[4.5rem] mt-1.5 w-full bg-white py-2"
-                          rows={2}
-                          value={rejectReason}
-                          onChange={(e) => setRejectReason(e.target.value)}
-                          placeholder="Required — explain why this claim is being rejected"
-                        />
-                      </label>
-                      <button
-                        type="button"
-                        disabled={rejecting || !rejectReason.trim()}
-                        className="mt-2.5 inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3.5 py-2 text-sm font-bold text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
-                        onClick={() => setConfirmReject(true)}
-                      >
-                        <X size={15} />
-                        Reject
-                      </button>
-                    </details>
-                  ) : null}
-
-                  {readyForPayment ? (
-                    <div className="rounded-xl border border-line bg-white p-4 shadow-sm">
-                      <div className="space-y-1.5 text-sm">
-                        <div className="flex justify-between text-slate-600">
-                          <span>Total Claimed</span>
-                          <span>₹{money(claim.compliance_report?.total_claimed)}</span>
-                        </div>
-                        <div className="flex justify-between font-bold text-ink">
-                          <span>Approved Amount</span>
-                          <span>₹{money(payableAmount)}</span>
-                        </div>
+                    <div className="flex justify-between font-bold text-ink">
+                      <span>Approved Amount</span>
+                      <span>₹{money(payableAmount)}</span>
+                    </div>
+                  </div>
+                  <div className="my-3 h-px bg-slate-100" />
+                  <label className="block text-sm">
+                    <span className="font-semibold text-slate-700">UTR Reference</span>
+                    <input className="field mt-1.5 w-full" value={utr} onChange={(e) => setUtr(e.target.value)} />
+                  </label>
+                  <label className="mt-2.5 block text-sm">
+                    <span className="font-semibold text-slate-700">TDS &amp; Other Deductions</span>
+                    <input
+                      className="field mt-1.5 w-full"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      max={payMax}
+                      value={tdsDeduction}
+                      onChange={(e) => setTdsDeduction(e.target.value)}
+                    />
+                  </label>
+                  {canProcessPayments && outstandingAdvance > 0 ? (
+                    <div className="mt-2.5 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-semibold text-slate-600">Outstanding Advance</span>
+                        <span className="font-mono font-bold text-slate-800">₹{money(outstandingAdvance)}</span>
                       </div>
-                      <div className="my-3 h-px bg-slate-100" />
-                      <label className="block text-sm">
-                        <span className="font-semibold text-slate-700">UTR Reference</span>
-                        <input className="field mt-1.5 w-full" value={utr} onChange={(e) => setUtr(e.target.value)} />
-                      </label>
-                      <label className="mt-2.5 block text-sm">
-                        <span className="font-semibold text-slate-700">TDS &amp; Other Deductions</span>
-                        <input
-                          className="field mt-1.5 w-full"
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          max={payMax}
-                          value={tdsDeduction}
-                          onChange={(e) => setTdsDeduction(e.target.value)}
-                        />
-                      </label>
-                      {canProcessPayments && outstandingAdvance > 0 ? (
-                        <div className="mt-2.5 rounded-lg border border-slate-200 bg-slate-50 p-3">
-                          <div className="flex items-center justify-between text-xs">
-                            <span className="font-semibold text-slate-600">Outstanding Advance</span>
-                            <span className="font-mono font-bold text-slate-800">₹{money(outstandingAdvance)}</span>
-                          </div>
-                          {advanceAmount > 0 ? (
-                            <>
-                              <div className="mt-2 flex items-center gap-2">
-                                <input
-                                  className="field w-full"
-                                  type="number"
-                                  step="0.01"
-                                  min="0"
-                                  max={Math.min(outstandingAdvance, payMax)}
-                                  value={advanceDeducted}
-                                  onChange={(e) => setAdvanceDeducted(e.target.value)}
-                                />
-                                <button
-                                  type="button"
-                                  className="whitespace-nowrap text-xs font-semibold text-red-600 hover:underline"
-                                  onClick={removeAdvanceDeduction}
-                                >
-                                  Remove
-                                </button>
-                              </div>
-                              {advanceFallsShort ? (
-                                <p className="mt-1.5 text-[11px] text-slate-500">
-                                  The advance doesn&apos;t fully cover this claim — the remaining ₹{money(totalDue)} is
-                                  paid via UTR as usual.
-                                </p>
-                              ) : null}
-                            </>
-                          ) : (
-                            <button type="button" className="btn-secondary mt-2 w-full text-xs" onClick={applyAdvanceDeduction}>
-                              Deduct from Advance
+                      {advanceAmount > 0 ? (
+                        <>
+                          <div className="mt-2 flex items-center gap-2">
+                            <input
+                              className="field w-full"
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              max={Math.min(outstandingAdvance, payMax)}
+                              value={advanceDeducted}
+                              onChange={(e) => setAdvanceDeducted(e.target.value)}
+                            />
+                            <button
+                              type="button"
+                              className="whitespace-nowrap text-xs font-semibold text-red-600 hover:underline"
+                              onClick={removeAdvanceDeduction}
+                            >
+                              Remove
                             </button>
-                          )}
-                        </div>
-                      ) : null}
-                      <div className="mt-3 rounded-lg border border-brand/20 bg-brand/5 px-3.5 py-2.5">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-semibold text-brand/70">Total Due</span>
-                          <span className="font-mono text-base font-bold text-brand">₹{money(totalDue)}</span>
-                        </div>
-                        <p className="mt-0.5 text-[11px] text-slate-500">
-                          Approved amount minus TDS &amp; other deductions{outstandingAdvance > 0 ? ' and advance deducted' : ''}.
-                        </p>
-                      </div>
-                      {deductionInvalid ? (
-                        <p className="mt-2 text-xs text-amber-700">TDS &amp; other deductions must be between ₹0.00 and the approved amount.</p>
-                      ) : null}
-                      {advanceInvalid ? (
-                        <p className="mt-2 text-xs text-amber-700">
-                          Advance deducted must be between ₹0.00 and ₹{money(outstandingAdvance)}, and can&apos;t push
-                          the total withheld past the approved amount.
-                        </p>
-                      ) : null}
-                      <button
-                        type="button"
-                        disabled={paying || !utr.trim() || deductionInvalid || advanceInvalid}
-                        className="btn-primary mt-3 inline-flex w-full items-center justify-center gap-1.5"
-                        onClick={() => pay().catch(onActionError)}
-                      >
-                        <CreditCard size={15} />
-                        {paying ? 'Recording…' : 'Record Payment'}
-                      </button>
+                          </div>
+                          {advanceFallsShort ? (
+                            <p className="mt-1.5 text-[11px] text-slate-500">
+                              The advance doesn&apos;t fully cover this claim — the remaining ₹{money(totalDue)} is
+                              paid via UTR as usual.
+                            </p>
+                          ) : null}
+                        </>
+                      ) : (
+                        <button type="button" className="btn-secondary mt-2 w-full text-xs" onClick={applyAdvanceDeduction}>
+                          Deduct from Advance
+                        </button>
+                      )}
                     </div>
                   ) : null}
-                </>
+                  <div className="mt-3 rounded-lg border border-brand/20 bg-brand/5 px-3.5 py-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-brand/70">Total Due</span>
+                      <span className="font-mono text-base font-bold text-brand">₹{money(totalDue)}</span>
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-slate-500">
+                      Approved amount minus TDS &amp; other deductions{outstandingAdvance > 0 ? ' and advance deducted' : ''}.
+                    </p>
+                  </div>
+                  {deductionInvalid ? (
+                    <p className="mt-2 text-xs text-amber-700">TDS &amp; other deductions must be between ₹0.00 and the approved amount.</p>
+                  ) : null}
+                  {advanceInvalid ? (
+                    <p className="mt-2 text-xs text-amber-700">
+                      Advance deducted must be between ₹0.00 and ₹{money(outstandingAdvance)}, and can&apos;t push
+                      the total withheld past the approved amount.
+                    </p>
+                  ) : null}
+                  <button
+                    type="button"
+                    disabled={paying || !utr.trim() || deductionInvalid || advanceInvalid}
+                    className="btn-primary mt-3 inline-flex w-full items-center justify-center gap-1.5"
+                    onClick={() => pay().catch(onActionError)}
+                  >
+                    <CreditCard size={15} />
+                    {paying ? 'Recording…' : 'Record Payment'}
+                  </button>
+                </div>
               ) : (
-                <p className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 text-sm text-slate-600">
-                  Read-only view. Approvers manage this claim from queue actions.
-                </p>
+                <NoticeBox>
+                  {claim.status === 'PAID'
+                    ? 'This claim has been paid.'
+                    : claim.status === 'REJECTED'
+                      ? `This claim was rejected${claim.reject_reason ? `: “${claim.reject_reason}”` : '.'}`
+                      : claim.status === 'SENT_BACK'
+                        ? 'This claim was sent back to the employee to fix.'
+                        : 'Read-only view. Approvers manage this claim from queue actions.'}
+                </NoticeBox>
               )}
-            </aside>
+            </DetailColumn>
+            </ApprovalDetailGrid>
           </div>
         )}
       </div>
@@ -783,23 +829,12 @@ export default function ClaimReviewModal({ claimId, onClose }) {
       <InvoicePreviewDrawer open={Boolean(invoicePreview)} onClose={() => setInvoicePreview(null)} invoice={invoicePreview} />
       <TicketPreviewDrawer
         open={ticketPreview.open}
+        ticketId={ticketPreview.ticketId}
         onClose={() => setTicketPreview((prev) => ({ ...prev, open: false }))}
         blob={ticketPreview.blob}
         contentType={ticketPreview.type}
         filename={ticketPreview.name}
         title={ticketPreview.title}
-      />
-      <ConfirmDialog
-        open={confirmReject}
-        title="Reject Claim"
-        description="Are you sure you want to reject this claim? This cannot be undone."
-        confirmLabel="Yes, Reject"
-        confirmVariant="danger"
-        onCancel={() => setConfirmReject(false)}
-        onConfirm={() => {
-          setConfirmReject(false);
-          reject().catch(onActionError);
-        }}
       />
     </div>,
     document.body,

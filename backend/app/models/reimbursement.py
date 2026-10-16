@@ -188,6 +188,12 @@ class ClaimDraft(Base):
     # exception is raised with no real claim behind it yet. It carries no expenses and is
     # never itself reviewed or paid — exclude it from every claim listing / approval queue.
     is_exception_shell: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # RELOCATION claims only: the approved relocation (request or uploaded prior approval) this
+    # claim is raised against, and the relocation undertaking the employee accepted at submit —
+    # the exact text they accepted, with their origin/destination/amount filled in.
+    relocation_request_id: Mapped[int | None] = mapped_column(ForeignKey("relocation_requests.id"), index=True)
+    undertaking_accepted_at: Mapped[datetime | None] = mapped_column(DateTime)
+    undertaking_text: Mapped[str | None] = mapped_column(Text)
     claim_reference: Mapped[str | None] = mapped_column(String(32), index=True)
     current_approval_stage: Mapped[int | None] = mapped_column(Integer)
     approved_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))

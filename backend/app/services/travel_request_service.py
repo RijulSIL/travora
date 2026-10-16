@@ -157,6 +157,13 @@ async def _validate_request_details(
 
     if not purpose or not purpose.strip():
         raise HTTPException(status_code=422, detail="Trip purpose is required")
+    # "Relocation" belongs to the Travel Claim form (it starts the relocation reimbursement flow),
+    # not to travel requests.
+    if (purpose or "").strip().lower() == "relocation":
+        raise HTTPException(
+            status_code=422,
+            detail="Relocation isn't a travel request purpose — claim relocation expenses from New Claim → Travel Claim",
+        )
     resolved_purpose = await _require_active_option(TravelOptionType.TRIP_PURPOSE, purpose, "Trip purpose", db)
 
     items = [item.strip() for item in (additional_booking_items or []) if item and item.strip()]
@@ -967,11 +974,26 @@ async def list_pending_travel_requests_for_approver(actor_user_id: int, db: Asyn
     candidates = (await db.execute(stmt)).all()
 
     rows: list[TravelRequest] = []
+    passed_over: dict[int, list[str]] = {}
     for req, stage in candidates:
         subject_user = await db.get(User, req.employee_user_id)
         subject_employee_id = subject_user.employee_id if subject_user else None
         if await _user_matches_required_role(actor, stage.required_role, subject_employee_id, db):
             rows.append(req)
+            # Earlier stages whose approver missed the SLA, so the request was passed on to here.
+            passed_over[req.id] = list(
+                (
+                    await db.execute(
+                        select(TravelRequestApprovalStage.stage_label)
+                        .where(
+                            TravelRequestApprovalStage.travel_request_id == req.id,
+                            TravelRequestApprovalStage.status == "SLA_SKIPPED",
+                            TravelRequestApprovalStage.stage_number < stage.stage_number,
+                        )
+                        .order_by(TravelRequestApprovalStage.stage_number)
+                    )
+                ).scalars().all()
+            )
 
     user_ids = {r.employee_user_id for r in rows}
     users_map = {}
@@ -995,6 +1017,7 @@ async def list_pending_travel_requests_for_approver(actor_user_id: int, db: Asyn
                 "request": req,
                 "employee_display_name": nm or (u.full_name if u else "") or "",
                 "impact_level_code": lvl_code,
+                "sla_passed_over": passed_over.get(req.id, []),
             }
         )
     return enriched
@@ -1052,6 +1075,63 @@ def _segments_for_request(req: TravelRequest) -> list[dict]:
             "travel_date": req.travel_date,
         }
     ]
+
+
+async def ticket_details(ticket: TravelRequestTicket, db: AsyncSession) -> dict:
+    """What the ticket preview shows beside the file: the trip leg the ticket was uploaded for
+    (as booked), its booking details, and who uploaded it. Access is checked by the caller."""
+    req = (
+        await db.execute(
+            select(TravelRequest)
+            .options(selectinload(TravelRequest.legs), selectinload(TravelRequest.tickets))
+            .where(TravelRequest.id == ticket.travel_request_id)
+        )
+    ).scalar_one_or_none()
+    segment = None
+    employee_name = None
+    if req is not None:
+        segment = next((s for s in _segments_for_request(req) if s["seq"] == ticket.leg_sequence), None)
+        owner = await db.get(User, req.employee_user_id)
+        employee_name = (owner.full_name or owner.email) if owner else None
+    uploader = await db.get(User, ticket.uploaded_by_user_id)
+    return {
+        "id": ticket.id,
+        "leg_sequence": ticket.leg_sequence,
+        "original_filename": ticket.original_filename,
+        "content_type": ticket.content_type,
+        "file_size_bytes": ticket.file_size_bytes,
+        "pnr_or_booking_ref": ticket.pnr_or_booking_ref,
+        "ticket_amount": str(ticket.ticket_amount) if ticket.ticket_amount is not None else None,
+        "ticket_travel_class": ticket.ticket_travel_class,
+        "external_booking_source": ticket.external_booking_source,
+        "notes_for_employee": ticket.notes_for_employee,
+        "uploaded_at": ticket.uploaded_at,
+        "uploaded_by_name": (uploader.full_name or uploader.email) if uploader else None,
+        "request": (
+            {
+                "id": req.id,
+                "reference": f"TR-{req.id:04d}",
+                "employee_name": employee_name,
+                "trip_type": req.trip_type,
+                "travel_mode": req.travel_mode,
+                "purpose": req.purpose,
+                "segment_count": len(_segments_for_request(req)),
+            }
+            if req is not None
+            else None
+        ),
+        "segment": (
+            {
+                "label": segment["label"],
+                "mode": segment["mode"],
+                "from_city": segment["from_city"],
+                "to_city": segment["to_city"],
+                "travel_date": segment["travel_date"],
+            }
+            if segment
+            else None
+        ),
+    }
 
 
 def build_segments_out(req: TravelRequest) -> list[dict]:
@@ -1189,7 +1269,9 @@ async def _actor_is_reporting_manager_for(
     return False
 
 
-async def approve_travel_request(request_id: int, actor_user_id: int, role: Role, db: AsyncSession) -> TravelRequest:
+async def approve_travel_request(
+    request_id: int, actor_user_id: int, role: Role, db: AsyncSession, *, comment: str | None = None
+) -> TravelRequest:
     """Approves whichever stage of the configured approval chain is currently active for this
     request — a single-stage chain (today's default) behaves identically to the old
     hardcoded "reporting manager approves" flow; a multi-stage chain just advances one step at
@@ -1200,7 +1282,7 @@ async def approve_travel_request(request_id: int, actor_user_id: int, role: Role
     """
     from app.services.workflow_service import approve_travel_request_stage
 
-    return await approve_travel_request_stage(request_id, actor_user_id, None, db)
+    return await approve_travel_request_stage(request_id, actor_user_id, comment, db)
 
 
 async def reject_travel_request(

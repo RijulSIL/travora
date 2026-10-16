@@ -251,6 +251,9 @@ class TravelRequestApprovalStage(Base):
     required_role: Mapped[str | None] = mapped_column(String(64), index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="NOT_STARTED")
     sla_deadline_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # Same SLA bookkeeping as ClaimApprovalStage (see app.workers.sla_monitor).
+    last_notified_at: Mapped[datetime | None] = mapped_column(DateTime)
+    sla_breached_at: Mapped[datetime | None] = mapped_column(DateTime)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime)
     decided_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     comment: Mapped[str | None] = mapped_column(Text)

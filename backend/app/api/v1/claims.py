@@ -74,6 +74,15 @@ async def employee_claims(
         if not (allowed & {"view_reports", "process_payments"}):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
         rows = await list_claims_all(db, viewer_user_id=current_user_id)
+        employee_ids = {claim.employee_id for claim in rows if claim.employee_id}
+        from app.models.employee import Employee
+
+        names = {}
+        if employee_ids:
+            name_rows = await db.execute(
+                select(Employee.employee_id, Employee.full_name).where(Employee.employee_id.in_(employee_ids))
+            )
+            names = dict(name_rows.all())
         response = []
         for claim in rows:
             expenses = (
@@ -95,7 +104,8 @@ async def employee_claims(
                     )
                 ).scalars().all()
             )
-            response.append(_claim_response(claim, expenses, invoice_ids, trip_ids))
+            row = _claim_response(claim, expenses, invoice_ids, trip_ids)
+            response.append({**row, "employee_name": names.get(claim.employee_id)})
         return response
 
     requested_user_id = employee_user_id
@@ -196,7 +206,12 @@ async def team_claims(
         ClaimDraft.is_exception_shell.is_(False),
     )
     rows = (await db.execute(stmt)).scalars().all()
-    
+    # The team member's name for each claim (the list shows who it belongs to).
+    names = {
+        u.id: (u.full_name or u.email)
+        for u in (await db.execute(select(User).where(User.id.in_(sub_user_ids)))).scalars().all()
+    }
+
     response = []
     for claim in rows:
         expenses = (
@@ -218,7 +233,12 @@ async def team_claims(
                 )
             ).scalars().all()
         )
-        response.append(_claim_response(claim, expenses, invoice_ids, trip_ids))
+        response.append(
+            {
+                **_claim_response(claim, expenses, invoice_ids, trip_ids),
+                "employee_name": names.get(claim.employee_user_id),
+            }
+        )
     return response
 
 
@@ -295,7 +315,13 @@ async def submit_employee_claim(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     exception_reasons = [item.model_dump() for item in payload.exceptions] if payload else []
-    claim = await submit_claim(claim_id, int(claims["sub"]), db, exception_reasons=exception_reasons)
+    claim = await submit_claim(
+        claim_id,
+        int(claims["sub"]),
+        db,
+        exception_reasons=exception_reasons,
+        undertaking_accepted=bool(payload and payload.undertaking_accepted),
+    )
     _claim, expenses, invoice_ids, trip_ids = await get_claim_bundle(claim.id, int(claims["sub"]), db)
     return _claim_response(_claim, expenses, invoice_ids, trip_ids)
 

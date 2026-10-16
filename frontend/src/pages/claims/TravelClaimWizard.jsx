@@ -1,9 +1,16 @@
-import { Check } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
+import {
+  RELOCATION_PURPOSE,
+  RelocationApprovalStep,
+  RelocationSummaryStep,
+  RelocationUndertakingStep,
+} from '../../components/claims/ClaimRelocationSteps';
+import ClaimWizardShell, { ClaimSummaryCard, dateSpan, netPayable, policyCounts } from '../../components/claims/ClaimWizardShell';
 import ClaimWizardStepEvidence from '../../components/claims/ClaimWizardStepEvidence';
+import { travelRef } from '../../components/travel/travelRequestView';
 import ClaimWizardStepPolicyCheck from '../../components/claims/ClaimWizardStepPolicyCheck';
 import ClaimWizardStepSubmit from '../../components/claims/ClaimWizardStepSubmit';
 import ClaimWizardStepTripInfo from '../../components/claims/ClaimWizardStepTripInfo';
@@ -14,7 +21,15 @@ import { useSetPageTitle } from '../../context/PageTitleContext';
 import useToast from '../../hooks/useToast';
 import { reimbursementApi } from '../../services/reimbursementApi';
 
-const STEP_LABELS = ['Trip Info', 'Invoices', 'Policy Check', 'Submit Claim'];
+const STEP_LABELS = ['Trip', 'Invoices', 'Policy check', 'Submit'];
+// Trip purpose "Relocation" turns this into a relocation claim: raised against an approved
+// relocation, Relocation-tagged invoices only, no policy check, and an undertaking to accept.
+const RELOCATION_STEP_LABELS = ['Relocation', 'Invoices', 'Summary', 'Submit'];
+
+function errorDetail(error, fallback) {
+  const detail = error?.response?.data?.detail;
+  return typeof detail === 'string' ? detail : fallback;
+}
 
 function isoDate(value) {
   if (!value) return '';
@@ -54,12 +69,14 @@ export default function TravelClaimWizard() {
         .filter(Boolean),
     [searchParams],
   );
+  // ?purpose=Relocation — the link in relocation notifications ("continue to your claim").
+  const purposeFromUrl = searchParams.get('purpose') === RELOCATION_PURPOSE && !id ? RELOCATION_PURPOSE : '';
   const { showToast } = useToast();
 
   const [currentStep, setCurrentStep] = useState(1);
   const [claim, setClaim] = useState(null);
   const [form, setForm] = useState({
-    trip_purpose: '',
+    trip_purpose: purposeFromUrl,
     travel_type: 'NON_PROJECT',
     project_code: '',
     office_location: '',
@@ -88,6 +105,35 @@ export default function TravelClaimWizard() {
   const [exceptionsOpen, setExceptionsOpen] = useState(false);
   const [submittedClaim, setSubmittedClaim] = useState(null);
   const [showLateModal, setShowLateModal] = useState(false);
+  const [relocations, setRelocations] = useState([]);
+  const [relocationsLoading, setRelocationsLoading] = useState(false);
+  const [relocationRequestId, setRelocationRequestId] = useState(null);
+  const [undertakingAccepted, setUndertakingAccepted] = useState(false);
+  const isRelocation = form.trip_purpose === RELOCATION_PURPOSE;
+  const stepLabels = isRelocation ? RELOCATION_STEP_LABELS : STEP_LABELS;
+  const selectedRelocation = relocations.find((row) => row.id === relocationRequestId) || null;
+
+  const loadRelocations = useCallback(async () => {
+    setRelocationsLoading(true);
+    try {
+      const response = await reimbursementApi.relocationMine();
+      const rows = response.data || [];
+      setRelocations(rows);
+      const approved = rows.filter((row) => row.status === 'APPROVED');
+      // Keep the current choice while it's still usable; otherwise pick the only approved one.
+      setRelocationRequestId((prev) =>
+        prev && approved.some((row) => row.id === prev) ? prev : approved.length === 1 ? approved[0].id : null,
+      );
+    } catch {
+      showToast('Could not load your relocations', 'error');
+    } finally {
+      setRelocationsLoading(false);
+    }
+  }, [showToast]);
+
+  useEffect(() => {
+    if (isRelocation) loadRelocations();
+  }, [isRelocation, loadRelocations]);
 
   useEffect(() => {
     let cancelled = false;
@@ -170,6 +216,7 @@ export default function TravelClaimWizard() {
         }));
         setSelectedTripIds(row.trip_ids || []);
         setSelectedInvoiceIds(row.invoice_ids || []);
+        setRelocationRequestId(row.relocation_request_id || null);
       } catch {
         showToast('Could not load claim to edit', 'error');
       }
@@ -210,29 +257,34 @@ export default function TravelClaimWizard() {
       const saved = localStorage.getItem('travora_claim_draft');
       if (saved) {
         const parsed = JSON.parse(saved);
+        // Opened for a relocation claim (?purpose=Relocation): an unfinished claim of another
+        // kind isn't resumed here — it would carry the wrong trips/invoices into this one.
+        if (purposeFromUrl && parsed.form?.trip_purpose !== purposeFromUrl) return;
         if (parsed.form) setForm(prev => ({ ...prev, ...parsed.form }));
         if (parsed.selectedTripIds) setSelectedTripIds(parsed.selectedTripIds);
         if (parsed.selectedInvoiceIds) setSelectedInvoiceIds(parsed.selectedInvoiceIds);
+        if (parsed.relocationRequestId) setRelocationRequestId(parsed.relocationRequestId);
         if (parsed.currentStep) setCurrentStep(parsed.currentStep);
       }
     } catch {
       // ignore parse errors
     }
-  }, [effectiveEditId]);
+  }, [effectiveEditId, purposeFromUrl]);
 
   // Draft Auto-Save: Save to localStorage on change
   useEffect(() => {
     if (effectiveEditId) return; // Don't auto-save if editing a backend claim
-    const draftData = { form, selectedTripIds, selectedInvoiceIds, currentStep };
+    const draftData = { form, selectedTripIds, selectedInvoiceIds, relocationRequestId, currentStep };
     localStorage.setItem('travora_claim_draft', JSON.stringify(draftData));
-  }, [form, selectedTripIds, selectedInvoiceIds, currentStep, effectiveEditId]);
+  }, [form, selectedTripIds, selectedInvoiceIds, relocationRequestId, currentStep, effectiveEditId]);
 
-  // A Travel claim can only draw from Travel-tagged invoices — General and Relocation both
-  // belong in the trip-less General Reimbursement wizard's picker instead (see
-  // GeneralReimbursementWizard.jsx's visibleInvoices), never here.
+  // Each claim type draws only from invoices tagged for it: a Travel claim from Travel, a
+  // relocation claim (trip purpose Relocation) from Relocation. General invoices belong to the
+  // General Reimbursement wizard (see GeneralReimbursementWizard.jsx's visibleInvoices).
   const visibleInvoices = useMemo(
-    () => invoices.filter((invoice) => invoice.reimbursement_category === 'TRAVEL'),
-    [invoices],
+    () =>
+      invoices.filter((invoice) => invoice.reimbursement_category === (isRelocation ? 'RELOCATION' : 'TRAVEL')),
+    [invoices, isRelocation],
   );
 
   const reviewWarning = useMemo(() => {
@@ -355,6 +407,16 @@ export default function TravelClaimWizard() {
   }, [selectedTripIds, trips, officeLocations]);
 
   const onChange = (key, value) => {
+    if (key === 'trip_purpose' && (value === RELOCATION_PURPOSE) !== isRelocation) {
+      // Switching between a relocation claim and a trip claim: their trips, invoices and
+      // relocation approval don't carry over (each draws from differently tagged invoices).
+      setSelectedTripIds([]);
+      setSelectedInvoiceIds([]);
+      setRelocationRequestId(null);
+      setUndertakingAccepted(false);
+      setValidationErrors({});
+      setDeadlineWarning('');
+    }
     setForm((prev) => {
       const next = { ...prev, [key]: value };
       if (key === 'office_location' && value && !prev.from_city) {
@@ -420,8 +482,27 @@ export default function TravelClaimWizard() {
   const saveDraft = async () => {
     setSaving(true);
     try {
-      const payload = {
-        claim_id: claim?.id || (effectiveEditId ? Number(effectiveEditId) : null),
+      const claimId = claim?.id || (effectiveEditId ? Number(effectiveEditId) : null);
+      // Relocation claims: no trips or dates; origin/destination come from the approved
+      // relocation on the server (create_or_update_claim_draft).
+      const relocationPayload = {
+        claim_id: claimId,
+        reimbursement_category: 'RELOCATION',
+        relocation_request_id: relocationRequestId,
+        invoice_ids: selectedInvoiceIds,
+        trip_ids: [],
+        trip_purpose: RELOCATION_PURPOSE,
+        travel_type: 'NON_PROJECT',
+        project_code: null,
+        departure_date: null,
+        return_date: null,
+        office_location: form.office_location || null,
+        from_city: selectedRelocation?.origin_city || null,
+        destination_city: selectedRelocation?.destination_city || null,
+        advance_received: '0',
+      };
+      const payload = isRelocation ? relocationPayload : {
+        claim_id: claimId,
         reimbursement_category: 'TRAVEL',
         invoice_ids: selectedInvoiceIds,
         trip_ids: selectedTripIds,
@@ -453,10 +534,9 @@ export default function TravelClaimWizard() {
       if (!file) return;
       const formData = new FormData();
       formData.append('file', file);
-      // Quick-uploading from inside the wizard always tags the invoice Travel — Relocation
-      // invoices are deliberately only created via the standalone Upload Invoices page's
-      // 3-way selector, then attached here.
-      formData.append('reimbursement_category', 'TRAVEL');
+      // Quick-uploading from inside the wizard tags the invoice for this claim's type — Travel,
+      // or Relocation on a relocation claim.
+      formData.append('reimbursement_category', isRelocation ? 'RELOCATION' : 'TRAVEL');
       setUploadingInvoice(true);
       try {
         const uploaded = await reimbursementApi.uploadInvoice(formData);
@@ -478,6 +558,7 @@ export default function TravelClaimWizard() {
       const response = await reimbursementApi.travelTicketFileBlob(trip.desk_ticket_id);
       setDrawer({
         open: true,
+        ticketId: trip.desk_ticket_id,
         blob: response.data,
         name: `${trip.reference_id || trip.id}-ticket`,
         type: response.headers['content-type'] || '',
@@ -494,15 +575,58 @@ export default function TravelClaimWizard() {
     if (!claim?.id) return;
     setSubmitting(true);
     try {
-      const response = await reimbursementApi.submitClaim(claim.id, { exceptions });
+      const response = await reimbursementApi.submitClaim(claim.id, {
+        exceptions,
+        undertaking_accepted: isRelocation && undertakingAccepted,
+      });
       const submitted = response?.data || claim;
       localStorage.removeItem('travora_claim_draft');
       showToast(`Claim submitted successfully. Claim ID: ${submitted.claim_reference || `CLM-${submitted.id}`}`, 'success');
       setExceptionsOpen(false);
       setSubmittedClaim(submitted);
     } catch (error) {
-      showToast(error?.response?.data?.detail || 'Submit failed', 'error');
+      showToast(errorDetail(error, 'Submit failed'), 'error');
       setSubmitting(false);
+    }
+  };
+
+  const previewRelocationEvidence = async (row) => {
+    try {
+      const response = await reimbursementApi.relocationEvidenceBlob(row.id);
+      setDrawer({
+        open: true,
+        blob: response.data,
+        name: row.evidence_filename || `${row.reference}-approval`,
+        type: response.headers['content-type'] || '',
+        title: `${row.reference} · approval evidence`,
+      });
+    } catch {
+      showToast('Could not open the approval evidence', 'error');
+    }
+  };
+
+  const createRelocationRequest = async (payload) => {
+    try {
+      const response = await reimbursementApi.createRelocationRequest(payload);
+      showToast(`Relocation request ${response.data.reference} sent for approval`, 'success');
+      await loadRelocations();
+      return true;
+    } catch (error) {
+      showToast(errorDetail(error, 'Could not send the relocation request'), 'error');
+      return false;
+    }
+  };
+
+  const uploadRelocationPriorApproval = async (formData) => {
+    try {
+      const response = await reimbursementApi.uploadRelocationPriorApproval(formData);
+      setRelocationRequestId(response.data.id);
+      showToast(`Approval saved as ${response.data.reference}`, 'success');
+      await loadRelocations();
+      return true;
+    } catch (error) {
+      showToast(errorDetail(error, 'Could not upload the approval'), 'error');
+      return false;
     }
   };
 
@@ -518,6 +642,14 @@ export default function TravelClaimWizard() {
   };
 
   const goStep2 = async () => {
+    if (isRelocation) {
+      if (selectedRelocation?.status !== 'APPROVED') {
+        showToast('Choose an approved relocation to continue', 'error');
+        return;
+      }
+      setCurrentStep(2);
+      return;
+    }
     if (!validateStep1()) return;
 
     if (form.return_date) {
@@ -541,9 +673,11 @@ export default function TravelClaimWizard() {
       if (!draft?.id) return;
       const checked = await reimbursementApi.policyCheck(draft.id);
       setClaim((prev) => ({ ...prev, ...checked.data }));
+      // The undertaking names the claim amount — accept it again for the amount as it is now.
+      setUndertakingAccepted(false);
       setCurrentStep(3);
     } catch (error) {
-      showToast(error?.response?.data?.detail || 'Could not save the claim draft', 'error');
+      showToast(errorDetail(error, 'Could not save the claim draft'), 'error');
     }
   };
 
@@ -555,63 +689,73 @@ export default function TravelClaimWizard() {
       setClaim((prev) => ({ ...prev, ...checked.data }));
       setCurrentStep(4);
     } catch (error) {
-      showToast(error?.response?.data?.detail || 'Could not save the claim draft', 'error');
+      showToast(errorDetail(error, 'Could not save the claim draft'), 'error');
     }
   };
 
+  // "Your claim" beside the steps (trip claims only; relocation steps run full width).
+  const selectedInvoiceRows = visibleInvoices.filter((invoice) => selectedInvoiceIds.includes(invoice.id));
+  const selectedGroups = tripGroups.filter((group) => group.tripIds.every((tripId) => selectedTripIds.includes(tripId)));
+  const tripSummary = (() => {
+    const group = selectedGroups.length === 1 ? selectedGroups[0] : null;
+    if (group && group.legs.length > 1) {
+      const legs = group.legs;
+      const route =
+        group.tripType === 'ROUND_TRIP'
+          ? `${legs[0].from_city} ⇄ ${legs[0].to_city}`
+          : [legs[0].from_city, ...legs.map((leg) => leg.to_city)].join(' → ');
+      return { route, dates: dateSpan(form.departure_date, form.return_date) };
+    }
+    if (!form.destination_city) return null;
+    return { route: `${form.from_city || '…'} → ${form.destination_city}`, dates: dateSpan(form.departure_date, form.return_date) };
+  })();
+  const bookingsSummary = selectedTripIds.length
+    ? `${selectedTripIds.length} ${selectedTripIds.length === 1 ? 'booking' : 'legs'}${
+        selectedGroups.length
+          ? ` (${selectedGroups.map((g) => (g.legs[0].travel_request_id ? travelRef(g.legs[0].travel_request_id) : g.legs[0].reference_id)).filter(Boolean).join(', ')})`
+          : ''
+      }`
+    : null;
+  const policyChecked = currentStep >= 3 && claim;
+  const summary = isRelocation ? null : (
+    <ClaimSummaryCard
+      trip={tripSummary}
+      bookings={bookingsSummary}
+      invoiceCount={selectedInvoiceRows.length}
+      invoiceTotal={selectedInvoiceRows.reduce((sum, invoice) => sum + Number(invoice.total_amount || 0), 0)}
+      policyStep={3}
+      policy={policyChecked ? policyCounts(claim) : null}
+      advance={claim?.advance_received}
+      payable={netPayable(claim)}
+    />
+  );
+
   return (
-    <section className="space-y-6">
-      <div>
-        <h1 className="text-lg font-bold text-ink">{effectiveEditId ? 'Edit Travel Claim' : 'New Travel Claim'}</h1>
-        <p className="mt-0.5 text-sm text-slate-500">For expenses incurred on a business trip.</p>
-      </div>
+    <ClaimWizardShell
+      title={`${effectiveEditId ? 'Edit' : 'New'} ${isRelocation ? 'relocation claim' : 'travel claim'}`}
+      sub={isRelocation ? 'For the expenses of moving to a new posting.' : 'For expenses on a work trip.'}
+      steps={stepLabels}
+      current={currentStep}
+      onStepClick={setCurrentStep}
+      aside={summary}
+    >
+      {currentStep === 1 && isRelocation ? (
+        <RelocationApprovalStep
+          form={form}
+          onChange={onChange}
+          travelOptions={travelOptions}
+          relocations={relocations}
+          loading={relocationsLoading}
+          selectedId={relocationRequestId}
+          onSelect={setRelocationRequestId}
+          onCreateRequest={createRelocationRequest}
+          onUploadPriorApproval={uploadRelocationPriorApproval}
+          onPreviewEvidence={previewRelocationEvidence}
+          onNext={goStep2}
+        />
+      ) : null}
 
-      {/* Connected Progress Stepper Header */}
-      <div className="rounded-xl border border-slate-200 bg-white px-6 sm:px-10 py-5 shadow-sm">
-        <div className="relative grid grid-cols-4">
-          {/* Background Connected Track */}
-          <div className="absolute left-[12.5%] right-[12.5%] top-[18px] h-0.5 -translate-y-1/2 bg-slate-100">
-            {/* Foreground Progress Fill */}
-            <div
-              className="absolute left-0 top-0 h-full bg-brand transition-all duration-300"
-              style={{
-                width: `${((currentStep - 1) / (STEP_LABELS.length - 1)) * 100}%`
-              }}
-            ></div>
-          </div>
-
-          {STEP_LABELS.map((label, idx) => {
-            const stepNum = idx + 1;
-            const isCompleted = currentStep > stepNum;
-            const isActive = currentStep === stepNum;
-
-            return (
-              <div key={label} className="relative z-10 flex flex-col items-center">
-                <div
-                  className={`flex h-9 w-9 items-center justify-center rounded-full border-2 text-xs font-bold transition-all duration-300 ${
-                    isCompleted
-                      ? 'border-emerald-500 bg-emerald-500 text-white'
-                      : isActive
-                        ? 'border-brand bg-brand text-white shadow-lg shadow-brand/10 ring-4 ring-brand/10'
-                        : 'border-slate-200 bg-white text-slate-400'
-                  }`}
-                >
-                  {isCompleted ? <Check size={14} /> : stepNum}
-                </div>
-                <span
-                  className={`mt-2 text-xs font-bold tracking-tight transition-colors duration-200 ${
-                    isActive ? 'text-brand' : isCompleted ? 'text-slate-700' : 'text-slate-400'
-                  }`}
-                >
-                  {label}
-                </span>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {currentStep === 1 ? (
+      {currentStep === 1 && !isRelocation ? (
         <ClaimWizardStepTripInfo
           form={form}
           onChange={onChange}
@@ -647,22 +791,53 @@ export default function TravelClaimWizard() {
             )
           }
           onUploadInvoice={onUploadInvoice}
+          uploading={uploadingInvoice}
+          busy={saving}
           reviewWarning={reviewWarning}
           sentBackHint={sentBackHint}
           onBack={() => setCurrentStep(1)}
           onNext={goStep3}
+          {...(isRelocation
+            ? {
+              title: 'Relocation Invoices',
+              description: 'Only invoices tagged Relocation can be added. Uploads here are tagged Relocation.',
+              nextLabel: 'Next: Summary',
+            }
+            : {})}
         />
       ) : null}
 
-      {currentStep === 3 ? (
+      {currentStep === 3 && isRelocation ? (
+        <RelocationSummaryStep
+          claim={claim}
+          relocation={selectedRelocation}
+          onBack={() => setCurrentStep(2)}
+          onNext={() => setCurrentStep(4)}
+        />
+      ) : null}
+
+      {currentStep === 4 && isRelocation ? (
+        <RelocationUndertakingStep
+          claim={claim}
+          relocation={selectedRelocation}
+          accepted={undertakingAccepted}
+          onToggle={setUndertakingAccepted}
+          onBack={() => setCurrentStep(3)}
+          onSubmit={submit}
+          submitting={submitting || saving || uploadingInvoice}
+        />
+      ) : null}
+
+      {currentStep === 3 && !isRelocation ? (
         <ClaimWizardStepPolicyCheck
           claim={claim}
+          busy={saving}
           onBack={() => setCurrentStep(2)}
           onNext={goStep4}
         />
       ) : null}
 
-      {currentStep === 4 ? (
+      {currentStep === 4 && !isRelocation ? (
         <ClaimWizardStepSubmit
           claim={claim}
           trips={trips}
@@ -688,6 +863,7 @@ export default function TravelClaimWizard() {
       />
       <TicketPreviewDrawer
         open={drawer.open}
+        ticketId={drawer.ticketId}
         onClose={() => setDrawer((prev) => ({ ...prev, open: false }))}
         blob={drawer.blob}
         contentType={drawer.type}
@@ -731,6 +907,6 @@ export default function TravelClaimWizard() {
         </div>,
         document.body
       )}
-    </section>
+    </ClaimWizardShell>
   );
 }

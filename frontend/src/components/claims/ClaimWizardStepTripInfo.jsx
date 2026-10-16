@@ -1,26 +1,30 @@
-import { Plane, Train, Bus, FileText, ArrowRight, ArrowLeftRight, MapPin, Calendar, Eye, RefreshCw, Route } from 'lucide-react';
+import { ArrowLeftRight, Bus, Eye, FileText, Plane, Train } from 'lucide-react';
+import { useEffect, useState } from 'react';
 
-import { formatDate } from '../../utils/formatters';
+import { reimbursementApi } from '../../services/reimbursementApi';
+import { travelRef } from '../travel/travelRequestView';
+import { Card, EYEBROW, LABEL, Note, StepActions, dateSpan, dayMonth, fieldClass } from './ClaimWizardShell';
 
-function ModeIcon({ mode, className, size = 18 }) {
+function ModeIcon({ mode, size = 13, className = 'shrink-0 text-slate-400' }) {
   if (mode === 'FLIGHT') return <Plane className={className} size={size} />;
   if (mode === 'TRAIN') return <Train className={className} size={size} />;
   if (mode === 'BUS') return <Bus className={className} size={size} />;
   return <FileText className={className} size={size} />;
 }
 
-const ACCENT = {
-  ROUND_TRIP: { border: 'border-l-indigo-400', badgeBg: 'bg-indigo-50', badgeText: 'text-indigo-600', badgeRing: 'ring-indigo-100' },
-  MULTI_CITY: { border: 'border-l-violet-400', badgeBg: 'bg-violet-50', badgeText: 'text-violet-600', badgeRing: 'ring-violet-100' },
-  ONE_WAY: { border: 'border-l-slate-300', badgeBg: 'bg-slate-100', badgeText: 'text-slate-500', badgeRing: 'ring-slate-100' },
+const KIND = {
+  ROUND_TRIP: { label: 'Round trip', cls: 'bg-slate-100 text-slate-600' },
+  MULTI_CITY: { label: 'Multi-city', cls: 'bg-violet-50 text-violet-700' },
+  ONE_WAY: { label: 'One way', cls: 'bg-slate-100 text-slate-600' },
 };
 
 function TicketButton({ onClick }) {
   return (
     <button
       type="button"
-      className="inline-flex flex-none items-center gap-1 rounded-md border border-brand/20 bg-brand/5 px-2 py-1 text-[10px] font-bold text-brand hover:bg-brand/10 transition-colors"
+      className="inline-flex shrink-0 items-center gap-1 rounded-md border border-brand/20 bg-brand/5 px-2 py-0.5 text-[11px] font-bold text-brand hover:bg-brand/10"
       onClick={(e) => {
+        e.preventDefault();
         e.stopPropagation();
         onClick();
       }}
@@ -30,90 +34,105 @@ function TicketButton({ onClick }) {
   );
 }
 
-/** A single trip card — one-way trips get a flat single-row layout (nothing to summarize),
- * while a round trip or multi-city trip gets a headline (overall route + date span) with its
- * individual legs/tickets listed compactly underneath, instead of repeating the full route on
- * every single leg row (redundant for a round trip, since leg 2 is just leg 1 reversed). */
-function TripCard({ group, isSelected, onPreviewTicket }) {
+/** One booked trip (all its legs) as a row you tick. */
+function TripRow({ group, selected, onToggle, onPreviewTicket }) {
   const legs = group.legs;
-  const isGrouped = legs.length > 1;
-  const accent = ACCENT[group.tripType] || ACCENT.ONE_WAY;
-
-  if (!isGrouped) {
-    const leg = legs[0];
-    return (
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg shadow-sm transition-colors ${
-            isSelected ? 'bg-brand text-white' : 'bg-white text-slate-500 border border-slate-100'
-          }`}>
-            <ModeIcon mode={leg.mode} />
-          </div>
-          <div>
-            <div className="flex items-center gap-1.5 text-sm font-bold text-slate-800">
-              <span>{leg.from_city}</span>
-              <ArrowRight size={12} className="text-slate-400" />
-              <span>{leg.to_city}</span>
-            </div>
-            <div className="mt-0.5 text-[11px] font-medium text-slate-500">
-              {formatDate(leg.travel_date)} · {leg.travel_class}
-            </div>
-          </div>
-        </div>
-        {leg.desk_ticket_id ? <TicketButton onClick={() => onPreviewTicket(leg)} /> : null}
-      </div>
-    );
-  }
-
-  const isRoundTrip = group.tripType === 'ROUND_TRIP';
-  const dateRange =
-    legs[0].travel_date === legs[legs.length - 1].travel_date
-      ? formatDate(legs[0].travel_date)
-      : `${formatDate(legs[0].travel_date)} – ${formatDate(legs[legs.length - 1].travel_date)}`;
+  const first = legs[0];
+  const multi = legs.length > 1;
+  const kind = KIND[group.tripType] || (multi ? KIND.MULTI_CITY : KIND.ONE_WAY);
+  const isRound = group.tripType === 'ROUND_TRIP';
+  const route = isRound ? (
+    <>
+      {first.from_city} <ArrowLeftRight size={12} className="inline text-slate-400" /> {first.to_city}
+    </>
+  ) : (
+    [first.from_city, ...legs.map((l) => l.to_city)].join(' → ')
+  );
+  const meta = [
+    first.travel_request_id ? travelRef(first.travel_request_id) : first.reference_id,
+    dateSpan(first.travel_date, legs[legs.length - 1].travel_date),
+    first.purpose,
+  ].filter(Boolean);
 
   return (
-    <div>
-      <span
-        className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide ring-1 ring-inset ${accent.badgeBg} ${accent.badgeText} ${accent.badgeRing}`}
-      >
-        {isRoundTrip ? <RefreshCw size={10} /> : <Route size={10} />}
-        {isRoundTrip ? 'Round Trip' : `Multi-city · ${legs.length} legs`}
-      </span>
-
-      <div className="mt-2 flex items-center gap-1.5 text-sm font-bold text-slate-800">
-        {isRoundTrip ? (
-          <>
-            <span>{legs[0].from_city}</span>
-            <ArrowLeftRight size={12} className="shrink-0 text-slate-400" />
-            <span>{legs[0].to_city}</span>
-          </>
+    <label
+      className={`grid cursor-pointer grid-cols-[18px_minmax(0,1fr)] gap-3 rounded-xl border px-3 py-2.5 ${
+        selected ? 'border-brand bg-brand/[0.04]' : 'border-slate-200 hover:bg-slate-50/70'
+      }`}
+    >
+      <input
+        type="checkbox"
+        className="mt-0.5 h-4 w-4 accent-brand"
+        checked={selected}
+        onChange={(e) => onToggle(e.target.checked)}
+      />
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <b className="text-[13px] text-ink">{route}</b>
+          <span className={`rounded-full px-2 py-px text-[11px] font-bold ${kind.cls}`}>
+            {kind.label}
+            {multi && !isRound ? ` · ${legs.length} legs` : ''}
+          </span>
+        </div>
+        <div className="text-xs text-slate-500">{meta.join(' · ')}</div>
+        {multi ? (
+          <div className="mt-[7px] grid gap-[3px] border-l-2 border-brand/25 pl-2.5">
+            {legs.map((leg, i) => (
+              <div key={leg.id} className="flex flex-wrap items-center gap-[7px] text-xs text-slate-700">
+                <span className="rounded-full bg-slate-100 px-[7px] text-[11px] font-bold text-slate-500">{i + 1}</span>
+                <ModeIcon mode={leg.mode} />
+                <span>
+                  {isRound ? (i === 0 ? 'Onward' : 'Return') : `${leg.from_city} → ${leg.to_city}`}
+                </span>
+                <span className="text-slate-500">
+                  · {dayMonth(leg.travel_date)}
+                  {leg.travel_class ? ` · ${leg.travel_class}` : ''}
+                </span>
+                {leg.desk_ticket_id ? <TicketButton onClick={() => onPreviewTicket(leg)} /> : null}
+              </div>
+            ))}
+          </div>
         ) : (
-          legs.map((leg, i) => (
-            <span key={leg.id} className="flex items-center gap-1.5">
-              {i > 0 ? <ArrowRight size={12} className="shrink-0 text-slate-400" /> : null}
-              <span>{i === 0 ? leg.from_city : leg.to_city}</span>
-            </span>
-          ))
+          <div className="mt-1 flex flex-wrap items-center gap-[7px] text-xs text-slate-700">
+            <ModeIcon mode={first.mode} />
+            <span className="text-slate-500">{first.travel_class || ''}</span>
+            {first.desk_ticket_id ? <TicketButton onClick={() => onPreviewTicket(first)} /> : null}
+          </div>
         )}
       </div>
-      <div className="mt-0.5 text-[11px] font-medium text-slate-500">{dateRange}</div>
-
-      <div className="mt-3 space-y-1.5 border-t border-slate-100 pt-2.5">
-        {legs.map((leg, i) => (
-          <div key={leg.id} className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 text-[11px] text-slate-600">
-              <ModeIcon mode={leg.mode} size={13} className="shrink-0 text-slate-400" />
-              <span className="font-semibold text-slate-700">
-                {isRoundTrip ? (i === 0 ? 'Onward' : 'Return') : `${leg.from_city} → ${leg.to_city}`}
-              </span>
-              <span className="text-slate-400">· {formatDate(leg.travel_date)} · {leg.travel_class}</span>
-            </div>
-            {leg.desk_ticket_id ? <TicketButton onClick={() => onPreviewTicket(leg)} /> : null}
-          </div>
-        ))}
-      </div>
-    </div>
+    </label>
   );
+}
+
+const CAP_TEXT = [
+  ['hotel', 'Hotel'],
+  ['food', 'Food'],
+  ['incidental', 'Incidentals'],
+  ['day_visit', 'Day visit'],
+];
+
+/** The traveller's caps at the claim's destination (the one city the policy check uses). */
+function useDestinationCaps(city, date) {
+  const [caps, setCaps] = useState(null);
+  useEffect(() => {
+    const name = (city || '').trim();
+    if (!name) {
+      setCaps(null);
+      return undefined;
+    }
+    let cancelled = false;
+    const t = setTimeout(() => {
+      reimbursementApi
+        .travelCityExpenseLimits(name, date || undefined)
+        .then((r) => !cancelled && setCaps(r.data || null))
+        .catch(() => !cancelled && setCaps(null));
+    }, 500);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [city, date]);
+  return caps;
 }
 
 export default function ClaimWizardStepTripInfo({
@@ -134,112 +153,122 @@ export default function ClaimWizardStepTripInfo({
   onPreviewTicket,
 }) {
   const getError = (name) => validationErrors?.[name];
+  const err = (name) => (getError(name) ? <p className="mt-1 text-[11px] font-bold text-rose-600">{getError(name)}</p> : null);
+  const selectedGroups = tripGroups.filter((g) => g.tripIds.every((id) => selectedTripIds.includes(id)));
+  const fromRef = selectedGroups.length
+    ? selectedGroups.map((g) => (g.legs[0].travel_request_id ? travelRef(g.legs[0].travel_request_id) : g.legs[0].reference_id)).filter(Boolean)
+    : [];
+  const multiStop = selectedGroups.some((g) => g.tripType === 'MULTI_CITY' && g.legs.length > 1);
+  const caps = useDestinationCaps(form.destination_city, form.departure_date);
+  const groupName = caps ? caps.city_group_name || (caps.city_group ? `Group ${caps.city_group}` : '') : '';
 
   return (
-    <div className="space-y-6">
-      {/* Quick Start Booking Linker Card */}
-      {tripGroups.length > 0 && (
-        <div className="panel rounded-xl p-5 shadow-sm border border-slate-200 bg-white">
-          <h2 className="text-sm font-bold text-slate-800 flex items-center gap-2">
-            <span>Quick Start</span>
-            <span className="inline-flex items-center rounded bg-brand/10 px-2 py-0.5 text-[10px] font-bold text-brand uppercase">
-              Link Bookings
-            </span>
-          </h2>
-          <p className="mt-1 text-xs text-slate-500">
-            Select a trip from your Travel Desk to automatically pre-fill dates, cities, and travel purposes —
-            a multi-city trip&apos;s legs link together as one.
-          </p>
-          <div className="mt-4 grid gap-3.5 sm:grid-cols-2">
-            {tripGroups.map((group) => {
-              const isSelected = group.tripIds.every((id) => selectedTripIds.includes(id));
-              const accent = ACCENT[group.tripType] || ACCENT.ONE_WAY;
-              return (
-                <div
-                  key={group.key}
-                  className={`relative cursor-pointer rounded-xl border border-l-4 p-4 transition-all duration-200 hover:shadow-md ${
-                    isSelected
-                      ? 'border-brand bg-brand/5 shadow-sm ring-1 ring-brand/10'
-                      : `border-slate-200 ${accent.border} bg-white hover:bg-slate-50/70`
-                  }`}
-                  onClick={() => onToggleTripGroup(group.tripIds, !isSelected)}
-                >
-                  {isSelected && (
-                    <div className="absolute right-3 top-3 flex h-5 w-5 items-center justify-center rounded-full bg-brand text-white">
-                      <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 20 20">
-                        <path
-                          fillRule="evenodd"
-                          d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 111.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-                          clipRule="evenodd"
-                        />
-                      </svg>
-                    </div>
-                  )}
-                  <TripCard group={group} isSelected={isSelected} onPreviewTicket={onPreviewTicket} />
-                </div>
-              );
-            })}
+    <>
+      {tripGroups.length > 0 ? (
+        <Card title="Start from a booked trip" sub="Ticking a trip fills in the details below. All legs of a round or multi-city trip go together." bodyClass="space-y-1.5">
+          {tripGroups.map((group) => (
+            <TripRow
+              key={group.key}
+              group={group}
+              selected={group.tripIds.every((id) => selectedTripIds.includes(id))}
+              onToggle={(checked) => onToggleTripGroup(group.tripIds, checked)}
+              onPreviewTicket={onPreviewTicket}
+            />
+          ))}
+        </Card>
+      ) : null}
+
+      <Card
+        title="Trip details"
+        sub={fromRef.length ? `Filled in from ${fromRef.join(', ')}; change anything that's different.` : 'Where you went, when, and why.'}
+      >
+        {deadlineWarning ? <Note tone="rose" title="Past the claim deadline">{deadlineWarning}</Note> : null}
+
+        <p className={EYEBROW}>Where and when</p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label htmlFor="claim-from" className={LABEL}>From</label>
+            <input
+              id="claim-from"
+              className={fieldClass(getError('from_city'))}
+              value={form.from_city}
+              onChange={(e) => {
+                onChange('from_city', e.target.value);
+                onCityQueryChange?.(e.target.value);
+              }}
+              placeholder="Origin city"
+              list="claim-city-from"
+            />
+            {err('from_city')}
+          </div>
+          <div>
+            <label htmlFor="claim-destination" className={LABEL}>Destination</label>
+            <input
+              id="claim-destination"
+              className={fieldClass(getError('destination_city'))}
+              value={form.destination_city}
+              onChange={(e) => {
+                onChange('destination_city', e.target.value);
+                onCityQueryChange?.(e.target.value);
+              }}
+              onBlur={onResolveCityGroup}
+              placeholder="Destination city"
+              list="claim-city-to"
+            />
+            {err('destination_city')}
+          </div>
+          <div>
+            <label htmlFor="claim-departure" className={LABEL}>Left on</label>
+            <input
+              id="claim-departure"
+              type="date"
+              className={fieldClass(getError('departure_date'))}
+              value={form.departure_date}
+              onChange={(e) => onChange('departure_date', e.target.value)}
+            />
+            {err('departure_date')}
+          </div>
+          <div>
+            <label htmlFor="claim-return" className={LABEL}>Back on</label>
+            <input
+              id="claim-return"
+              type="date"
+              className={fieldClass(getError('return_date'))}
+              value={form.return_date}
+              onChange={(e) => onChange('return_date', e.target.value)}
+            />
+            {err('return_date')}
           </div>
         </div>
-      )}
+        <datalist id="claim-city-from">
+          {cityOptions.map((c) => (
+            <option key={`f-${c}`} value={c} />
+          ))}
+        </datalist>
+        <datalist id="claim-city-to">
+          {cityOptions.map((c) => (
+            <option key={`t-${c}`} value={c} />
+          ))}
+        </datalist>
 
-      {/* Trip Information Card */}
-      <div className="panel rounded-xl p-5 shadow-sm border border-slate-200 bg-white">
-        <h2 className="text-sm font-bold text-slate-800 mb-4">Trip Information</h2>
-        
-        {deadlineWarning && (
-          <div className="mb-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs font-semibold text-rose-800">
-            {deadlineWarning}
-          </div>
-        )}
+        {caps?.has_limits ? (
+          <Note tone="sky" title={`Caps on this claim follow ${caps.city}${groupName ? ` (${groupName})` : ''}${multiStop ? ', the first stop' : ''}`}>
+            {CAP_TEXT.filter(([k]) => caps[`${k}_cap`] != null)
+              .map(([k, label]) => `${label} ₹${Number(caps[`${k}_cap`]).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`)
+              .join(' · ')}
+            {multiStop ? '. A claim takes one destination today, so the other stops’ caps aren’t applied separately.' : ''}
+          </Note>
+        ) : cityGroupHint ? (
+          <Note tone="sky">{cityGroupHint}</Note>
+        ) : null}
 
-        <div className="grid gap-5 md:grid-cols-2">
-          {/* Travel Type */}
-          <div className="space-y-1">
-            <span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide">Travel Type *</span>
+        <p className={`${EYEBROW} pt-1.5`}>Why</p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label htmlFor="claim-purpose" className={LABEL}>Purpose</label>
             <select
-              className={`w-full h-10 px-3 rounded-lg border bg-white text-slate-800 text-sm outline-none transition-all duration-200 focus:border-slate-400 focus:ring-2 focus:ring-slate-150 ${
-                getError('travel_type') ? 'border-rose-300 focus:border-rose-400 focus:ring-rose-500/10' : 'border-slate-250'
-              }`}
-              value={form.travel_type}
-              onChange={(e) => onChange('travel_type', e.target.value)}
-            >
-              <option value="NON_PROJECT">Non-Project</option>
-              <option value="PROJECT">Project</option>
-            </select>
-            {getError('travel_type') && <p className="text-xs text-rose-600 font-semibold">{getError('travel_type')}</p>}
-          </div>
-
-          {/* Project Code — only when Travel Type is Project */}
-          {form.travel_type === 'PROJECT' ? (
-            <div className="space-y-1">
-              <span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide">Project Code *</span>
-              <select
-                className={`w-full h-10 px-3 rounded-lg border bg-white text-slate-800 text-sm outline-none transition-all duration-200 focus:border-slate-400 focus:ring-2 focus:ring-slate-150 ${
-                  getError('project_code') ? 'border-rose-300 focus:border-rose-400 focus:ring-rose-500/10' : 'border-slate-250'
-                }`}
-                value={form.project_code}
-                onChange={(e) => onChange('project_code', e.target.value)}
-              >
-                <option value="">Select project code</option>
-                {(travelOptions?.project_codes || []).map((o) => (
-                  <option key={o.id} value={o.value}>{o.label || o.value}</option>
-                ))}
-              </select>
-              {(travelOptions?.project_codes || []).length === 0 ? (
-                <p className="text-[10px] font-bold text-amber-700">No project codes are configured yet — ask an admin to add them.</p>
-              ) : null}
-              {getError('project_code') && <p className="text-xs text-rose-600 font-semibold">{getError('project_code')}</p>}
-            </div>
-          ) : null}
-
-          {/* Trip Purpose */}
-          <div className="space-y-1">
-            <span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide">Trip Purpose *</span>
-            <select
-              className={`w-full h-10 px-3 rounded-lg border bg-white text-slate-800 text-sm outline-none transition-all duration-200 focus:border-slate-400 focus:ring-2 focus:ring-slate-150 ${
-                getError('trip_purpose') ? 'border-rose-300 focus:border-rose-400 focus:ring-rose-500/10' : 'border-slate-250'
-              }`}
+              id="claim-purpose"
+              className={fieldClass(getError('trip_purpose'))}
               value={form.trip_purpose}
               onChange={(e) => onChange('trip_purpose', e.target.value)}
             >
@@ -249,134 +278,71 @@ export default function ClaimWizardStepTripInfo({
               ))}
             </select>
             {(travelOptions?.trip_purposes || []).length === 0 ? (
-              <p className="text-[10px] font-bold text-amber-700">No trip purposes are configured yet — ask an admin to add them.</p>
+              <p className="mt-1 text-[11px] font-bold text-amber-700">No trip purposes are configured yet. Ask an admin to add them.</p>
             ) : null}
-            {getError('trip_purpose') && <p className="text-xs text-rose-600 font-semibold">{getError('trip_purpose')}</p>}
+            {err('trip_purpose')}
           </div>
-
-          {/* Office Location */}
-          <div className="space-y-1">
-            <span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide">Office Location *</span>
-            <div className="relative">
+          <div>
+            <label htmlFor="claim-office" className={LABEL}>Office you travelled from</label>
+            <select
+              id="claim-office"
+              className={fieldClass(getError('office_location'))}
+              value={form.office_location}
+              onChange={(e) => onChange('office_location', e.target.value)}
+            >
+              <option value="">Select office</option>
+              {officeLocations.map((location) => (
+                <option key={location} value={location}>{location}</option>
+              ))}
+            </select>
+            {err('office_location')}
+          </div>
+          <div>
+            <span className={LABEL}>Travel type</span>
+            <div role="group" aria-label="Travel type" className="flex w-full gap-0.5 rounded-[11px] bg-slate-100 p-[3px]">
+              {[
+                ['NON_PROJECT', 'Non-project'],
+                ['PROJECT', 'Project'],
+              ].map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={form.travel_type === value}
+                  onClick={() => onChange('travel_type', value)}
+                  className={`flex-1 rounded-lg px-3 py-[7px] text-[12.5px] font-bold ${
+                    form.travel_type === value ? 'bg-white text-ink shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {err('travel_type')}
+          </div>
+          {form.travel_type === 'PROJECT' ? (
+            <div>
+              <label htmlFor="claim-project" className={LABEL}>Project code</label>
               <select
-                className={`w-full h-10 px-3 rounded-lg border bg-white text-slate-800 text-sm outline-none transition-all duration-200 focus:border-slate-400 focus:ring-2 focus:ring-slate-150 ${
-                  getError('office_location') ? 'border-rose-300 focus:border-rose-400 focus:ring-rose-500/10' : 'border-slate-250'
-                }`}
-                value={form.office_location}
-                onChange={(e) => onChange('office_location', e.target.value)}
+                id="claim-project"
+                className={fieldClass(getError('project_code'))}
+                value={form.project_code}
+                onChange={(e) => onChange('project_code', e.target.value)}
               >
-                <option value="">Select office</option>
-                {officeLocations.map((location) => (
-                  <option key={location} value={location}>
-                    {location}
-                  </option>
+                <option value="">Select project code</option>
+                {(travelOptions?.project_codes || []).map((o) => (
+                  <option key={o.id} value={o.value}>{o.label || o.value}</option>
                 ))}
               </select>
+              {(travelOptions?.project_codes || []).length === 0 ? (
+                <p className="mt-1 text-[11px] font-bold text-amber-700">No project codes are configured yet. Ask an admin to add them.</p>
+              ) : null}
+              {err('project_code')}
             </div>
-            {getError('office_location') && <p className="text-xs text-rose-600 font-semibold">{getError('office_location')}</p>}
-          </div>
-
-          {/* From City */}
-          <div className="space-y-1">
-            <span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide">From City *</span>
-            <div className="relative">
-              <input
-                className={`w-full h-10 pl-9 pr-3 rounded-lg border bg-white text-slate-800 text-sm outline-none transition-all duration-200 focus:border-slate-400 focus:ring-2 focus:ring-slate-150 ${
-                  getError('from_city') ? 'border-rose-300 focus:border-rose-400 focus:ring-rose-500/10' : 'border-slate-250'
-                }`}
-                value={form.from_city}
-                onChange={(e) => {
-                  onChange('from_city', e.target.value);
-                  onCityQueryChange?.(e.target.value);
-                }}
-                placeholder="Origin city"
-                list="claim-city-from"
-              />
-              <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={15} />
-            </div>
-            {getError('from_city') && <p className="text-xs text-rose-600 font-semibold">{getError('from_city')}</p>}
-          </div>
-
-          {/* Destination City */}
-          <div className="space-y-1">
-            <span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide">Destination City *</span>
-            <div className="relative">
-              <input
-                className={`w-full h-10 pl-9 pr-3 rounded-lg border bg-white text-slate-800 text-sm outline-none transition-all duration-200 focus:border-slate-400 focus:ring-2 focus:ring-slate-150 ${
-                  getError('destination_city') ? 'border-rose-300 focus:border-rose-400 focus:ring-rose-500/10' : 'border-slate-250'
-                }`}
-                value={form.destination_city}
-                onChange={(e) => {
-                  onChange('destination_city', e.target.value);
-                  onCityQueryChange?.(e.target.value);
-                }}
-                onBlur={onResolveCityGroup}
-                placeholder="Destination city"
-                list="claim-city-to"
-              />
-              <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={15} />
-            </div>
-            {cityGroupHint && <p className="text-xs text-indigo-700 font-medium">{cityGroupHint}</p>}
-            {getError('destination_city') && <p className="text-xs text-rose-600 font-semibold">{getError('destination_city')}</p>}
-          </div>
-
-          <datalist id="claim-city-from">
-            {cityOptions.map((c) => (
-              <option key={`f-${c}`} value={c} />
-            ))}
-          </datalist>
-          <datalist id="claim-city-to">
-            {cityOptions.map((c) => (
-              <option key={`t-${c}`} value={c} />
-            ))}
-          </datalist>
-
-          {/* Departure Date */}
-          <div className="space-y-1">
-            <span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide">Departure Date *</span>
-            <div className="relative">
-              <input
-                className={`w-full h-10 pl-9 pr-3 rounded-lg border bg-white text-slate-850 text-sm outline-none transition-all duration-200 focus:border-slate-400 focus:ring-2 focus:ring-slate-150 ${
-                  getError('departure_date') ? 'border-rose-300 focus:border-rose-400 focus:ring-rose-500/10' : 'border-slate-250'
-                }`}
-                type="date"
-                value={form.departure_date}
-                onChange={(e) => onChange('departure_date', e.target.value)}
-              />
-              <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={15} />
-            </div>
-            {getError('departure_date') && <p className="text-xs text-rose-600 font-semibold">{getError('departure_date')}</p>}
-          </div>
-
-          {/* Return Date */}
-          <div className="space-y-1">
-            <span className="block text-xs font-semibold text-slate-500 uppercase tracking-wide">Return Date *</span>
-            <div className="relative">
-              <input
-                className={`w-full h-10 pl-9 pr-3 rounded-lg border bg-white text-slate-850 text-sm outline-none transition-all duration-200 focus:border-slate-400 focus:ring-2 focus:ring-slate-150 ${
-                  getError('return_date') ? 'border-rose-300 focus:border-rose-400 focus:ring-rose-500/10' : 'border-slate-250'
-                }`}
-                type="date"
-                value={form.return_date}
-                onChange={(e) => onChange('return_date', e.target.value)}
-              />
-              <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={15} />
-            </div>
-            {getError('return_date') && <p className="text-xs text-rose-600 font-semibold">{getError('return_date')}</p>}
-          </div>
+          ) : null}
         </div>
+      </Card>
 
-        {/* Footer Actions */}
-        <div className="mt-6 flex justify-end border-t border-slate-150 pt-4">
-          <button 
-            type="button" 
-            className="inline-flex h-10 items-center justify-center gap-1.5 rounded-lg bg-brand px-5 text-sm font-bold text-white hover:bg-brand/90 transition-all duration-200 shadow-md focus:outline-none focus:ring-2 focus:ring-brand/10" 
-            onClick={onNext}
-          >
-            Next: Attach Invoices <ArrowRight size={15} />
-          </button>
-        </div>
-      </div>
-    </div>
+      <StepActions onNext={onNext} nextLabel="Next: Invoices" />
+    </>
   );
 }

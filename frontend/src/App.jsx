@@ -100,6 +100,7 @@ export default function App() {
               element={
                 <RoleGuard
                   anyOf={['approve_claims', 'process_payments', 'approve_exception']}
+                  orScope="relocation"
                 />
               }
             >

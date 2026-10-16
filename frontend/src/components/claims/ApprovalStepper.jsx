@@ -1,4 +1,4 @@
-import { Check, X, ArrowLeft, Clock, Circle, ShieldAlert } from 'lucide-react';
+import { Check, X, ArrowLeft, Clock, Circle, ShieldAlert, SkipForward } from 'lucide-react';
 
 function statusMeta(status) {
   if (status === 'APPROVED') return { icon: Check, className: 'bg-emerald-50 text-emerald-600 border-emerald-200/60' };
@@ -6,7 +6,13 @@ function statusMeta(status) {
   if (status === 'SENT_BACK') return { icon: ArrowLeft, className: 'bg-amber-50 text-amber-600 border-amber-200/60' };
   if (status === 'PENDING') return { icon: Clock, className: 'bg-blue-50 text-blue-600 border-blue-200/60 animate-pulse' };
   if (status === 'AWAITING') return { icon: Circle, className: 'bg-slate-50/60 text-slate-400 border-slate-200/40' };
+  // Approver didn't act within the SLA, so it passed to the next approver.
+  if (status === 'SLA_SKIPPED') return { icon: SkipForward, className: 'bg-orange-50 text-orange-600 border-orange-200/60' };
   return { icon: Circle, className: 'bg-slate-50/60 text-slate-400 border-slate-200/40' };
+}
+
+function statusText(status) {
+  return status === 'SLA_SKIPPED' ? 'SLA missed — passed on' : status;
 }
 
 function slaText(deadlineIso) {
@@ -32,7 +38,7 @@ function ExceptionApprovalRow({ step }) {
         </span>
         <span>
           Exception: {step.exception_type_label} · {step.required_role.replaceAll('_', ' ')} ·{' '}
-          <span className="text-xs uppercase tracking-wider text-slate-500 font-semibold">{step.status}</span>
+          <span className="text-xs uppercase tracking-wider text-slate-500 font-semibold">{statusText(step.status)}</span>
         </span>
       </div>
       <div className="mt-1.5 pl-[38px] text-xs text-slate-500 font-medium">
@@ -100,7 +106,7 @@ export default function ApprovalStepper({ stages = [], exceptionStages = [], upc
                 <IconComponent size={12} className="stroke-[3]" />
               </span>
               <span>
-                Stage {stage.stage_number}: {stage.label} · <span className="text-xs uppercase tracking-wider text-slate-500 font-semibold">{stage.status}</span>
+                Stage {stage.stage_number}: {stage.label} · <span className="text-xs uppercase tracking-wider text-slate-500 font-semibold">{statusText(stage.status)}</span>
               </span>
             </div>
             <div className="mt-1.5 pl-[38px] text-xs text-slate-500 font-medium">

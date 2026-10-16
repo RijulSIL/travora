@@ -14,6 +14,7 @@ from app.api.v1 import (
     me,
     notifications_admin,
     permission_matrix_admin,
+    relocation,
     travel_booking,
     travel_requests,
     workflow_admin,
@@ -43,3 +44,4 @@ api_router.include_router(company_profile.router)
 api_router.include_router(travel_options.router)
 api_router.include_router(budgets.router)
 api_router.include_router(permission_matrix_admin.router)
+api_router.include_router(relocation.router)

@@ -1,43 +1,168 @@
-import { Clock, CreditCard, Eye, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import { createPortal } from 'react-dom';
 
+import { BTN_PLAIN, PageHead, Pill, QueueRow, RowSub, RowTitle, SlaBlock } from '../../components/approvals/ApprovalQueueParts';
 import ClaimReviewModal from '../../components/claims/ClaimReviewModal';
-import EmptyState from '../../components/ui/EmptyState';
+import { Empty, Figure, Modal, PaidTotal, day, errorText, money, rupees } from '../../components/finance/FinanceParts';
+import { BTN_GHOST, BTN_MAIN, CARD, FIELD, LABEL } from '../../components/policy/PolicyAdminParts';
 import Pagination from '../../components/ui/Pagination';
 import Skeleton from '../../components/ui/Skeleton';
 import { useSetPageTitle } from '../../context/PageTitleContext';
-import useBodyScrollLock from '../../hooks/useBodyScrollLock';
 import { usePagination } from '../../hooks/usePagination';
 import { hasPermission } from '../../services/permissions';
 import { reimbursementApi } from '../../services/reimbursementApi';
 import { useAuthStore } from '../../store/authStore';
 
-const money = (v) =>
-  Number(v || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const CATEGORY = { TRAVEL: ['Travel', 'sky'], GENERAL: ['General', 'violet'], RELOCATION: ['Relocation', 'orange'] };
 
-function slaClass(bucket) {
-  if (bucket === 'breached') return 'sla-breached';
-  if (bucket === 'warning') return 'sla-warning';
-  return 'sla-ok';
+function PayWindow({ row, canProcessPayments, onClose, onPaid }) {
+  const [utr, setUtr] = useState('');
+  const [tdsDeduction, setTdsDeduction] = useState('0.00');
+  const [outstandingAdvance, setOutstandingAdvance] = useState(0);
+  const [advanceDeducted, setAdvanceDeducted] = useState('0.00');
+  const [useAdvance, setUseAdvance] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [payError, setPayError] = useState('');
+
+  useEffect(() => {
+    if (!canProcessPayments || !row.employee_user_id) return;
+    reimbursementApi
+      .outstandingAdvanceFor(row.employee_user_id)
+      .then((res) => setOutstandingAdvance(Number(res.data?.outstanding_advance || 0)))
+      // Non-fatal — Finance can still record the payment without netting an advance.
+      .catch(() => setOutstandingAdvance(0));
+  }, [canProcessPayments, row.employee_user_id]);
+
+  const approvedAmount = Number(row.net_payable || 0);
+  const deductionAmount = Number(tdsDeduction || 0);
+  const advanceAmount = useAdvance ? Number(advanceDeducted || 0) : 0;
+  const usable = Math.max(Math.min(outstandingAdvance, approvedAmount - deductionAmount), 0);
+  const totalDue = approvedAmount - deductionAmount - advanceAmount;
+  const deductionInvalid = deductionAmount < 0 || deductionAmount > approvedAmount;
+  const advanceInvalid = advanceAmount < 0 || advanceAmount > outstandingAdvance || deductionAmount + advanceAmount > approvedAmount;
+
+  // A TDS change after the advance is set shrinks the advance to fit, instead of leaving an
+  // unfixable "too much withheld" error.
+  useEffect(() => {
+    if (useAdvance && advanceAmount > 0 && deductionAmount + advanceAmount > approvedAmount) setAdvanceDeducted(usable.toFixed(2));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deductionAmount]);
+
+  const submitPayment = async () => {
+    setSaving(true);
+    setPayError('');
+    try {
+      // Posting to the ERP ledger happens server-side as part of recording the payment
+      // (workflow_service.record_claim_payment), so a paid claim always has a ledger entry.
+      await reimbursementApi.recordClaimPayment(row.claim_id, {
+        utr_reference: utr,
+        amount: totalDue,
+        tds_deduction: deductionAmount,
+        advance_deducted: advanceAmount,
+      });
+      onPaid();
+    } catch (err) {
+      setPayError(errorText(err, 'Payment failed'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal
+      title="Record payment"
+      sub={`${row.claim_reference} · ${row.employee_name || row.employee_label}`}
+      busy={saving}
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className={BTN_GHOST} onClick={onClose} disabled={saving}>
+            Cancel
+          </button>
+          <button type="button" className={BTN_MAIN} onClick={submitPayment} disabled={saving || !utr.trim() || deductionInvalid || advanceInvalid}>
+            {saving ? 'Recording…' : 'Record payment & post to ERP'}
+          </button>
+        </>
+      }
+    >
+      <Figure label="Claimed">{money(row.amount)}</Figure>
+      <Figure label="Approved" strong>
+        {money(approvedAmount)}
+      </Figure>
+      <div>
+        <label className={LABEL} htmlFor="pay-utr">
+          Bank reference (UTR)
+        </label>
+        <input id="pay-utr" className={`${FIELD} font-mono`} value={utr} onChange={(e) => setUtr(e.target.value)} placeholder="e.g. HDFC26101612345" />
+      </div>
+      <div>
+        <label className={LABEL} htmlFor="pay-tds">
+          TDS &amp; other deductions
+        </label>
+        <input id="pay-tds" className={`${FIELD} font-mono`} type="number" step="0.01" min="0" max={approvedAmount} value={tdsDeduction} onChange={(e) => setTdsDeduction(e.target.value)} />
+        {deductionInvalid ? <p className="mt-1 text-xs text-rose-700">Enter ₹0.00 up to the approved amount.</p> : null}
+      </div>
+      {canProcessPayments && outstandingAdvance > 0 ? (
+        <div className="flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
+          <Figure label="Advance not yet used" strong>
+            {money(outstandingAdvance)}
+          </Figure>
+          {useAdvance ? (
+            <>
+              <div>
+                <label className={LABEL} htmlFor="pay-advance">
+                  Take from the advance <small className="font-medium text-slate-400">up to {money(usable)}</small>
+                </label>
+                <div className="flex items-center gap-2">
+                  <input id="pay-advance" className={`${FIELD} font-mono ${advanceInvalid ? 'border-rose-400' : ''}`} type="number" step="0.01" min="0" max={usable} value={advanceDeducted} onChange={(e) => setAdvanceDeducted(e.target.value)} />
+                  <button type="button" className={BTN_PLAIN} disabled={advanceAmount === usable} onClick={() => setAdvanceDeducted(usable.toFixed(2))}>
+                    Use all
+                  </button>
+                </div>
+                {advanceInvalid ? (
+                  <p className="mt-1 text-xs text-rose-700">Enter ₹0 to {money(usable)}: no more than the advance left, or than what&apos;s being paid after TDS.</p>
+                ) : (
+                  <p className="mt-1 text-xs text-slate-500">{money(outstandingAdvance - advanceAmount)} of the advance stays for later claims.</p>
+                )}
+              </div>
+              <button type="button" className={`${BTN_PLAIN} self-start`} onClick={() => setUseAdvance(false)}>
+                Don&apos;t use the advance
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              className={`${BTN_PLAIN} self-start`}
+              onClick={() => {
+                setAdvanceDeducted(usable.toFixed(2));
+                setUseAdvance(true);
+              }}
+            >
+              Use the advance
+            </button>
+          )}
+          <p className="text-xs text-slate-500">Whatever isn&apos;t taken from the advance is paid by bank transfer.</p>
+        </div>
+      ) : null}
+      <PaidTotal label="To pay by bank transfer" amount={totalDue} />
+      <p className="text-xs text-slate-500">Approved amount minus TDS{advanceAmount > 0 ? ' and the advance used' : ''}.</p>
+      {payError ? (
+        <p role="alert" className="text-xs text-rose-700">
+          {payError}
+        </p>
+      ) : null}
+    </Modal>
+  );
 }
 
 export default function PaymentQueuePage() {
   useSetPageTitle('Payment Queue');
   const permissions = useAuthStore((s) => s.profile?.permissions);
-  // Tied to whoever can actually record the payment (process_payments), not a hardcoded
-  // Finance check — see advances_api.py and ClaimReviewModal.jsx's matching check.
+  // Tied to whoever can actually record the payment (process_payments), not a hardcoded Finance check.
   const canProcessPayments = hasPermission(permissions, 'process_payments');
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [active, setActive] = useState(null);
-  const [utr, setUtr] = useState('');
-  const [tdsDeduction, setTdsDeduction] = useState('0.00');
-  const [outstandingAdvance, setOutstandingAdvance] = useState(0);
-  const [advanceDeducted, setAdvanceDeducted] = useState('0.00');
-  const [saving, setSaving] = useState(false);
-  const [payError, setPayError] = useState('');
   const [reviewClaimId, setReviewClaimId] = useState(null);
 
   const load = async () => {
@@ -45,310 +170,99 @@ export default function PaymentQueuePage() {
     setError('');
     try {
       const res = await reimbursementApi.pendingApprovals();
-      const list = (res.data || []).filter((item) => item.sla_bucket != null);
-      setRows(list);
+      setRows((res.data || []).filter((item) => item.sla_bucket != null));
     } catch (err) {
-      setError(err?.response?.data?.detail || 'Failed to load payment queue');
+      setError(errorText(err, 'Failed to load payment queue'));
     } finally {
       setLoading(false);
     }
   };
-
   useEffect(() => {
     load();
   }, []);
 
-  const openModal = async (row) => {
-    setActive(row);
-    setUtr('');
-    setPayError('');
-    setTdsDeduction('0.00');
-    setOutstandingAdvance(0);
-    setAdvanceDeducted('0.00');
-    if (canProcessPayments && row.employee_user_id) {
-      try {
-        const res = await reimbursementApi.outstandingAdvanceFor(row.employee_user_id);
-        setOutstandingAdvance(Number(res.data?.outstanding_advance || 0));
-      } catch {
-        // Non-fatal — Finance can still record the payment without netting an advance.
-        setOutstandingAdvance(0);
-      }
-    }
-  };
-
   const { page, setPage, totalPages, pageItems, startIndex, pageSize, total } = usePagination(rows);
-  const approvedAmount = useMemo(() => Number(active?.net_payable || 0), [active]);
-  useBodyScrollLock(Boolean(active));
-  const deductionAmount = Number(tdsDeduction || 0);
-  const advanceAmount = Number(advanceDeducted || 0);
-  const totalDue = approvedAmount - deductionAmount - advanceAmount;
-  const deductionInvalid = deductionAmount < 0 || deductionAmount > approvedAmount;
-  const advanceInvalid =
-    advanceAmount < 0 || advanceAmount > outstandingAdvance || deductionAmount + advanceAmount > approvedAmount;
-  // The advance can't cover the whole claim — clicking "Deduct from Advance" only ever applies
-  // what's actually available, and whatever's left is simply paid out via UTR as normal.
-  const advanceFallsShort = outstandingAdvance > 0 && outstandingAdvance < approvedAmount - deductionAmount;
-
-  const applyAdvanceDeduction = () => {
-    const applied = Math.max(Math.min(outstandingAdvance, approvedAmount - deductionAmount), 0);
-    setAdvanceDeducted(applied.toFixed(2));
-  };
-  const removeAdvanceDeduction = () => setAdvanceDeducted('0.00');
-
-  // TDS is edited after the advance is applied just as often as before — rather than leaving
-  // a now-too-large advance sitting there as an unfixable validation error, shrink it to fit
-  // whenever the two would otherwise together exceed the approved amount.
-  useEffect(() => {
-    if (advanceAmount > 0 && deductionAmount + advanceAmount > approvedAmount) {
-      const refitted = Math.max(Math.min(outstandingAdvance, approvedAmount - deductionAmount), 0);
-      setAdvanceDeducted(refitted.toFixed(2));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deductionAmount]);
-
-  const submitPayment = async () => {
-    if (!active) return;
-    setSaving(true);
-    setPayError('');
-    try {
-      // Posting to the ERP ledger now happens server-side as part of recording the payment
-      // itself (see workflow_service.record_claim_payment) — atomically, so a paid claim can
-      // never end up without a ledger entry the way it could when this was two separate calls.
-      await reimbursementApi.recordClaimPayment(active.claim_id, {
-        utr_reference: utr,
-        amount: totalDue,
-        tds_deduction: deductionAmount,
-        advance_deducted: advanceAmount,
-      });
-      setActive(null);
-      await load();
-    } catch (err) {
-      setPayError(err?.response?.data?.detail || 'Payment failed');
-    } finally {
-      setSaving(false);
-    }
-  };
+  const toPay = useMemo(() => rows.reduce((n, r) => n + Number(r.net_payable || 0), 0), [rows]);
+  const late = rows.filter((r) => r.sla_bucket === 'breached').length;
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-semibold text-ink">Finance payment queue</h2>
-        <p className="mt-1 text-sm text-slate-600">All claims currently ready for payment.</p>
-      </div>
-
+    <section className="flex flex-col gap-3.5">
+      <PageHead
+        title="Payment queue"
+        sub="Approved claims waiting to be paid. Enter the bank reference (UTR) to record the payment; it's posted to the ERP ledger at the same time."
+        stats={[
+          { label: 'Waiting', value: rows.length },
+          { label: 'To pay', value: rupees(toPay) },
+          { label: 'Past the SLA', value: late, tone: late ? 'rose' : undefined },
+        ]}
+      />
       {error ? (
-        <div className="panel rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>
-      ) : null}
-
-      <div className="panel overflow-hidden rounded-2xl">
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead className="bg-slate-50/70 text-center text-[11px] font-bold uppercase tracking-wider text-slate-400">
-              <tr>
-                <th className="px-5 py-3.5 whitespace-nowrap">S. No</th>
-                <th className="px-5 py-3.5">Claim Ref</th>
-                <th className="px-5 py-3.5">Employee</th>
-                <th className="px-5 py-3.5">Dept</th>
-                <th className="px-5 py-3.5">Amount</th>
-                <th className="px-5 py-3.5">Net Payable</th>
-                <th className="px-5 py-3.5">Submitted</th>
-                <th className="px-5 py-3.5">SLA</th>
-                <th className="px-5 py-3.5">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr>
-                  <td className="px-5 py-6" colSpan={9}>
-                    <Skeleton variant="table" rows={4} columns={9} />
-                  </td>
-                </tr>
-              ) : rows.length ? (
-                pageItems.map((row, index) => (
-                  <tr key={row.claim_id} className="border-t border-slate-100 hover:bg-slate-50/50 transition-colors duration-150">
-                    <td className="px-5 py-4 text-center text-slate-500">{startIndex + index + 1}</td>
-                    <td className="px-5 py-4 text-center font-semibold text-slate-900">{row.claim_reference}</td>
-                    <td className="px-5 py-4 text-center text-slate-800">{row.employee_name || row.employee_label}</td>
-                    <td className="px-5 py-4 text-center text-slate-600">{row.department || '—'}</td>
-                    <td className="px-5 py-4 text-center text-slate-700">₹{money(row.amount)}</td>
-                    <td className="px-5 py-4 text-center font-bold text-slate-900">₹{money(row.net_payable)}</td>
-                    <td className="px-5 py-4 text-center text-slate-600">{row.submitted_at ? new Date(row.submitted_at).toLocaleDateString() : '—'}</td>
-                    <td className="px-5 py-4 text-center">
-                      <div className={`inline-flex items-center gap-1.5 text-xs font-semibold ${slaClass(row.sla_bucket)}`}>
-                        <Clock size={13} className="shrink-0" />
-                        <span>{row.sla_remaining_label}</span>
-                      </div>
-                    </td>
-                    <td className="px-5 py-4 text-center">
-                      <div className="flex items-center justify-center gap-2">
-                        <button
-                          type="button"
-                          className="btn-secondary h-8 whitespace-nowrap px-3 text-xs"
-                          onClick={() => setReviewClaimId(row.claim_id)}
-                        >
-                          <Eye size={13} />
-                          Review
-                        </button>
-                        <button className="btn-primary h-8 whitespace-nowrap px-3 text-xs" onClick={() => openModal(row)}>
-                          Process Payment
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td className="px-5 py-5" colSpan={9}>
-                    <EmptyState
-                      icon={CreditCard}
-                      title="No claims in payment queue"
-                      description="Claims ready for payment will appear here."
-                    />
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+        <div role="alert" className="rounded-[10px] border border-rose-200 bg-rose-50 px-3 py-2.5 text-[13px] text-rose-700">
+          {error}
         </div>
+      ) : null}
+      <section aria-label="Claims to pay" className={CARD}>
+        {loading ? (
+          <div className="p-4">
+            <Skeleton variant="table" rows={4} columns={4} />
+          </div>
+        ) : rows.length ? (
+          pageItems.map((row) => {
+            const [catLabel, catTone] = CATEGORY[row.reimbursement_category] || CATEGORY.TRAVEL;
+            return (
+              <QueueRow
+                key={row.claim_id}
+                wideLead
+                lead={<SlaBlock deadline={row.sla_deadline_at} bucket={row.sla_bucket} />}
+                main={
+                  <>
+                    <RowTitle>
+                      {row.claim_reference} <Pill tone={catTone}>{catLabel}</Pill>
+                    </RowTitle>
+                    <RowSub>
+                      {row.employee_name || row.employee_label}
+                      {row.department ? ` · ${row.department}` : ''} · submitted {day(row.submitted_at)}
+                    </RowSub>
+                    {row.trip_summary && row.trip_summary !== '—' ? <RowSub>{row.trip_summary}</RowSub> : null}
+                  </>
+                }
+                side={
+                  <>
+                    <b className="block font-mono text-[13.5px] tabular-nums text-ink">{money(row.net_payable)}</b>
+                    <span className="text-xs text-slate-500">claimed {money(row.amount)}</span>
+                  </>
+                }
+                actions={
+                  <>
+                    <button type="button" className={BTN_PLAIN} onClick={() => setReviewClaimId(row.claim_id)}>
+                      Review
+                    </button>
+                    <button type="button" className={`${BTN_MAIN} h-[30px] rounded-lg px-[11px] text-xs`} onClick={() => setActive(row)}>
+                      Pay
+                    </button>
+                  </>
+                }
+              />
+            );
+          })
+        ) : (
+          <Empty title="Nothing to pay right now">Claims appear here once every approval is done.</Empty>
+        )}
         <Pagination page={page} totalPages={totalPages} onPageChange={setPage} total={total} pageSize={pageSize} startIndex={startIndex} />
-      </div>
+      </section>
 
-      {active
-        ? createPortal(
-            <div
-              className="fixed inset-0 z-[95] grid place-items-center bg-slate-900/55 p-4 backdrop-blur-[1px]"
-              onClick={() => !saving && setActive(null)}
-            >
-              <div
-                className="w-full max-w-md rounded-2xl bg-white shadow-2xl"
-                onClick={(event) => event.stopPropagation()}
-              >
-                <div className="flex items-center justify-between border-b border-line px-5 py-4">
-                  <div>
-                    <h3 className="text-sm font-bold text-ink">Record payment</h3>
-                    <p className="text-xs text-slate-500">
-                      {active.claim_reference} · {active.employee_name || active.employee_label}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setActive(null)}
-                    disabled={saving}
-                    className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700 disabled:opacity-50"
-                    aria-label="Close"
-                  >
-                    <X size={18} />
-                  </button>
-                </div>
-
-                <div className="p-5">
-                  <div className="space-y-1.5 text-sm">
-                    <div className="flex justify-between text-slate-600">
-                      <span>Total Claimed</span>
-                      <span>₹{money(active.amount)}</span>
-                    </div>
-                    <div className="flex justify-between font-bold text-ink">
-                      <span>Approved Amount</span>
-                      <span>₹{money(active.net_payable)}</span>
-                    </div>
-                  </div>
-                  <div className="my-3 h-px bg-slate-100" />
-                  <div className="space-y-3.5">
-                    <div>
-                      <label className="mb-1.5 block text-xs font-semibold text-slate-500">UTR Reference</label>
-                      <input className="field w-full" value={utr} onChange={(e) => setUtr(e.target.value)} />
-                    </div>
-                    <div>
-                      <label className="mb-1.5 block text-xs font-semibold text-slate-500">TDS &amp; Other Deductions</label>
-                      <input
-                        className="field w-full"
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        max={approvedAmount}
-                        value={tdsDeduction}
-                        onChange={(e) => setTdsDeduction(e.target.value)}
-                      />
-                    </div>
-                    {canProcessPayments && outstandingAdvance > 0 ? (
-                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="font-semibold text-slate-600">Outstanding Advance</span>
-                          <span className="font-mono font-bold text-slate-800">₹{money(outstandingAdvance)}</span>
-                        </div>
-                        {advanceAmount > 0 ? (
-                          <>
-                            <div className="mt-2 flex items-center gap-2">
-                              <input
-                                className="field w-full"
-                                type="number"
-                                step="0.01"
-                                min="0"
-                                max={Math.min(outstandingAdvance, approvedAmount)}
-                                value={advanceDeducted}
-                                onChange={(e) => setAdvanceDeducted(e.target.value)}
-                              />
-                              <button
-                                type="button"
-                                className="whitespace-nowrap text-xs font-semibold text-red-600 hover:underline"
-                                onClick={removeAdvanceDeduction}
-                              >
-                                Remove
-                              </button>
-                            </div>
-                            {advanceFallsShort ? (
-                              <p className="mt-1.5 text-[11px] text-slate-500">
-                                The advance doesn&apos;t fully cover this claim — the remaining ₹{money(totalDue)} is
-                                paid via UTR as usual.
-                              </p>
-                            ) : null}
-                          </>
-                        ) : (
-                          <button type="button" className="btn-secondary mt-2 w-full text-xs" onClick={applyAdvanceDeduction}>
-                            Deduct from Advance
-                          </button>
-                        )}
-                      </div>
-                    ) : null}
-                    <div className="rounded-lg border border-brand/20 bg-brand/5 px-3.5 py-2.5">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-semibold text-brand/70">Total Due</span>
-                        <span className="font-mono text-base font-bold text-brand">₹{money(totalDue)}</span>
-                      </div>
-                      <p className="mt-0.5 text-[11px] text-slate-500">
-                        Approved amount minus TDS &amp; other deductions{outstandingAdvance > 0 ? ' and advance deducted' : ''}.
-                      </p>
-                    </div>
-                  </div>
-                  {deductionInvalid ? (
-                    <p className="mt-2 text-xs text-amber-700">TDS &amp; other deductions must be between ₹0.00 and the approved amount.</p>
-                  ) : null}
-                  {advanceInvalid ? (
-                    <p className="mt-2 text-xs text-amber-700">
-                      Advance deducted must be between ₹0.00 and ₹{money(outstandingAdvance)}, and can&apos;t push the total
-                      withheld past the approved amount.
-                    </p>
-                  ) : null}
-                  {payError ? <p className="mt-2 text-xs text-red-700">{payError}</p> : null}
-                  <div className="mt-4 flex justify-end gap-2.5">
-                    <button className="btn-secondary" onClick={() => setActive(null)} disabled={saving}>
-                      Cancel
-                    </button>
-                    <button
-                      className="btn-primary"
-                      onClick={submitPayment}
-                      disabled={saving || !utr.trim() || deductionInvalid || advanceInvalid}
-                    >
-                      {saving ? 'Processing...' : 'Record Payment & Post to ERP'}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>,
-            document.body,
-          )
-        : null}
-
+      {active ? (
+        <PayWindow
+          key={active.claim_id}
+          row={active}
+          canProcessPayments={canProcessPayments}
+          onClose={() => setActive(null)}
+          onPaid={async () => {
+            setActive(null);
+            await load();
+          }}
+        />
+      ) : null}
       {reviewClaimId ? (
         <ClaimReviewModal
           claimId={reviewClaimId}
@@ -358,6 +272,6 @@ export default function PaymentQueuePage() {
           }}
         />
       ) : null}
-    </div>
+    </section>
   );
 }

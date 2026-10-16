@@ -804,7 +804,7 @@ export default function TravelDeskPage() {
           </div>
 
           {/* Details & Actions Panel */}
-          <div className="panel sticky top-16 self-start max-h-[calc(100vh-5.5rem)] overflow-y-auto rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="panel sticky top-[calc(var(--app-nav-h,56px)+8px)] self-start transition-[top] duration-200 max-h-[calc(100vh-5.5rem)] overflow-y-auto rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             {bookedSuccess ? (
               <div className="flex flex-col items-center justify-center py-20 text-center">
                 <div className="relative flex h-16 w-16 items-center justify-center">

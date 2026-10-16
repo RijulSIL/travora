@@ -15,6 +15,8 @@ class ApproverScopeOut(BaseModel):
     claim_categories: list[str] = Field(default_factory=list)
     travel_request: bool = False
     exceptions: list[str] = Field(default_factory=list)
+    # This role is a stage in the Relocation Approval workflow.
+    relocation: bool = False
 
 
 class MeOut(BaseModel):
@@ -36,6 +38,7 @@ class MeOut(BaseModel):
     # both claims and travel requests — lets the UI show where the pending count comes from.
     pending_claims_count: int = 0
     pending_travel_requests_count: int = 0
+    pending_relocation_count: int = 0
     hotel_cap_group_a: str | None = None
     payment_queue_total_inr: str | None = None
     exception_requests_pending_count: int = 0
@@ -69,6 +72,9 @@ class MeOut(BaseModel):
     # frontend trusts this directly instead of keeping its own hardcoded copy of the matrix, so
     # RoleGuard/nav visibility automatically track whatever an IT Admin has configured.
     permissions: list[str] = Field(default_factory=list)
+    # The viewer's own advance still left to use (Finance grants it; a paid claim uses it first).
+    # Read-only and only ever this user's own figure — Finance alone manages advances.
+    outstanding_advance: str = "0.00"
 
 
 class PolicyCapOut(BaseModel):

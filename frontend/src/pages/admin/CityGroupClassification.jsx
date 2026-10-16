@@ -1,34 +1,159 @@
-import { Save, Star, Trash } from 'lucide-react';
+import { ChevronRight, Plus, Search, Star } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
+import { Pill } from '../../components/approvals/ApprovalQueueParts';
+import {
+  BTN_GHOST,
+  BTN_MAIN,
+  BTN_NO,
+  BTN_SM,
+  CARD,
+  CardHead,
+  ErrorNote,
+  FIELD,
+  LABEL,
+  PolicyHead,
+  Seg,
+  Sheet,
+  fmtDate,
+  todayIso,
+  useCanConfigurePolicy,
+} from '../../components/policy/PolicyAdminParts';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
 import { adminApi } from '../../services/adminApi';
-import { hasPermission } from '../../services/permissions';
-import { useAuthStore } from '../../store/authStore';
 
-const emptyForm = {
-  city_name: '',
-  group_type: '',
-  effective_from: '2026-04-27',
-  effective_to: '',
-};
+const emptyCity = (groupType) => ({ city_name: '', group_type: groupType, effective_from: todayIso(), effective_to: '' });
 
-const emptyTierForm = { code: '', display_name: '' };
+function CitySheet({ city, tiers, tierCode, readOnly, onSaved, onClose }) {
+  const activeTiers = tiers.filter((t) => !t.is_deprecated);
+  const [form, setForm] = useState(emptyCity(tierCode));
+  useEffect(() => {
+    const usable = tiers.filter((t) => !t.is_deprecated);
+    setForm(city ? { ...city, effective_to: city.effective_to || '' } : emptyCity(usable.some((t) => t.code === tierCode) ? tierCode : usable[0]?.code || ''));
+  }, [city, tierCode, tiers]);
+  // A classification can't change once its start date has arrived (the backend locks it), so
+  // only future-dated ones are editable.
+  const locked = Boolean(city) && city.effective_from <= todayIso();
+  const ro = readOnly || locked;
+  const set = (patch) => setForm((f) => ({ ...f, ...patch }));
+  const tierName = (code) => tiers.find((t) => t.code === code)?.display_name || code;
+
+  const saveAction = useAsyncAction(async () => {
+    const payload = { city_name: form.city_name.trim(), group_type: form.group_type, effective_from: form.effective_from, effective_to: form.effective_to || null };
+    if (city) await adminApi.updateCityGroup(city.id, payload);
+    else await adminApi.createCityGroup(payload);
+    await onSaved();
+  });
+  const deleteAction = useAsyncAction(async () => {
+    await adminApi.deleteCityGroup(city.id);
+    await onSaved();
+  });
+
+  return (
+    <Sheet
+      label="City details"
+      title={city ? city.city_name : 'Add a city'}
+      sub={city ? `In ${tierName(city.group_type)}` : 'Put a city in a group'}
+      onClose={city ? onClose : null}
+      footer={
+        ro ? null : (
+          <>
+            {city ? (
+              <button type="button" className={BTN_NO} disabled={deleteAction.loading} onClick={() => deleteAction.run().catch(() => {})}>
+                Remove
+              </button>
+            ) : null}
+            <button type="button" className={BTN_MAIN} disabled={!form.city_name.trim() || !form.group_type || !form.effective_from || saveAction.loading} onClick={() => saveAction.run().catch(() => {})}>
+              {saveAction.loading ? 'Saving…' : city ? 'Save city' : 'Add city'}
+            </button>
+          </>
+        )
+      }
+    >
+      <ErrorNote error={saveAction.error || deleteAction.error} />
+      {locked && !readOnly ? (
+        <p className="rounded-[10px] border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-800">
+          This has been in use since {fmtDate(city.effective_from)}, so it can&apos;t be changed or removed.
+        </p>
+      ) : null}
+      <div>
+        <label className={LABEL} htmlFor="city-name">
+          City
+        </label>
+        <input id="city-name" className={FIELD} readOnly={ro} placeholder="e.g. Nagpur" value={form.city_name} onChange={(e) => set({ city_name: e.target.value })} />
+      </div>
+      <div>
+        <span className={LABEL}>Group</span>
+        <Seg label="Group" disabled={ro} value={form.group_type} onChange={(v) => set({ group_type: v })} options={(ro ? tiers : activeTiers).map((t) => ({ key: t.code, label: t.code }))} />
+      </div>
+      <div className="grid grid-cols-2 gap-2.5">
+        <div>
+          <label className={LABEL} htmlFor="city-from">
+            From
+          </label>
+          <input id="city-from" type="date" className={FIELD} readOnly={ro} value={form.effective_from} onChange={(e) => set({ effective_from: e.target.value })} />
+        </div>
+        <div>
+          <label className={LABEL} htmlFor="city-to">
+            Until <small className="font-medium text-slate-400">(optional)</small>
+          </label>
+          <input id="city-to" type="date" className={FIELD} readOnly={ro} value={form.effective_to} onChange={(e) => set({ effective_to: e.target.value })} />
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
+function NewTierSheet({ onSaved, onClose }) {
+  const [form, setForm] = useState({ code: '', display_name: '' });
+  const addAction = useAsyncAction(async () => {
+    await adminApi.createCityGroupTier({ code: form.code.trim(), display_name: form.display_name.trim() });
+    await onSaved(form.code.trim());
+  });
+  return (
+    <Sheet
+      label="New group"
+      title="New group"
+      sub="Cities in it get their own caps on Expense limits"
+      onClose={onClose}
+      footer={
+        <button type="button" className={BTN_MAIN} disabled={!form.code.trim() || !form.display_name.trim() || addAction.loading} onClick={() => addAction.run().catch(() => {})}>
+          {addAction.loading ? 'Adding…' : 'Add group'}
+        </button>
+      }
+    >
+      <ErrorNote error={addAction.error} />
+      <div className="grid grid-cols-[90px_minmax(0,1fr)] gap-2.5">
+        <div>
+          <label className={LABEL} htmlFor="tier-code">
+            Code
+          </label>
+          <input id="tier-code" className={FIELD} placeholder="e.g. D" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} />
+        </div>
+        <div>
+          <label className={LABEL} htmlFor="tier-name">
+            Name
+          </label>
+          <input id="tier-name" className={FIELD} placeholder="e.g. Group D — Smaller towns" value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
+        </div>
+      </div>
+      <p className="text-xs text-slate-500">The code can&apos;t be changed later; the name can.</p>
+    </Sheet>
+  );
+}
 
 export default function CityGroupClassification() {
   useSetPageTitle('City Groups');
+  const isViewOnly = !useCanConfigurePolicy();
   const [cities, setCities] = useState([]);
   const [tiers, setTiers] = useState([]);
-  const [form, setForm] = useState(emptyForm);
-  const [editingId, setEditingId] = useState(null);
-  const [tierForm, setTierForm] = useState(emptyTierForm);
-  // In-progress display-name edits per tier id, before "Save" is clicked.
-  const [tierNameDrafts, setTierNameDrafts] = useState({});
+  const [tierCode, setTierCode] = useState(null);
+  const [cityId, setCityId] = useState(null);
+  const [query, setQuery] = useState('');
+  const [newTier, setNewTier] = useState(false);
+  const [rename, setRename] = useState(null);
   const [loadError, setLoadError] = useState(null);
-  // The actual configure_policy permission, not a hardcoded role list — see ImpactLevelMaster.jsx.
-  const permissions = useAuthStore((state) => state.profile?.permissions);
-  const isViewOnly = !hasPermission(permissions, 'configure_policy');
 
   const load = async () => {
     try {
@@ -36,7 +161,7 @@ export default function CityGroupClassification() {
       const [cityRes, tierRes] = await Promise.all([adminApi.cityGroups(), adminApi.cityGroupTiers()]);
       setCities(cityRes.data);
       setTiers(tierRes.data);
-      setForm((current) => (current.group_type ? current : { ...current, group_type: tierRes.data.find((t) => !t.is_deprecated)?.code || '' }));
+      setTierCode((current) => current || tierRes.data.find((t) => !t.is_deprecated)?.code || tierRes.data[0]?.code || null);
     } catch (error) {
       setLoadError(error);
     }
@@ -45,215 +170,187 @@ export default function CityGroupClassification() {
     load();
   }, []);
 
-  const saveAction = useAsyncAction(async () => {
-    const payload = { ...form, effective_to: form.effective_to || null };
-    if (editingId) await adminApi.updateCityGroup(editingId, payload);
-    else await adminApi.createCityGroup(payload);
-    setForm({ ...emptyForm, group_type: form.group_type });
-    setEditingId(null);
-    await load();
-  });
-  const deleteAction = useAsyncAction(async (id) => {
-    await adminApi.deleteCityGroup(id);
-    await load();
-  });
-
   // Every tier write carries BOTH display_name and is_default (the backend's update schema
-  // requires both together) — this merges in just the field a given action actually changes.
-  const saveTier = (tier, overrides) =>
-    adminApi.updateCityGroupTier(tier.id, {
-      display_name: tier.display_name,
-      is_default: tier.is_default,
-      ...overrides,
-    });
-  const renameTierAction = useAsyncAction(async (tier) => {
-    await saveTier(tier, { display_name: tierNameDrafts[tier.id] });
-    setTierNameDrafts((current) => {
-      const next = { ...current };
-      delete next[tier.id];
-      return next;
-    });
+  // requires both together) — this merges in just the field a given action changes.
+  const saveTier = (tier, overrides) => adminApi.updateCityGroupTier(tier.id, { display_name: tier.display_name, is_default: tier.is_default, ...overrides });
+  const renameAction = useAsyncAction(async (tier, name) => {
+    await saveTier(tier, { display_name: name });
+    setRename(null);
     await load();
   });
-  const setDefaultTierAction = useAsyncAction(async (tier) => {
+  const defaultAction = useAsyncAction(async (tier) => {
     await saveTier(tier, { is_default: true });
     await load();
   });
-  const deprecateTierAction = useAsyncAction(async (tierId) => {
-    await adminApi.deprecateCityGroupTier(tierId);
+  const deprecateAction = useAsyncAction(async (tier) => {
+    await adminApi.deprecateCityGroupTier(tier.id);
     await load();
   });
-  const addTierAction = useAsyncAction(async () => {
-    await adminApi.createCityGroupTier(tierForm);
-    setTierForm(emptyTierForm);
-    await load();
-  });
+  const error = loadError || renameAction.error || defaultAction.error || deprecateAction.error;
 
-  const error =
-    loadError ||
-    saveAction.error ||
-    deleteAction.error ||
-    renameTierAction.error ||
-    setDefaultTierAction.error ||
-    deprecateTierAction.error ||
-    addTierAction.error;
-
-  const activeTiers = tiers.filter((tier) => !tier.is_deprecated);
-  // Deprecated tiers still get a column below so existing city assignments to them stay visible
-  // — only the "Add New City" dropdown and the "set as default" action exclude them.
-  const grouped = tiers.map((tier) => ({
-    tier,
-    rows: cities.filter((city) => city.group_type === tier.code),
-  }));
+  const tier = tiers.find((t) => t.code === tierCode);
+  const inTier = cities.filter((c) => c.group_type === tierCode);
+  const q = query.trim().toLowerCase();
+  const shown = inTier.filter((c) => !q || c.city_name.toLowerCase().includes(q)).sort((a, b) => a.city_name.localeCompare(b.city_name));
+  const city = cities.find((c) => c.id === cityId) || null;
 
   return (
-    <>
-      {error ? <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error.response?.data?.detail || error.message}</div> : null}
-
-      <section className="panel p-6 mb-6">
-        <div className="mb-5 border-b border-line pb-4 flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-bold text-slate-900">City Group Tiers</h2>
-            <p className="text-sm text-slate-500 mt-1">Add as many tiers as you need. The default tier is what an unclassified city falls back to.</p>
-          </div>
-          {isViewOnly ? <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">View Only</span> : null}
-        </div>
-        <div className="divide-y divide-slate-100">
-          {tiers.map((tier) => {
-            const draft = tierNameDrafts[tier.id] ?? tier.display_name;
-            const dirty = draft !== tier.display_name;
-            return (
-              <div key={tier.id} className="flex flex-wrap items-center gap-3 py-3">
-                <span className="inline-flex items-center justify-center rounded-md bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-700 min-w-[3rem] text-center">{tier.code}</span>
-                <input
-                  className="field flex-1 min-w-48 text-slate-900"
-                  readOnly={isViewOnly}
-                  value={draft}
-                  onChange={(event) => setTierNameDrafts({ ...tierNameDrafts, [tier.id]: event.target.value })}
-                />
-                {dirty && !isViewOnly ? (
-                  <button className="btn-secondary h-8 px-3 text-[11px] font-bold" onClick={() => renameTierAction.run(tier)} disabled={renameTierAction.loading}>
-                    <Save size={14} />Save
-                  </button>
-                ) : null}
-                <button
-                  className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-bold ${tier.is_default ? 'bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-600/20' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
-                  disabled={isViewOnly || tier.is_default || tier.is_deprecated}
-                  onClick={() => setDefaultTierAction.run(tier)}
-                  title={tier.is_default ? 'Default tier' : 'Set as default'}
-                >
-                  <Star size={12} fill={tier.is_default ? 'currentColor' : 'none'} />
-                  {tier.is_default ? 'Default' : 'Set default'}
-                </button>
-                {tier.is_deprecated ? (
-                  <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-500">Deprecated</span>
-                ) : !isViewOnly ? (
-                  <button
-                    className="flex h-8 w-8 items-center justify-center rounded-lg border border-transparent text-slate-400 transition-all hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
-                    onClick={() => deprecateTierAction.run(tier.id)}
-                    disabled={deprecateTierAction.loading || tier.is_default}
-                    title={tier.is_default ? "Can't deprecate the default tier" : 'Deprecate'}
-                  >
-                    <Trash size={16} />
-                  </button>
-                ) : null}
-              </div>
-            );
-          })}
-          {tiers.length === 0 ? <div className="py-4 text-center text-sm text-slate-400 italic">No tiers configured yet.</div> : null}
-        </div>
+    <section className="flex flex-col gap-3.5">
+      <PolicyHead title="City groups" sub="Which group each city is in decides the hotel, food and day-visit caps there. A city that isn't listed falls into the default group.">
         {!isViewOnly ? (
-          <div className="mt-4 grid gap-3 md:grid-cols-12 items-end border-t border-line pt-4">
-            <div className="md:col-span-3">
-              <label className="mb-1.5 block text-[12px] font-bold text-slate-600 uppercase tracking-wider">New Tier Code</label>
-              <input className="field w-full text-slate-900" placeholder="e.g. D" value={tierForm.code} onChange={(event) => setTierForm({ ...tierForm, code: event.target.value })} />
-            </div>
-            <div className="md:col-span-6">
-              <label className="mb-1.5 block text-[12px] font-bold text-slate-600 uppercase tracking-wider">Display Name</label>
-              <input className="field w-full text-slate-900" placeholder="e.g. Tier D — Smaller Towns" value={tierForm.display_name} onChange={(event) => setTierForm({ ...tierForm, display_name: event.target.value })} />
-            </div>
-            <div className="md:col-span-3">
-              <button className="btn-primary w-full justify-center h-10 shadow-sm" onClick={addTierAction.run} disabled={addTierAction.loading || !tierForm.code.trim() || !tierForm.display_name.trim()}>
-                {addTierAction.loading ? 'Adding…' : 'Add Tier'}
-              </button>
-            </div>
-          </div>
+          <button
+            type="button"
+            className={BTN_GHOST}
+            onClick={() => {
+              setNewTier(true);
+              setCityId(null);
+            }}
+          >
+            <Plus size={15} />
+            New group
+          </button>
         ) : null}
-      </section>
+      </PolicyHead>
+      <ErrorNote error={error} />
 
-      <section className="panel p-6 mb-6">
-        <div className="mb-5 border-b border-line pb-4 flex items-center justify-between">
-          <h2 className="text-lg font-bold text-slate-900">{editingId ? 'Edit City Classification' : 'Add New City'}</h2>
-          {isViewOnly ? <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">View Only</span> : null}
-        </div>
-
-        <div className="grid gap-5 md:grid-cols-12 items-end">
-          <div className="md:col-span-3">
-            <label className="mb-1.5 block text-[12px] font-bold text-slate-600 uppercase tracking-wider">City Name</label>
-            <input className="field w-full text-slate-900" readOnly={isViewOnly} placeholder="e.g. Mumbai" value={form.city_name} onChange={(event) => setForm({ ...form, city_name: event.target.value })} />
-          </div>
-          <div className="md:col-span-2">
-            <label className="mb-1.5 block text-[12px] font-bold text-slate-600 uppercase tracking-wider">Group</label>
-            <select className="field w-full text-slate-900" disabled={isViewOnly} value={form.group_type} onChange={(event) => setForm({ ...form, group_type: event.target.value })}>
-              {activeTiers.map((tier) => (
-                <option key={tier.id} value={tier.code}>{tier.code}</option>
-              ))}
-            </select>
-          </div>
-          <div className="md:col-span-3">
-            <label className="mb-1.5 block text-[12px] font-bold text-slate-600 uppercase tracking-wider">Effective From</label>
-            <input className="field w-full text-slate-900" readOnly={isViewOnly} type="date" value={form.effective_from} onChange={(event) => setForm({ ...form, effective_from: event.target.value })} />
-          </div>
-          <div className="md:col-span-3">
-            <label className="mb-1.5 block text-[12px] font-bold text-slate-600 uppercase tracking-wider">Effective To</label>
-            <input className="field w-full text-slate-900" readOnly={isViewOnly} type="date" value={form.effective_to} onChange={(event) => setForm({ ...form, effective_to: event.target.value })} />
-          </div>
-          <div className="md:col-span-1">
-            {!isViewOnly ? <button className="btn-primary w-full justify-center h-10 shadow-sm" onClick={saveAction.run} disabled={saveAction.loading}><Save size={16} />{saveAction.loading ? '' : 'Save'}</button> : null}
-          </div>
-        </div>
-      </section>
-      <div className="mt-4 grid gap-6 lg:grid-cols-3">
-        {grouped.map(({ tier, rows }) => (
-          <section key={tier.id} className="panel overflow-hidden flex flex-col">
-            <div className="bg-slate-50/80 border-b border-slate-200 px-5 py-3.5 flex items-center justify-between">
-              <h3 className="font-bold text-slate-800">{tier.display_name}{tier.is_deprecated ? ' (Deprecated)' : ''}</h3>
-              <span className="bg-white text-slate-600 text-[11px] font-bold px-2.5 py-0.5 rounded-full shadow-sm border border-slate-200/60">{rows.length} cities</span>
-            </div>
-            <div className="divide-y divide-slate-100 flex-1 overflow-auto max-h-[500px]">
-              {rows.map((city) => (
-                <div
-                  key={city.id}
-                  className="flex w-full items-center justify-between gap-3 px-5 py-3.5 text-sm hover:bg-slate-50 transition-colors group"
-                >
-                  <button
-                    disabled={isViewOnly}
-                    className="flex flex-1 flex-col items-start text-left"
-                    onClick={() => {
-                      setForm({ ...city, effective_to: city.effective_to || '' });
-                      setEditingId(city.id);
-                    }}
-                  >
-                    <span className="font-bold text-slate-900 group-hover:text-brand transition-colors">{city.city_name}</span>
-                    <span className="text-[11px] text-slate-500 font-medium mt-0.5">Since {city.effective_from}</span>
-                  </button>
-                  {!isViewOnly ? (
-                    <button
-                      className="flex h-8 w-8 items-center justify-center rounded-lg border border-transparent text-slate-400 opacity-0 transition-all hover:border-red-200 hover:bg-red-50 hover:text-red-600 group-hover:opacity-100 disabled:opacity-50"
-                      onClick={(e) => { e.stopPropagation(); deleteAction.run(city.id); }}
-                      disabled={deleteAction.loading}
-                      title="Delete"
-                    >
-                      <Trash size={16} />
-                    </button>
-                  ) : null}
-                </div>
-              ))}
-              {rows.length === 0 && <div className="p-6 text-center text-sm text-slate-400 italic">No cities classified in this tier.</div>}
-            </div>
-          </section>
-        ))}
+      <div role="group" aria-label="Groups" className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
+        {tiers.map((t) => {
+          const n = cities.filter((c) => c.group_type === t.code).length;
+          const on = t.code === tierCode;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              aria-pressed={on}
+              onClick={() => {
+                setTierCode(t.code);
+                setCityId(null);
+                setRename(null);
+              }}
+              className={`flex flex-col gap-1 rounded-[14px] border bg-white px-3.5 py-3 text-left ${on ? 'border-brand bg-[#f4faf7] ring-1 ring-inset ring-brand' : 'border-slate-200 hover:bg-slate-50'}`}
+            >
+              <span className="flex items-center justify-between gap-1.5">
+                <b className="text-[13px] text-ink">{t.display_name}</b>
+                <Pill>{t.code}</Pill>
+              </span>
+              <span className="text-xl font-bold text-ink">{n}</span>
+              <span className="text-xs text-slate-500">
+                {n === 1 ? 'city' : 'cities'}
+                {t.is_default ? (
+                  <b className="text-amber-700">
+                    {' '}
+                    · <Star size={11} className="inline -translate-y-px fill-current" /> Default for unlisted cities
+                  </b>
+                ) : null}
+                {t.is_deprecated ? ' · Deprecated' : ''}
+              </span>
+            </button>
+          );
+        })}
       </div>
-    </>
+
+      {tier ? (
+        <div className="grid items-start gap-3.5 lg:grid-cols-[minmax(0,1fr)_380px]">
+          <section aria-label={tier.display_name} className={CARD}>
+            <CardHead title={tier.display_name} sub={tier.is_default ? 'Default group: every city not listed anywhere lands here too' : `${inTier.length} ${inTier.length === 1 ? 'city' : 'cities'}`}>
+              <label className="relative">
+                <span className="sr-only">Search cities</span>
+                <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input className={`${FIELD} h-8 w-[200px] pl-8`} placeholder="Search cities" value={query} onChange={(e) => setQuery(e.target.value)} />
+              </label>
+              {!isViewOnly && !tier.is_default && !tier.is_deprecated ? (
+                <button type="button" className={BTN_SM} disabled={defaultAction.loading} onClick={() => defaultAction.run(tier).catch(() => {})}>
+                  <Star size={12} />
+                  Make default
+                </button>
+              ) : null}
+              {!isViewOnly && rename == null ? (
+                <button type="button" className={BTN_SM} onClick={() => setRename(tier.display_name)}>
+                  Rename
+                </button>
+              ) : null}
+              {!isViewOnly && !tier.is_default && !tier.is_deprecated ? (
+                <button type="button" className={`${BTN_SM} text-rose-700`} disabled={deprecateAction.loading} title="Stops it being offered for new cities; existing ones keep it" onClick={() => deprecateAction.run(tier).catch(() => {})}>
+                  Deprecate
+                </button>
+              ) : null}
+            </CardHead>
+            {rename != null ? (
+              <form
+                className="flex flex-wrap items-center gap-2 border-b border-slate-100 bg-slate-50 px-4 py-2.5"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  renameAction.run(tier, rename.trim()).catch(() => {});
+                }}
+              >
+                <label className="sr-only" htmlFor="tier-rename">
+                  Group name
+                </label>
+                <input id="tier-rename" className={`${FIELD} h-8 max-w-[320px] flex-1`} value={rename} onChange={(e) => setRename(e.target.value)} autoFocus />
+                <button type="submit" className={`${BTN_MAIN} h-8`} disabled={!rename.trim() || rename.trim() === tier.display_name || renameAction.loading}>
+                  Save name
+                </button>
+                <button type="button" className={`${BTN_GHOST} h-8`} onClick={() => setRename(null)}>
+                  Cancel
+                </button>
+              </form>
+            ) : null}
+            {shown.length ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3">
+                {shown.map((c) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    aria-pressed={c.id === cityId}
+                    onClick={() => {
+                      setCityId(c.id);
+                      setNewTier(false);
+                    }}
+                    className={`flex items-center justify-between gap-2 border-r border-t border-slate-100 px-4 py-2.5 text-left hover:bg-[#fbfdfc] ${c.id === cityId ? 'bg-[#f4faf7]' : ''}`}
+                  >
+                    <span className="min-w-0">
+                      <b className="block truncate text-[13px] text-ink">{c.city_name}</b>
+                      <span className="text-xs text-slate-500">
+                        since {fmtDate(c.effective_from)}
+                        {c.effective_to ? ` · until ${fmtDate(c.effective_to)}` : ''}
+                      </span>
+                    </span>
+                    <ChevronRight size={14} className="shrink-0 text-slate-400" />
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="px-4 py-7 text-center text-[13px] text-slate-500">
+                {q ? 'No city matches that search.' : tier.is_default ? 'No city is listed here by name. Every unlisted city still falls into this group.' : 'No cities in this group yet.'}
+              </p>
+            )}
+          </section>
+          {newTier && !isViewOnly ? (
+            <NewTierSheet
+              onClose={() => setNewTier(false)}
+              onSaved={async (code) => {
+                setNewTier(false);
+                await load();
+                setTierCode(code);
+              }}
+            />
+          ) : isViewOnly && !city ? (
+            <aside className={`${CARD} px-4 py-6 text-center text-[13px] text-slate-500`}>Pick a city to see its details.</aside>
+          ) : (
+            <CitySheet
+              city={city}
+              tiers={tiers}
+              tierCode={tierCode}
+              readOnly={isViewOnly}
+              onClose={() => setCityId(null)}
+              onSaved={async () => {
+                setCityId(null);
+                await load();
+              }}
+            />
+          )}
+        </div>
+      ) : null}
+    </section>
   );
 }

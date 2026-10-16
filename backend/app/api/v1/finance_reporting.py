@@ -28,6 +28,7 @@ from app.services.finance_reporting_service import (
     generate_report,
     get_gst_summary,
     get_policy_violations,
+    get_report_filter_options,
     get_spend_by_category,
     list_audit_logs,
     list_erp_ledger_entries,
@@ -71,6 +72,15 @@ async def gst_summary(
     _claims: dict = Depends(require_permission("view_reports")),
 ) -> dict:
     return await get_gst_summary(filters, db)
+
+
+@router.get("/finance/filter-options")
+async def report_filter_options(
+    db: AsyncSession = Depends(get_db),
+    _claims: dict = Depends(require_permission("view_reports")),
+) -> dict:
+    """Departments, invoice categories and levels to choose from in the report filters."""
+    return await get_report_filter_options(db)
 
 
 @router.get("/finance/spend-by-category", response_model=list[SpendByCategoryOut])

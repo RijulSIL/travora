@@ -6,11 +6,14 @@ from fastapi import HTTPException, status
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timezone import today_ist
+from app.models.expense_category import ExpenseCategory
 from app.models.policy import (
     CityGroup,
     CityGroupTier,
     ExpenseLimit,
     ImpactLevel,
+    PolicyStatus,
     PolicyVersion,
 )
 
@@ -85,7 +88,11 @@ async def get_active_policy_version(travel_date: date, db: AsyncSession) -> Poli
     should actually govern a given travel_date is whichever ARCHIVED-or-ACTIVE version's
     [effective_from, effective_to) window contains it. This also means a scheduled version
     takes over automatically the moment its date arrives — no cron/background job needed,
-    exactly like resolve_city_group's date-range resolution above, which this mirrors."""
+    exactly like resolve_city_group's date-range resolution above, which this mirrors.
+
+    A version stays in effect until a newer one starts: if no window covers travel_date (e.g.
+    the latest version carries an end date but nothing has been scheduled after it), the most
+    recent version that had started by then still governs it."""
     result = await db.execute(
         select(PolicyVersion)
         .where(
@@ -99,8 +106,60 @@ async def get_active_policy_version(travel_date: date, db: AsyncSession) -> Poli
     )
     policy = result.scalars().first()
     if policy is None:
+        policy = (
+            await db.execute(
+                select(PolicyVersion)
+                .where(
+                    PolicyVersion.effective_from.is_not(None),
+                    PolicyVersion.effective_from <= travel_date,
+                    PolicyVersion.status.in_((PolicyStatus.ACTIVE, PolicyStatus.ARCHIVED)),
+                )
+                .order_by(PolicyVersion.effective_from.desc(), PolicyVersion.id.desc())
+            )
+        ).scalars().first()
+    if policy is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No active policy version for travel date")
     return policy
+
+
+async def archive_superseded_policy_versions(db: AsyncSession, today: date | None = None) -> list[PolicyVersion]:
+    """A version is archived only once a newer version has actually taken effect — not when the
+    newer one is approved or scheduled. Run from the hourly monitor (and before scheduling), so
+    the stored status catches up on the day the handover happens. Doesn't commit."""
+    today = today or today_ist()
+    started = (
+        await db.execute(
+            select(PolicyVersion).where(
+                PolicyVersion.status.in_((PolicyStatus.ACTIVE, PolicyStatus.ARCHIVED)),
+                PolicyVersion.effective_from.is_not(None),
+                PolicyVersion.effective_from <= today,
+            )
+        )
+    ).scalars().all()
+    archived = []
+    for version in started:
+        replaced = any(other.effective_from > version.effective_from for other in started if other.id != version.id)
+        if version.status == PolicyStatus.ACTIVE and replaced:
+            version.status = PolicyStatus.ARCHIVED
+            archived.append(version)
+    return archived
+
+
+async def archive_replaced_policy_versions_job(db: AsyncSession) -> None:
+    """Hourly monitor entry point: archives replaced versions, logs each one and commits."""
+    from app.services.audit_service import log_event
+
+    for version in await archive_superseded_policy_versions(db):
+        await log_event(
+            entity_type="policy_version",
+            entity_id=str(version.id),
+            action="policy_version_archived",
+            actor_id=None,
+            old={"status": PolicyStatus.ACTIVE.value},
+            new={"status": PolicyStatus.ARCHIVED.value, "reason": "a newer version took effect"},
+            db=db,
+        )
+    await db.commit()
 
 
 async def get_expense_limits(
@@ -149,9 +208,9 @@ async def diff_policy_versions(v1_id: int, v2_id: int, db: AsyncSession) -> dict
         "twin_sharing_mandatory",
         "is_deprecated",
     ]
+    # Matched by level code + city group, not impact_level_id: every version has its own copy of
+    # each level (new ids), so comparing ids would report every cap as removed and re-added.
     limit_fields = [
-        "impact_level_id",
-        "city_group",
         "hotel_cap",
         "hotel_is_hard_block",
         "food_cap",
@@ -166,47 +225,66 @@ async def diff_policy_versions(v1_id: int, v2_id: int, db: AsyncSession) -> dict
     v2_levels = (await db.execute(select(ImpactLevel).where(ImpactLevel.policy_version_id == v2_id))).scalars().all()
     v1_limits = (await db.execute(select(ExpenseLimit).where(ExpenseLimit.policy_version_id == v1_id))).scalars().all()
     v2_limits = (await db.execute(select(ExpenseLimit).where(ExpenseLimit.policy_version_id == v2_id))).scalars().all()
+    v1_categories = (
+        await db.execute(select(ExpenseCategory).where(ExpenseCategory.policy_version_id == v1_id))
+    ).scalars().all()
+    v2_categories = (
+        await db.execute(select(ExpenseCategory).where(ExpenseCategory.policy_version_id == v2_id))
+    ).scalars().all()
 
-    diffs: dict[str, list[dict]] = {"impact_levels": [], "expense_limits": []}
-    levels_v1_by_code = {level.level_code: level for level in v1_levels}
-    levels_v2_by_code = {level.level_code: level for level in v2_levels}
-    for key in sorted(set(levels_v1_by_code) | set(levels_v2_by_code)):
-        previous = levels_v1_by_code.get(key)
-        current = levels_v2_by_code.get(key)
-        before = _model_dict(previous, impact_fields) if previous else None
-        after = _model_dict(current, impact_fields) if current else None
-        if before == after:
-            continue
-        if before is None:
-            change_type = "added"
-        elif after is None:
-            change_type = "removed"
-        else:
-            change_type = "modified"
-        diffs["impact_levels"].append(
-            {"key": key, "change_type": change_type, "before": before, "after": after}
-        )
+    def compare(rows_v1: dict, rows_v2: dict, fields, out: list[dict], key_out=lambda key: key) -> None:
+        for key in sorted(set(rows_v1) | set(rows_v2)):
+            previous, current = rows_v1.get(key), rows_v2.get(key)
+            before = fields(previous) if previous is not None else None
+            after = fields(current) if current is not None else None
+            if before == after:
+                continue
+            change_type = "added" if before is None else "removed" if after is None else "modified"
+            out.append({"key": key_out(key), "change_type": change_type, "before": before, "after": after})
 
-    limits_v1_by_key = {(limit.impact_level_id, limit.city_group): limit for limit in v1_limits}
-    limits_v2_by_key = {(limit.impact_level_id, limit.city_group): limit for limit in v2_limits}
-    for key in sorted(
-        set(limits_v1_by_key) | set(limits_v2_by_key), key=lambda item: (item[0], item[1])
-    ):
-        previous = limits_v1_by_key.get(key)
-        current = limits_v2_by_key.get(key)
-        before = _model_dict(previous, limit_fields) if previous else None
-        after = _model_dict(current, limit_fields) if current else None
-        if before == after:
-            continue
-        if before is None:
-            change_type = "added"
-        elif after is None:
-            change_type = "removed"
-        else:
-            change_type = "modified"
-        diffs["expense_limits"].append(
-            {"key": list(key), "change_type": change_type, "before": before, "after": after}
-        )
+    diffs: dict[str, list[dict]] = {"impact_levels": [], "expense_limits": [], "expense_categories": []}
+    compare(
+        {level.level_code: level for level in v1_levels},
+        {level.level_code: level for level in v2_levels},
+        lambda level: _model_dict(level, impact_fields),
+        diffs["impact_levels"],
+    )
+
+    def limits_by_key(limits, levels) -> dict:
+        code_by_id = {getattr(level, "id", None): level.level_code for level in levels}
+        return {
+            (code_by_id.get(limit.impact_level_id, f"#{limit.impact_level_id}"), limit.city_group): limit
+            for limit in limits
+        }
+
+    compare(
+        limits_by_key(v1_limits, v1_levels),
+        limits_by_key(v2_limits, v2_levels),
+        lambda limit: _model_dict(limit, limit_fields),
+        diffs["expense_limits"],
+        key_out=list,
+    )
+
+    def categories_by_name(categories) -> dict:
+        name_by_id = {category.id: category.name for category in categories}
+        return {
+            category.name: {
+                "parent": name_by_id.get(category.parent_category_id),
+                "bill_mandatory": category.bill_mandatory,
+                "gst_invoice_required": category.gst_invoice_required,
+                "blacklisted_items": sorted(category.blacklisted_items or []),
+                "notes": category.notes,
+                "is_active": category.is_active,
+            }
+            for category in categories
+        }
+
+    compare(
+        categories_by_name(v1_categories),
+        categories_by_name(v2_categories),
+        lambda row: row,
+        diffs["expense_categories"],
+    )
     return diffs
 
 

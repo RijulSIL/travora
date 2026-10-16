@@ -1,51 +1,16 @@
-import { Mail, RotateCcw, Save, Trash } from 'lucide-react';
+import { Mail, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
+import { Pill } from '../../components/approvals/ApprovalQueueParts';
+import { BTN_GHOST, BTN_MAIN, BTN_SM, CARD, CardHead, ErrorNote, FIELD, PolicyHead, Toggle, useCanConfigurePolicy } from '../../components/policy/PolicyAdminParts';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
 import { adminApi } from '../../services/adminApi';
-import { hasPermission } from '../../services/permissions';
-import { useAuthStore } from '../../store/authStore';
 
-const SECTIONS = [
-  {
-    type: 'PROJECT_CODE',
-    title: 'Project Codes',
-    description: 'Offered in the Project Code dropdown when a traveler picks Project as the travel type.',
-    valueLabel: 'Project Code',
-    valuePlaceholder: 'e.g. PRJ-1024',
-    labelLabel: 'Description (optional)',
-    labelPlaceholder: 'e.g. Plant expansion — Phase 2',
-    empty: 'No project codes configured yet. Project travel can’t be requested until at least one is added.',
-  },
-  {
-    type: 'TRIP_PURPOSE',
-    title: 'Trip Purposes',
-    description: 'Offered in the Trip Purpose dropdown on every travel request.',
-    valueLabel: 'Purpose',
-    valuePlaceholder: 'e.g. Client Meeting',
-    labelLabel: null,
-    labelPlaceholder: '',
-    empty: 'No trip purposes configured yet. Travel requests can’t be submitted until at least one is added.',
-  },
-];
+const ADD_LINE = 'flex flex-wrap gap-2 border-t border-slate-100 bg-slate-50 px-4 py-3';
 
-function OptionSection({ section, options, isViewOnly, onChanged }) {
-  const [form, setForm] = useState({ value: '', label: '' });
-  // In-progress edits per option id ({ value, label }), before "Save" is clicked.
-  const [drafts, setDrafts] = useState({});
-  const hasDescription = Boolean(section.labelLabel);
-
-  const addAction = useAsyncAction(async () => {
-    await adminApi.createTravelOption({
-      option_type: section.type,
-      value: form.value.trim(),
-      label: hasDescription ? form.label.trim() || null : null,
-    });
-    setForm({ value: '', label: '' });
-    await onChanged();
-  });
-  const updateAction = useAsyncAction(async (option, overrides) => {
+function useOptionUpdate(onChanged) {
+  return useAsyncAction(async (option, overrides) => {
     await adminApi.updateTravelOption(option.id, {
       value: option.value,
       label: option.label,
@@ -53,325 +18,281 @@ function OptionSection({ section, options, isViewOnly, onChanged }) {
       notify_project_stakeholders: option.notify_project_stakeholders,
       ...overrides,
     });
-    setDrafts((current) => {
-      const next = { ...current };
-      delete next[option.id];
-      return next;
-    });
     await onChanged();
   });
+}
 
-  const error = addAction.error || updateAction.error;
-  const active = options.filter((option) => option.is_active);
-  const inactive = options.filter((option) => !option.is_active);
-
+/** Inline editor for an option's value (and description, for project codes). */
+function EditOption({ option, withLabel, update, onDone }) {
+  const [value, setValue] = useState(option.value);
+  const [label, setLabel] = useState(option.label || '');
   return (
-    <section className="panel p-6 mb-6">
-      <div className="mb-5 border-b border-line pb-4 flex items-center justify-between gap-3">
-        <div>
-          <h2 className="text-lg font-bold text-slate-900">{section.title}</h2>
-          <p className="text-sm text-slate-500 mt-1">{section.description}</p>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <span className="inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700 ring-1 ring-inset ring-emerald-600/20">
-            {active.length} active
-          </span>
-          {isViewOnly ? <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">View Only</span> : null}
-        </div>
-      </div>
+    <form
+      className="flex flex-1 flex-wrap items-center gap-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        // Purposes have no separate description, so their label simply follows the value.
+        update
+          .run(option, { value: value.trim(), label: withLabel ? label.trim() || null : value.trim() })
+          .then(onDone)
+          .catch(() => {});
+      }}
+    >
+      <input aria-label="Value" className={`${FIELD} h-8 w-[180px]`} value={value} onChange={(e) => setValue(e.target.value)} autoFocus />
+      {withLabel ? <input aria-label="Description" className={`${FIELD} h-8 min-w-[160px] flex-1`} placeholder="Description (optional)" value={label} onChange={(e) => setLabel(e.target.value)} /> : null}
+      <button type="submit" className={`${BTN_MAIN} h-8`} disabled={!value.trim() || update.loading}>
+        Save
+      </button>
+      <button type="button" className={`${BTN_GHOST} h-8`} onClick={onDone}>
+        Cancel
+      </button>
+    </form>
+  );
+}
 
-      {error ? <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error.response?.data?.detail || error.message}</div> : null}
+function HideButton({ option, update }) {
+  return (
+    <button
+      type="button"
+      className={BTN_SM}
+      disabled={update.loading}
+      title={option.is_active ? 'Hides it from new requests; existing requests keep it' : 'Offer it on new requests again'}
+      onClick={() => update.run(option, { is_active: !option.is_active }).catch(() => {})}
+    >
+      {option.is_active ? 'Hide' : 'Show again'}
+    </button>
+  );
+}
 
-      <div className="space-y-1.5">
-        {[...active, ...inactive].map((option) => {
-          const draft = drafts[option.id] ?? { value: option.value, label: option.label };
-          const patch = (changes) => setDrafts({ ...drafts, [option.id]: { ...draft, ...changes } });
-          const dirty =
-            draft.value.trim() !== '' &&
-            draft.label.trim() !== '' &&
-            (draft.value !== option.value || draft.label !== option.label);
-          // Purposes have no separate description, so their label simply follows the value.
-          const saveEdits = () => updateAction.run(option, {
-            value: draft.value.trim(),
-            label: hasDescription ? draft.label.trim() : draft.value.trim(),
-          });
-          return (
-            <div
-              key={option.id}
-              className={`flex flex-wrap items-center gap-3 rounded-xl px-3 py-2.5 transition-colors ${option.is_active ? 'hover:bg-slate-50' : 'bg-slate-50/60'}`}
-            >
-              <span className={`h-2 w-2 shrink-0 rounded-full ${option.is_active ? 'bg-emerald-500' : 'bg-slate-300'}`} />
-              <div className={hasDescription ? 'w-48 shrink-0' : 'w-64 shrink-0'}>
-                <input
-                  className={`field h-9 text-slate-900 ${option.is_active ? '' : 'text-slate-500'}`}
-                  readOnly={isViewOnly}
-                  value={draft.value}
-                  onChange={(event) => patch({ value: event.target.value, ...(hasDescription ? {} : { label: event.target.value }) })}
-                />
-              </div>
-              {hasDescription ? (
-                <div className="flex-1 min-w-48">
-                  <input
-                    className={`field h-9 text-slate-900 ${option.is_active ? '' : 'text-slate-500'}`}
-                    readOnly={isViewOnly}
-                    placeholder="Description"
-                    value={draft.label}
-                    onChange={(event) => patch({ label: event.target.value })}
-                  />
-                </div>
-              ) : (
-                <span className="flex-1" />
-              )}
-              <div className="flex items-center gap-2 shrink-0">
-                {section.type === 'TRIP_PURPOSE' && option.is_active ? (
-                  <button
-                    className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-bold transition-colors ${option.notify_project_stakeholders ? 'bg-indigo-50 text-indigo-700 ring-1 ring-inset ring-indigo-600/20' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
-                    disabled={isViewOnly || updateAction.loading}
-                    onClick={() => updateAction.run(option, { notify_project_stakeholders: !option.notify_project_stakeholders })}
-                    title="When selected on a Project-type request, emails that project's recipients (see Project Notification Recipients below) once the Travel Desk has booked the trip"
+function Purposes({ options, isViewOnly, onChanged }) {
+  const update = useOptionUpdate(onChanged);
+  const [editing, setEditing] = useState(null);
+  const [text, setText] = useState('');
+  const add = useAsyncAction(async () => {
+    await adminApi.createTravelOption({ option_type: 'TRIP_PURPOSE', value: text.trim(), label: null });
+    setText('');
+    await onChanged();
+  });
+  const sorted = [...options].sort((a, b) => Number(b.is_active) - Number(a.is_active));
+  return (
+    <section aria-label="Trip purposes" className={CARD}>
+      <CardHead title="Trip purposes" sub={`${options.filter((o) => o.is_active).length} offered on every travel request`} />
+      <ErrorNote error={update.error || add.error} />
+      {sorted.map((o) => (
+        <div key={o.id} className={`flex flex-wrap items-center gap-3 border-t border-slate-100 px-4 py-2.5 first:border-t-0 ${o.is_active ? '' : 'bg-slate-50/70'}`}>
+          <span className={`h-2 w-2 shrink-0 rounded-full ${o.is_active ? 'bg-emerald-600' : 'bg-slate-300'}`} />
+          {editing === o.id ? (
+            <EditOption option={o} update={update} onDone={() => setEditing(null)} />
+          ) : (
+            <>
+              <b className={`min-w-0 flex-1 text-[13px] ${o.is_active ? 'text-ink' : 'text-slate-500'}`}>
+                {o.value} {o.is_active ? null : <Pill>Hidden</Pill>}
+              </b>
+              <span className="flex flex-wrap items-center gap-1.5">
+                {o.is_active ? (
+                  <Toggle
+                    on={Boolean(o.notify_project_stakeholders)}
+                    disabled={isViewOnly || update.loading}
+                    title="On a Project-type trip with this purpose, emails that project's recipients once the Travel Desk has booked it"
+                    onClick={() => update.run(o, { notify_project_stakeholders: !o.notify_project_stakeholders }).catch(() => {})}
                   >
-                    <Mail size={12} />
-                    {option.notify_project_stakeholders ? 'Notifies project' : 'Notify project?'}
-                  </button>
+                    <Mail size={11} className="mr-1 inline -translate-y-px" />
+                    {o.notify_project_stakeholders ? 'Notifies project' : 'Notify project?'}
+                  </Toggle>
                 ) : null}
-                {dirty && !isViewOnly ? (
-                  <button className="btn-secondary h-8 px-3 text-[11px] font-bold" onClick={saveEdits} disabled={updateAction.loading}>
-                    <Save size={14} />Save
-                  </button>
-                ) : null}
-                {option.is_active ? (
-                  !isViewOnly ? (
-                    <button
-                      className="flex h-8 w-8 items-center justify-center rounded-lg border border-transparent text-slate-400 transition-all hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
-                      onClick={() => updateAction.run(option, { is_active: false })}
-                      disabled={updateAction.loading}
-                      title="Deactivate — hides it from new requests, existing requests keep it"
-                    >
-                      <Trash size={16} />
-                    </button>
-                  ) : null
-                ) : (
+                {!isViewOnly ? (
                   <>
-                    <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-500">Inactive</span>
-                    {!isViewOnly ? (
-                      <button
-                        className="flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-500 hover:bg-slate-200 disabled:opacity-50"
-                        onClick={() => updateAction.run(option, { is_active: true })}
-                        disabled={updateAction.loading}
-                      >
-                        <RotateCcw size={12} />Reactivate
-                      </button>
-                    ) : null}
+                    <button type="button" className={BTN_SM} onClick={() => setEditing(o.id)}>
+                      Edit
+                    </button>
+                    <HideButton option={o} update={update} />
                   </>
-                )}
-              </div>
-            </div>
-          );
-        })}
-        {options.length === 0 ? <div className="py-4 text-center text-sm text-slate-400 italic">{section.empty}</div> : null}
-      </div>
-
-      {!isViewOnly ? (
-        <div className="mt-5 rounded-xl bg-slate-50/70 border border-slate-200/60 p-4">
-          <p className="mb-3 text-[11px] font-bold uppercase tracking-wider text-slate-500">Add New</p>
-          <div className="grid gap-3 md:grid-cols-12 items-end">
-            <div className={hasDescription ? 'md:col-span-4' : 'md:col-span-9'}>
-              <label className="mb-1.5 block text-[12px] font-bold text-slate-600 uppercase tracking-wider">{section.valueLabel}</label>
-              <input className="field w-full text-slate-900 bg-white" placeholder={section.valuePlaceholder} value={form.value} onChange={(event) => setForm({ ...form, value: event.target.value })} />
-            </div>
-            {hasDescription ? (
-              <div className="md:col-span-5">
-                <label className="mb-1.5 block text-[12px] font-bold text-slate-600 uppercase tracking-wider">{section.labelLabel}</label>
-                <input className="field w-full text-slate-900 bg-white" placeholder={section.labelPlaceholder} value={form.label} onChange={(event) => setForm({ ...form, label: event.target.value })} />
-              </div>
-            ) : null}
-            <div className="md:col-span-3">
-              <button className="btn-primary w-full justify-center h-10 shadow-sm" onClick={addAction.run} disabled={addAction.loading || !form.value.trim()}>
-                {addAction.loading ? 'Adding…' : `Add ${section.valueLabel}`}
-              </button>
-            </div>
-          </div>
+                ) : null}
+              </span>
+            </>
+          )}
         </div>
+      ))}
+      {options.length === 0 ? <p className="px-4 py-5 text-center text-[13px] text-slate-500">No trip purposes yet. Travel requests can&apos;t be submitted until one is added.</p> : null}
+      {!isViewOnly ? (
+        <form
+          className={ADD_LINE}
+          onSubmit={(e) => {
+            e.preventDefault();
+            add.run().catch(() => {});
+          }}
+        >
+          <input aria-label="New purpose" className={`${FIELD} min-w-[160px] flex-1`} placeholder="New purpose, e.g. Vendor visit" value={text} onChange={(e) => setText(e.target.value)} />
+          <button type="submit" className={BTN_MAIN} disabled={!text.trim() || add.loading}>
+            Add
+          </button>
+        </form>
       ) : null}
     </section>
   );
 }
 
-function ProjectRecipientsSection({ projectCodes, isViewOnly }) {
-  const [selectedCode, setSelectedCode] = useState('');
-  const [recipients, setRecipients] = useState([]);
-  const [loadError, setLoadError] = useState(null);
+/** Who gets emailed about a project: chips you can edit or remove, plus an add line. */
+function Recipients({ code, isViewOnly }) {
+  const [rows, setRows] = useState([]);
+  const [error, setError] = useState(null);
+  const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({ email: '', display_name: '' });
-  // In-progress edits per recipient id ({ email, display_name }), before "Save" is clicked.
-  const [drafts, setDrafts] = useState({});
-
-  useEffect(() => {
-    if (!selectedCode && projectCodes.length > 0) {
-      setSelectedCode(projectCodes[0].value);
-    }
-  }, [projectCodes, selectedCode]);
-
-  const load = async (code) => {
-    if (!code) {
-      setRecipients([]);
-      return;
-    }
+  const load = async () => {
     try {
-      setLoadError(null);
-      const res = await adminApi.projectRecipients(code);
-      setRecipients(res.data);
-    } catch (error) {
-      setLoadError(error);
+      setError(null);
+      setRows((await adminApi.projectRecipients(code)).data);
+    } catch (err) {
+      setError(err);
     }
   };
   useEffect(() => {
-    load(selectedCode);
-  }, [selectedCode]);
+    load();
+  }, [code]);
 
-  const addAction = useAsyncAction(async () => {
-    await adminApi.createProjectRecipient({
-      project_code: selectedCode,
-      email: form.email.trim(),
-      display_name: form.display_name.trim() || null,
-    });
+  const add = useAsyncAction(async () => {
+    await adminApi.createProjectRecipient({ project_code: code, email: form.email.trim(), display_name: form.display_name.trim() || null });
     setForm({ email: '', display_name: '' });
-    await load(selectedCode);
+    await load();
   });
-  const updateAction = useAsyncAction(async (recipient) => {
-    const draft = drafts[recipient.id];
-    await adminApi.updateProjectRecipient(recipient.id, {
-      email: draft.email.trim(),
-      display_name: draft.display_name.trim() || null,
-    });
-    setDrafts((current) => {
-      const next = { ...current };
-      delete next[recipient.id];
-      return next;
-    });
-    await load(selectedCode);
+  const save = useAsyncAction(async (row, draft) => {
+    await adminApi.updateProjectRecipient(row.id, { email: draft.email.trim(), display_name: draft.display_name.trim() || null });
+    setEditing(null);
+    await load();
   });
-  const deleteAction = useAsyncAction(async (id) => {
+  const remove = useAsyncAction(async (id) => {
     await adminApi.deleteProjectRecipient(id);
-    await load(selectedCode);
+    await load();
   });
-  const error = loadError || addAction.error || updateAction.error || deleteAction.error;
+  const editRow = rows.find((r) => r.id === editing?.id);
 
   return (
-    <section className="panel p-6 mb-6">
-      <div className="mb-5 border-b border-line pb-4">
-        <h2 className="text-lg font-bold text-slate-900">Project Notification Recipients</h2>
-        <p className="text-sm text-slate-500 mt-1">
-          When a Project-type request is submitted with a purpose marked &ldquo;Notify project&rdquo; above, everyone
-          listed here for that project code gets emailed the traveler and dates — no account on Travora needed.
-        </p>
-      </div>
-
-      {error ? <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error.response?.data?.detail || error.message}</div> : null}
-
-      {projectCodes.length === 0 ? (
-        <div className="py-4 text-center text-sm text-slate-400 italic">Add a project code above first.</div>
-      ) : (
-        <>
-          <div className="mb-4 max-w-xs">
-            <label className="mb-1.5 block text-[12px] font-bold text-slate-600 uppercase tracking-wider">Project Code</label>
-            <select className="field w-full text-slate-900" value={selectedCode} onChange={(event) => setSelectedCode(event.target.value)}>
-              {projectCodes.map((option) => (
-                <option key={option.id} value={option.value}>{option.value}{option.label && option.label !== option.value ? ` — ${option.label}` : ''}</option>
-              ))}
-            </select>
-          </div>
-
-          <div className="space-y-1.5">
-            {recipients.map((recipient) => {
-              const draft = drafts[recipient.id] ?? { email: recipient.email, display_name: recipient.display_name || '' };
-              const patch = (changes) => setDrafts({ ...drafts, [recipient.id]: { ...draft, ...changes } });
-              const dirty =
-                draft.email.trim() !== '' &&
-                (draft.email !== recipient.email || draft.display_name !== (recipient.display_name || ''));
-              return (
-                <div key={recipient.id} className="flex flex-wrap items-center gap-3 rounded-xl px-3 py-2.5 hover:bg-slate-50 transition-colors">
-                  <Mail size={14} className="shrink-0 text-slate-400" />
-                  <div className="w-64 shrink-0">
-                    <input
-                      className="field h-9 text-slate-900"
-                      readOnly={isViewOnly}
-                      value={draft.email}
-                      onChange={(event) => patch({ email: event.target.value })}
-                    />
-                  </div>
-                  <div className="flex-1 min-w-40">
-                    <input
-                      className="field h-9 text-slate-900"
-                      readOnly={isViewOnly}
-                      placeholder="Name (optional)"
-                      value={draft.display_name}
-                      onChange={(event) => patch({ display_name: event.target.value })}
-                    />
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    {dirty && !isViewOnly ? (
-                      <button className="btn-secondary h-8 px-3 text-[11px] font-bold" onClick={() => updateAction.run(recipient)} disabled={updateAction.loading}>
-                        <Save size={14} />Save
-                      </button>
-                    ) : null}
-                    {!isViewOnly ? (
-                      <button
-                        className="flex h-8 w-8 items-center justify-center rounded-lg border border-transparent text-slate-400 transition-all hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
-                        onClick={() => deleteAction.run(recipient.id)}
-                        disabled={deleteAction.loading}
-                        title="Remove"
-                      >
-                        <Trash size={16} />
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              );
-            })}
-            {recipients.length === 0 ? (
-              <div className="py-4 text-center text-sm text-slate-400 italic">No recipients configured for this project yet.</div>
+    <div className="mt-1.5">
+      <p className="text-xs text-slate-500">Emailed when a trip with a &ldquo;notify&rdquo; purpose is booked:</p>
+      <ErrorNote error={error || add.error || save.error || remove.error} />
+      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+        {rows.map((r) => (
+          <span key={r.id} className="inline-flex items-center gap-1 rounded-full bg-slate-100 py-0.5 pl-2.5 pr-1 text-[11.5px] font-semibold text-slate-700">
+            <button type="button" disabled={isViewOnly} title={isViewOnly ? undefined : 'Edit'} onClick={() => setEditing({ id: r.id, email: r.email, display_name: r.display_name || '' })} className="text-left disabled:cursor-default">
+              {r.display_name ? <b className="text-ink">{r.display_name} </b> : null}
+              {r.email}
+            </button>
+            {!isViewOnly ? (
+              <button type="button" aria-label={`Remove ${r.email}`} disabled={remove.loading} onClick={() => remove.run(r.id).catch(() => {})} className="grid h-[18px] w-[18px] place-items-center rounded-full bg-white text-slate-500 hover:text-rose-600">
+                <X size={10} />
+              </button>
             ) : null}
-          </div>
-
-          {!isViewOnly ? (
-            <div className="mt-5 rounded-xl bg-slate-50/70 border border-slate-200/60 p-4">
-              <p className="mb-3 text-[11px] font-bold uppercase tracking-wider text-slate-500">Add New</p>
-              <div className="grid gap-3 md:grid-cols-12 items-end">
-                <div className="md:col-span-4">
-                  <label className="mb-1.5 block text-[12px] font-bold text-slate-600 uppercase tracking-wider">Email</label>
-                  <input className="field w-full text-slate-900 bg-white" placeholder="e.g. pm@example.com" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} />
-                </div>
-                <div className="md:col-span-5">
-                  <label className="mb-1.5 block text-[12px] font-bold text-slate-600 uppercase tracking-wider">Name (optional)</label>
-                  <input className="field w-full text-slate-900 bg-white" placeholder="e.g. Project Manager" value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} />
-                </div>
-                <div className="md:col-span-3">
-                  <button className="btn-primary w-full justify-center h-10 shadow-sm" onClick={addAction.run} disabled={addAction.loading || !form.email.trim()}>
-                    {addAction.loading ? 'Adding…' : 'Add Recipient'}
-                  </button>
-                </div>
-              </div>
-            </div>
+          </span>
+        ))}
+        {rows.length === 0 ? <span className="text-xs text-slate-400">Nobody yet</span> : null}
+      </div>
+      {!isViewOnly ? (
+        <form
+          className="mt-2 flex flex-wrap items-center gap-1.5"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (editRow) save.run(editRow, editing).catch(() => {});
+            else add.run().catch(() => {});
+          }}
+        >
+          <input
+            aria-label={`Email for ${code}`}
+            type="email"
+            className={`${FIELD} h-8 w-[210px] text-xs`}
+            placeholder="name@company.com"
+            value={editRow ? editing.email : form.email}
+            onChange={(e) => (editRow ? setEditing({ ...editing, email: e.target.value }) : setForm({ ...form, email: e.target.value }))}
+          />
+          <input
+            aria-label={`Name for ${code}`}
+            className={`${FIELD} h-8 w-[150px] text-xs`}
+            placeholder="Name (optional)"
+            value={editRow ? editing.display_name : form.display_name}
+            onChange={(e) => (editRow ? setEditing({ ...editing, display_name: e.target.value }) : setForm({ ...form, display_name: e.target.value }))}
+          />
+          <button type="submit" className={BTN_SM} disabled={!(editRow ? editing.email : form.email).trim() || add.loading || save.loading}>
+            {editRow ? 'Save' : 'Add'}
+          </button>
+          {editRow ? (
+            <button type="button" className={BTN_SM} onClick={() => setEditing(null)}>
+              Cancel
+            </button>
           ) : null}
-        </>
-      )}
+        </form>
+      ) : null}
+    </div>
+  );
+}
+
+function ProjectCodes({ options, isViewOnly, onChanged }) {
+  const update = useOptionUpdate(onChanged);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({ value: '', label: '' });
+  const add = useAsyncAction(async () => {
+    await adminApi.createTravelOption({ option_type: 'PROJECT_CODE', value: form.value.trim(), label: form.label.trim() || null });
+    setForm({ value: '', label: '' });
+    await onChanged();
+  });
+  const sorted = [...options].sort((a, b) => Number(b.is_active) - Number(a.is_active));
+  return (
+    <section aria-label="Project codes" className={CARD}>
+      <CardHead title="Project codes" sub="Offered when someone picks Project as the travel type" />
+      <ErrorNote error={update.error || add.error} />
+      {sorted.map((o) => (
+        <div key={o.id} className={`border-t border-slate-100 px-4 py-3 first:border-t-0 ${o.is_active ? '' : 'bg-slate-50/70'}`}>
+          {editing === o.id ? (
+            <EditOption option={o} withLabel update={update} onDone={() => setEditing(null)} />
+          ) : (
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="flex min-w-0 flex-wrap items-center gap-[7px] text-[13.5px] font-bold text-ink">
+                <span className={`h-2 w-2 shrink-0 rounded-full ${o.is_active ? 'bg-emerald-600' : 'bg-slate-300'}`} />
+                {o.value}
+                {o.label && o.label !== o.value ? <span className="text-xs font-semibold text-slate-500">{o.label}</span> : null}
+                {o.is_active ? null : <Pill>Hidden</Pill>}
+              </div>
+              {!isViewOnly ? (
+                <span className="flex gap-1.5">
+                  <button type="button" className={BTN_SM} onClick={() => setEditing(o.id)}>
+                    Edit
+                  </button>
+                  <HideButton option={o} update={update} />
+                </span>
+              ) : null}
+            </div>
+          )}
+          {o.is_active ? <Recipients code={o.value} isViewOnly={isViewOnly} /> : null}
+        </div>
+      ))}
+      {options.length === 0 ? <p className="px-4 py-5 text-center text-[13px] text-slate-500">No project codes yet. Project travel can&apos;t be requested until one is added.</p> : null}
+      {!isViewOnly ? (
+        <form
+          className={ADD_LINE}
+          onSubmit={(e) => {
+            e.preventDefault();
+            add.run().catch(() => {});
+          }}
+        >
+          <input aria-label="New project code" className={`${FIELD} min-w-[120px] flex-1`} placeholder="Code, e.g. PRJ-1024" value={form.value} onChange={(e) => setForm({ ...form, value: e.target.value })} />
+          <input aria-label="New project description" className={`${FIELD} min-w-[160px] flex-[2]`} placeholder="Description (optional)" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} />
+          <button type="submit" className={BTN_MAIN} disabled={!form.value.trim() || add.loading}>
+            Add
+          </button>
+        </form>
+      ) : null}
     </section>
   );
 }
 
 export default function TravelOptions() {
   useSetPageTitle('Travel Options');
+  const isViewOnly = !useCanConfigurePolicy();
   const [options, setOptions] = useState([]);
   const [loadError, setLoadError] = useState(null);
-  // The actual configure_policy permission, not a hardcoded role list — see ImpactLevelMaster.jsx.
-  const permissions = useAuthStore((state) => state.profile?.permissions);
-  const isViewOnly = !hasPermission(permissions, 'configure_policy');
 
   const load = async () => {
     try {
       setLoadError(null);
-      const response = await adminApi.travelOptions();
-      setOptions(response.data);
+      setOptions((await adminApi.travelOptions()).data);
     } catch (error) {
       setLoadError(error);
     }
@@ -381,21 +302,13 @@ export default function TravelOptions() {
   }, []);
 
   return (
-    <>
-      {loadError ? <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{loadError.response?.data?.detail || loadError.message}</div> : null}
-      {SECTIONS.map((section) => (
-        <OptionSection
-          key={section.type}
-          section={section}
-          options={options.filter((option) => option.option_type === section.type)}
-          isViewOnly={isViewOnly}
-          onChanged={load}
-        />
-      ))}
-      <ProjectRecipientsSection
-        projectCodes={options.filter((option) => option.option_type === 'PROJECT_CODE' && option.is_active)}
-        isViewOnly={isViewOnly}
-      />
-    </>
+    <section className="flex flex-col gap-3.5">
+      <PolicyHead title="Travel options" sub="The choices people see on a travel request: trip purposes, and project codes for project travel, with who gets emailed about each project." />
+      <ErrorNote error={loadError} />
+      <div className="grid items-start gap-3.5 lg:grid-cols-2">
+        <Purposes options={options.filter((o) => o.option_type === 'TRIP_PURPOSE')} isViewOnly={isViewOnly} onChanged={load} />
+        <ProjectCodes options={options.filter((o) => o.option_type === 'PROJECT_CODE')} isViewOnly={isViewOnly} onChanged={load} />
+      </div>
+    </section>
   );
 }

@@ -1,4 +1,4 @@
-import { CheckCircle2, Circle, Clock, XCircle } from 'lucide-react';
+import { CheckCircle2, Circle, Clock, SkipForward, XCircle } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { reimbursementApi } from '../../services/reimbursementApi';
 
@@ -34,6 +34,7 @@ const STATE_STYLES = {
   current: { Icon: Clock, iconCls: 'text-amber-600 bg-amber-50 border-amber-200' },
   rejected: { Icon: XCircle, iconCls: 'text-rose-600 bg-rose-50 border-rose-200' },
   cancelled: { Icon: XCircle, iconCls: 'text-slate-400 bg-slate-100 border-slate-200' },
+  skipped: { Icon: SkipForward, iconCls: 'text-orange-600 bg-orange-50 border-orange-200' },
   pending: { Icon: Circle, iconCls: 'text-slate-300 bg-slate-50 border-slate-200' },
 };
 
@@ -70,6 +71,9 @@ function buildApprovalSteps(request, chain) {
       } else if (a.status === 'REJECTED') {
         state = 'rejected';
         stateLabel = named?.acted_by_name ? `Rejected by ${named.acted_by_name}` : 'Rejected';
+      } else if (a.status === 'SLA_SKIPPED') {
+        state = 'skipped';
+        stateLabel = 'SLA missed — passed on';
       } else if (a.status === 'PENDING') {
         state = 'current';
         stateLabel = named?.pending_approver_names?.length
@@ -112,6 +116,9 @@ function buildApprovalSteps(request, chain) {
       } else if (s.status === 'REJECTED') {
         state = 'rejected';
         stateLabel = s.decided_by_name ? `Rejected by ${s.decided_by_name}` : 'Rejected';
+      } else if (s.status === 'SLA_SKIPPED') {
+        state = 'skipped';
+        stateLabel = 'SLA missed — passed on';
       } else if (s.status === 'PENDING') {
         state = 'current';
         stateLabel = s.pending_approver_names?.length

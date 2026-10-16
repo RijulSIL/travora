@@ -1,449 +1,336 @@
-import { Calendar, CheckCircle2, FileText, Info, Layers, MapPin, MessageSquare, Search } from 'lucide-react';
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Clock } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
 
-import PageHeader from '../../components/ui/PageHeader';
+import ExceptionApprovalPanel from '../../components/approvals/ExceptionApprovalPanel';
+import {
+  ApprovalChain,
+  DecidedPill,
+  ExceptionSubject,
+  PageHead,
+  Pill,
+  Tabs,
+  ago,
+  shortType,
+  slaLeft,
+} from '../../components/approvals/ApprovalQueueParts';
 import Pagination from '../../components/ui/Pagination';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
 import { usePagination } from '../../hooks/usePagination';
 import { reimbursementApi } from '../../services/reimbursementApi';
 import { selectResolvedRole, useAuthStore } from '../../store/authStore';
-import {
-  describeExceptionType,
-  EXCEPTION_TYPE_LABELS,
-  formatExceptionType,
-  formatExceptionTypes,
-  formatRole,
-} from '../../utils/formatters';
+import { EXCEPTION_TYPE_LABELS, formatExceptionType, formatRole } from '../../utils/formatters';
 
-const titleCase = (value) =>
-  String(value || '')
-    .split('_')
-    .map((w) => w.charAt(0) + w.slice(1).toLowerCase())
-    .join(' ');
+const STATUS_TABS = [
+  ['mine', 'Waiting on you'],
+  ['PENDING', 'In progress'],
+  ['APPROVED', 'Approved'],
+  ['REJECTED', 'Rejected'],
+  ['CANCELLED', 'Cancelled'],
+  ['all', 'All'],
+];
+
+const roleMatches = (requiredRole, role) => requiredRole === role || (requiredRole === 'HRBP_HR' && (role === 'HRBP' || role === 'HRBP_HR'));
 
 export default function ExceptionRequestsPage() {
   useSetPageTitle('Exception Requests');
   const role = useAuthStore(selectResolvedRole);
   const approverScopeExceptions = useAuthStore((state) => state.profile?.approver_scope?.exceptions);
-  const [filters, setFilters] = useState({
-    status: 'PENDING',
-    exception_type: '',
-    from_date: '',
-    to_date: '',
-  });
+  const [filters, setFilters] = useState({ exception_type: '', from_date: '', to_date: '' });
+  const [tab, setTab] = useState('mine');
+  // The whole log (every status) for the status tabs, and separately the requests waiting on
+  // this approver — the log's status=PENDING view only returns those the caller can act on.
   const [rows, setRows] = useState([]);
+  const [mineIds, setMineIds] = useState(() => new Set());
+  const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState(null);
   const [actionState, setActionState] = useState({});
+  const [rejecting, setRejecting] = useState({});
+  const [decided, setDecided] = useState({});
+  const [now, setNow] = useState(Date.now());
   const [loadError, setLoadError] = useState(null);
-  const didInitialLoad = useRef(false);
 
   const load = useCallback(async () => {
     try {
       setLoadError(null);
+      setLoading(true);
       const params = {};
-      if (filters.status) params.status = filters.status;
       if (filters.exception_type) params.exception_type = filters.exception_type;
       if (filters.from_date) params.from_date = filters.from_date;
       if (filters.to_date) params.to_date = filters.to_date;
-      const res = await reimbursementApi.exceptionRequestsLog(params);
-      setRows(res.data || []);
+      const [all, mine] = await Promise.all([
+        reimbursementApi.exceptionRequestsLog(params),
+        reimbursementApi.exceptionRequestsLog({ ...params, status: 'PENDING' }),
+      ]);
+      const mineRows = mine.data || [];
+      const logRows = all.data || [];
+      const known = new Set(logRows.map((r) => r.exception_id));
+      setRows([...logRows, ...mineRows.filter((r) => !known.has(r.exception_id))]);
+      setMineIds(new Set(mineRows.map((r) => r.exception_id)));
+      setDecided({});
     } catch (err) {
       setLoadError(err);
+    } finally {
+      setLoading(false);
     }
   }, [filters]);
 
+  // Filters apply as they change.
   useEffect(() => {
-    if (didInitialLoad.current) return;
-    didInitialLoad.current = true;
     load();
   }, [load]);
 
-  const decideAction = useAsyncAction(async (id, approve) => {
-    const comment = actionState[id]?.comment || '';
-    await reimbursementApi.decideException(id, { approve, comment });
-    setExpandedId(null);
-    await load();
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 60000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // The decided row stays open with the outcome (and its route updated here) until the list is
+  // next loaded — on the Waiting on you tab it would otherwise vanish the moment you act.
+  const decideAction = useAsyncAction(async (row, approve, reason) => {
+    const id = row.exception_id;
+    const comment = approve ? (actionState[id]?.comment || '').trim() : reason;
+    await reimbursementApi.decideException(id, { approve, comment: comment || null });
+    const actedAt = new Date().toISOString();
+    setRows((prev) =>
+      prev.map((r) => {
+        if (r.exception_id !== id) return r;
+        let activatedNext = false;
+        let current = true;
+        const decisions = (r.decisions || []).map((d) => {
+          if (current && d.status === 'PENDING') {
+            current = false;
+            return { ...d, status: approve ? 'APPROVED' : 'REJECTED', acted_at: actedAt, acted_by_name: 'you', comment: comment || null };
+          }
+          if (approve && !current && !activatedNext && d.status === 'AWAITING') {
+            activatedNext = true;
+            return { ...d, status: 'PENDING' };
+          }
+          return d;
+        });
+        const status = !approve ? 'REJECTED' : activatedNext ? 'PENDING' : 'APPROVED';
+        return { ...r, decisions, status, decided_by: status === 'PENDING' ? r.decided_by : 'you', decision_comment: approve ? r.decision_comment : comment };
+      }),
+    );
+    const name = row.employee || 'The employee';
+    const next = (row.decisions || []).find((d, i, list) => i > list.findIndex((x) => x.status === 'PENDING') && d.status === 'AWAITING');
+    setDecided((prev) => ({
+      ...prev,
+      [id]: approve
+        ? {
+            ok: true,
+            pill: next ? `Approved → ${formatRole(next.required_role)}` : 'Approved',
+            text: `Approved${comment ? ' with your comment' : ''}. ${row.claim_id ? 'The claim moves on once every exception on it is approved.' : row.travel_request ? 'The travel request moves on to the next step.' : ''}`,
+          }
+        : { ok: false, pill: 'Rejected', text: `Rejected. ${name} has been told why.` },
+    }));
   });
 
-  const { page, setPage, totalPages, pageItems, startIndex, pageSize, total } = usePagination(rows);
+  const groups = {
+    mine: rows.filter((r) => mineIds.has(r.exception_id)),
+    PENDING: rows.filter((r) => r.status === 'PENDING'),
+    APPROVED: rows.filter((r) => r.status === 'APPROVED'),
+    REJECTED: rows.filter((r) => r.status === 'REJECTED'),
+    CANCELLED: rows.filter((r) => r.status === 'CANCELLED'),
+    all: rows,
+  };
+  const shown = [...groups[tab]].sort((a, b) => new Date(b.requested_on) - new Date(a.requested_on));
+  const yourTurnCount = groups.mine.filter((r) => !decided[r.exception_id]).length;
+  const { page, setPage, totalPages, pageItems, startIndex, pageSize, total } = usePagination(shown);
+  const filtersOn = filters.exception_type || filters.from_date || filters.to_date;
+  const field = 'inline-flex h-[34px] items-center gap-1.5 rounded-[10px] border border-slate-200 bg-white px-2.5 text-xs font-bold text-slate-500';
 
   return (
-    <>
-      <PageHeader title="" />
-      
-      {/* Sleek Modern Filter Panel */}
-      <section className="panel rounded-lg p-5 border border-line/60 shadow-sm bg-white mb-6">
-        <h2 className="text-sm font-semibold text-slate-800 mb-4 flex items-center gap-2">
-          <Search size={16} className="text-slate-500" /> Filter Exception Requests
-        </h2>
-        <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-5">
-          <div className="space-y-1">
-            <label className="text-xs font-semibold text-slate-500">Status</label>
-            <select
-              className="field"
-              value={filters.status}
-              onChange={(e) => setFilters({ ...filters, status: e.target.value })}
-            >
-              <option value="">All status</option>
-              <option value="PENDING">PENDING</option>
-              <option value="APPROVED">APPROVED</option>
-              <option value="REJECTED">REJECTED</option>
-              <option value="CANCELLED">CANCELLED</option>
-            </select>
-          </div>
-          <div className="space-y-1">
-            <label className="text-xs font-semibold text-slate-500">Exception Type</label>
-            <select
-              className="field"
-              value={filters.exception_type}
-              onChange={(e) => setFilters({ ...filters, exception_type: e.target.value })}
-            >
-              <option value="">All types</option>
-              {Object.entries(EXCEPTION_TYPE_LABELS)
-                .filter(
-                  ([type]) => !approverScopeExceptions?.length || approverScopeExceptions.includes(type)
-                )
-                .map(([type, label]) => (
-                  <option key={type} value={type}>{label}</option>
-                ))}
-            </select>
-          </div>
-          <div className="space-y-1">
-            <label className="text-xs font-semibold text-slate-500">From Date</label>
-            <input
-              className="field"
-              type="date"
-              value={filters.from_date}
-              onChange={(e) => setFilters({ ...filters, from_date: e.target.value })}
-            />
-          </div>
-          <div className="space-y-1">
-            <label className="text-xs font-semibold text-slate-500">To Date</label>
-            <input
-              className="field"
-              type="date"
-              value={filters.to_date}
-              onChange={(e) => setFilters({ ...filters, to_date: e.target.value })}
-            />
-          </div>
-          <div className="flex items-end">
-            <button className="btn-primary w-full h-10 font-semibold" type="button" onClick={load}>
-              Apply Filters
-            </button>
-          </div>
-        </div>
-      </section>
+    <section className="flex flex-col gap-3.5">
+      <PageHead
+        title="Exception requests"
+        sub="Asks to go outside the travel policy. Each goes through its approvers in order."
+        stats={[
+          { label: 'Your turn', value: yourTurnCount },
+          { label: 'In progress', value: groups.PENDING.length, tone: 'amber' },
+        ]}
+      />
+
+      <Tabs
+        label="Status"
+        value={tab}
+        onChange={(key) => {
+          setTab(key);
+          setExpandedId(null);
+        }}
+        tabs={STATUS_TABS.map(([key, label]) => ({
+          key,
+          label,
+          count: key === 'mine' ? yourTurnCount : groups[key].length,
+          hot: key === 'mine' && yourTurnCount > 0,
+        }))}
+      />
+
+      <div className="flex flex-wrap items-center gap-2">
+        <label className={field}>
+          Type
+          <select
+            className="max-w-[240px] bg-transparent text-[12.5px] font-semibold text-ink outline-none"
+            value={filters.exception_type}
+            onChange={(e) => setFilters({ ...filters, exception_type: e.target.value })}
+          >
+            <option value="">All types</option>
+            {Object.keys(EXCEPTION_TYPE_LABELS)
+              .filter((type) => !approverScopeExceptions?.length || approverScopeExceptions.includes(type))
+              .map((type) => (
+                <option key={type} value={type}>{shortType(type)}</option>
+              ))}
+          </select>
+        </label>
+        <label className={field}>
+          From
+          <input
+            className="bg-transparent text-[12.5px] text-ink outline-none"
+            type="date"
+            aria-label="Requested from"
+            value={filters.from_date}
+            onChange={(e) => setFilters({ ...filters, from_date: e.target.value })}
+          />
+        </label>
+        <label className={field}>
+          To
+          <input
+            className="bg-transparent text-[12.5px] text-ink outline-none"
+            type="date"
+            aria-label="Requested to"
+            value={filters.to_date}
+            onChange={(e) => setFilters({ ...filters, to_date: e.target.value })}
+          />
+        </label>
+        {filtersOn ? (
+          <button
+            type="button"
+            className="px-1 text-xs font-bold text-brand hover:text-brand/80"
+            onClick={() => setFilters({ exception_type: '', from_date: '', to_date: '' })}
+          >
+            Clear filters
+          </button>
+        ) : null}
+      </div>
 
       {loadError || decideAction.error ? (
-        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 shadow-sm">
-          {(loadError || decideAction.error)?.response?.data?.detail ||
-            (loadError || decideAction.error)?.message}
+        <div className="rounded-xl border border-red-200 bg-red-50 p-3.5 text-[13px] text-red-700">
+          {(loadError || decideAction.error)?.response?.data?.detail || (loadError || decideAction.error)?.message}
         </div>
       ) : null}
 
-      {/* Premium Card Table */}
-      <section className="panel mt-4 rounded-lg overflow-hidden border border-line/60 shadow-sm bg-white">
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead className="bg-slate-50 border-b border-line">
-              <tr>
-                <th className="px-4 py-3 text-center font-semibold text-slate-600 text-xs uppercase tracking-wider whitespace-nowrap">S. No</th>
-                <th className="px-4 py-3 text-center font-semibold text-slate-600 text-xs uppercase tracking-wider">Exception ID</th>
-                <th className="px-4 py-3 text-center font-semibold text-slate-600 text-xs uppercase tracking-wider">Claim Ref</th>
-                <th className="px-4 py-3 text-center font-semibold text-slate-600 text-xs uppercase tracking-wider">Employee</th>
-                <th className="px-4 py-3 text-center font-semibold text-slate-600 text-xs uppercase tracking-wider">Type</th>
-                <th className="px-4 py-3 text-center font-semibold text-slate-600 text-xs uppercase tracking-wider">Status</th>
-                <th className="px-4 py-3 text-center font-semibold text-slate-600 text-xs uppercase tracking-wider">Requested On</th>
-                <th className="px-4 py-3 text-center font-semibold text-slate-600 text-xs uppercase tracking-wider">Decided By</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-line/60 bg-white">
-              {pageItems.map((row, index) => {
-                const activeDecision = (row.decisions || []).find(
-                  (d) => d.status === 'PENDING' || d.status === 'AWAITING'
-                );
-                const isPendingActive = activeDecision && activeDecision.status === 'PENDING';
-                const roleMatches = activeDecision && (
-                  activeDecision.required_role === role ||
-                  (activeDecision.required_role === 'HRBP_HR' && (role === 'HRBP' || role === 'HRBP_HR'))
-                );
-                const canUserDecide = isPendingActive && roleMatches;
-
-                const userDecisions = (row.decisions || []).filter(
-                  (d) =>
-                    d.required_role === role ||
-                    (d.required_role === 'HRBP_HR' && (role === 'HRBP' || role === 'HRBP_HR'))
-                );
-                const hasUserAlreadyActed = userDecisions.some(
-                  (d) => d.status === 'APPROVED' || d.status === 'REJECTED'
-                );
-
-                return (
-                  <Fragment key={row.exception_id}>
-                    <tr
-                      className="cursor-pointer hover:bg-slate-50/80 transition-colors"
-                      onClick={() =>
-                        setExpandedId(expandedId === row.exception_id ? null : row.exception_id)
-                      }
-                    >
-                    <td className="px-4 py-3 text-center text-slate-500">{startIndex + index + 1}</td>
-                    <td className="px-4 py-3 text-center font-semibold text-slate-800">
-                      {row.exception_ref || `EXC-${String(row.exception_id).padStart(4, '0')}`}
-                    </td>
-                    <td className="px-4 py-3 text-center font-medium text-slate-600" onClick={(e) => e.stopPropagation()}>
-                      {row.claim_id ? (
-                        <Link
-                          to={`/claims/${row.claim_id}`}
-                          className="text-brand hover:underline font-semibold inline-flex items-center gap-1"
-                        >
-                          {row.claim_ref} ↗
-                        </Link>
-                      ) : (
-                        row.claim_ref || '—'
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-center text-slate-700">{row.employee || '—'}</td>
-                    <td className="px-4 py-3 text-center">
-                      <span
-                        className="text-xs font-semibold bg-slate-100 px-2 py-1 rounded text-slate-700"
-                        title={(row.exception_types?.length ? row.exception_types : [row.exception_type])
-                          .map(formatExceptionType)
-                          .join(', ')}
-                      >
-                        {formatExceptionTypes(row.exception_types, row.exception_type)}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      {row.status === 'PENDING' && <span className="badge badge-in-approval">PENDING</span>}
-                      {row.status === 'APPROVED' && <span className="badge badge-paid">APPROVED</span>}
-                      {row.status === 'REJECTED' && <span className="badge badge-rejected">REJECTED</span>}
-                      {row.status === 'CANCELLED' && (
-                        <span className="badge bg-slate-100 text-slate-500" title={row.decision_comment || undefined}>
-                          CANCELLED
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-center text-slate-500">{new Date(row.requested_on).toLocaleDateString()}</td>
-                    <td className="px-4 py-3 text-center text-slate-700">{row.decided_by || '—'}</td>
-                  </tr>
-                  {expandedId === row.exception_id ? (
-                    <tr className="bg-slate-50/50">
-                      <td colSpan={8} className="px-6 py-5">
-                        <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
-                          Exception Request Details
-                        </div>
-                        
-                        <div className="mb-4 p-4 bg-amber-50/60 rounded-lg border border-amber-200/80">
-                          <span className="font-semibold text-amber-900 text-xs block mb-2">What This Means</span>
-                          <div className="space-y-2">
-                            {(row.exception_types?.length ? row.exception_types : [row.exception_type]).map((type) => (
-                              <div key={type} className="text-sm">
-                                <span className="font-semibold text-slate-800">{formatExceptionType(type)}:</span>{' '}
-                                <span className="text-slate-600">{describeExceptionType(type)}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        {row.travel_request ? (
-                          <div className="mb-4 rounded-lg border border-slate-200/80 bg-white p-4 shadow-sm">
-                            <span className="mb-3 block text-xs font-semibold uppercase tracking-wider text-slate-500">
-                              Travel Request Details
-                            </span>
-                            <div className="grid gap-x-6 gap-y-3 sm:grid-cols-3">
-                              {row.travel_request.legs?.length ? (
-                                <div className="sm:col-span-3">
-                                  <div className="mb-1 flex items-center gap-2 text-xs text-slate-400">
-                                    <MapPin size={13} className="shrink-0" />
-                                    Route (multi-city)
-                                  </div>
-                                  <div className="space-y-1">
-                                    {row.travel_request.legs.map((leg, i) => (
-                                      <div key={i} className="flex items-center gap-1.5 text-sm text-slate-800">
-                                        <span>{leg.from_city}</span>
-                                        <span className="text-slate-400">→</span>
-                                        <span>{leg.to_city}</span>
-                                        <span className="text-xs text-slate-400">
-                                          ({leg.travel_date}{leg.travel_mode ? `, ${titleCase(leg.travel_mode)}` : ''})
-                                        </span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                </div>
-                              ) : (
-                                <div>
-                                  <div className="mb-1 flex items-center gap-2 text-xs text-slate-400">
-                                    <MapPin size={13} className="shrink-0" />
-                                    Route
-                                  </div>
-                                  <p className="text-sm font-semibold text-slate-800">
-                                    {row.travel_request.from_city} <span className="text-slate-400">→</span> {row.travel_request.to_city}
-                                  </p>
-                                </div>
-                              )}
-                              {[
-                                { icon: Layers, label: 'Trip Type', value: titleCase(row.travel_request.trip_type) },
-                                { icon: Layers, label: 'Mode', value: titleCase(row.travel_request.travel_mode) },
-                                { icon: Calendar, label: 'Travel Date', value: row.travel_request.travel_date },
-                                { icon: Calendar, label: 'Return Date', value: row.travel_request.return_date },
-                                { icon: Layers, label: 'Travel Type', value: row.travel_request.travel_type === 'PROJECT' ? 'Project' : 'Non-project' },
-                                { icon: FileText, label: 'Project Code', value: row.travel_request.project_code },
-                                { icon: FileText, label: 'Purpose', value: row.travel_request.purpose },
-                                { icon: MessageSquare, label: 'Notes', value: row.travel_request.notes },
-                              ]
-                                .filter((f) => f.value)
-                                .map((f) => (
-                                  <div key={f.label}>
-                                    <div className="mb-1 flex items-center gap-2 text-xs text-slate-400">
-                                      <f.icon size={13} className="shrink-0" />
-                                      {f.label}
-                                    </div>
-                                    <p className="text-sm font-semibold text-slate-800">{f.value}</p>
-                                  </div>
-                                ))}
-                            </div>
-                          </div>
-                        ) : null}
-
-                        <div className="grid gap-5 md:grid-cols-2 p-4 bg-white rounded-lg border border-slate-200/80 shadow-sm">
-                          <div className="space-y-3">
-                            {row.expense_category_name ? (
-                              <div>
-                                <span className="font-semibold text-slate-700 text-xs block mb-1">Flagged Expense</span>
-                                <p className="text-sm font-semibold text-slate-800">
-                                  {row.expense_category_name}
-                                  {row.claimed_amount != null ? (
-                                    <span className="ml-1.5 font-mono font-medium text-slate-600">
-                                      ₹{Number(row.claimed_amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                                    </span>
-                                  ) : null}
-                                </p>
-                              </div>
-                            ) : null}
-                            {row.status === 'CANCELLED' && row.decision_comment ? (
-                              <p className="rounded-lg border border-slate-200 bg-slate-50 p-2.5 text-xs text-slate-600">
-                                {row.decision_comment}
-                              </p>
-                            ) : null}
-                            <div>
-                              <span className="font-semibold text-slate-700 text-xs block mb-1">Reason for Exception</span>
-                              <p className="text-sm text-slate-600 bg-slate-50 p-3 rounded-lg border border-slate-100 italic">
-                                &quot;{row.description || 'No description provided'}&quot;
-                              </p>
-                            </div>
-                            <div>
-                              <span className="font-semibold text-slate-700 text-xs block mb-1">Required Approvers</span>
-                              <div className="flex flex-wrap gap-1.5">
-                                {(row.required_approvers || []).map((appr) => (
-                                  <span key={appr} className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-800 border border-slate-200">
-                                    {formatRole(appr)}
-                                  </span>
-                                ))}
-                              </div>
-                            </div>
-                          </div>
-                          
-                          <div className="space-y-3">
-                            <div>
-                              <span className="font-semibold text-slate-700 text-xs block mb-1">Approval Chain Status</span>
-                              <div className="space-y-1.5">
-                                {(row.decisions || []).map((d, idx) => {
-                                  let badgeClass = "bg-slate-100 text-slate-700";
-                                  if (d.status === "APPROVED") badgeClass = "bg-green-100 text-green-800 border border-green-200";
-                                  if (d.status === "REJECTED") badgeClass = "bg-red-100 text-red-800 border border-red-200";
-                                  if (d.status === "PENDING") badgeClass = "bg-amber-100 text-amber-800 border border-amber-200";
-                                  return (
-                                    <div key={idx} className="flex items-center justify-between text-xs p-2 bg-slate-50 rounded-lg border border-slate-100">
-                                      <span className="font-semibold text-slate-600">{formatRole(d.required_role)}</span>
-                                      <div className="flex items-center gap-2">
-                                        <span className={`px-2 py-0.5 rounded-full font-semibold ${badgeClass}`}>
-                                          {d.status}
-                                        </span>
-                                        {d.comment && (
-                                          <span className="text-slate-500 italic max-w-[12rem] truncate" title={d.comment}>
-                                            &quot;{d.comment}&quot;
-                                          </span>
-                                        )}
-                                      </div>
-                                    </div>
-                                  );
-                                })}
-                                {(!row.decisions || row.decisions.length === 0) && (
-                                  <p className="text-xs text-slate-400 italic">No decisions recorded yet.</p>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-
-                        {row.status === 'PENDING' && canUserDecide ? (
-                          <div className="mt-4 border-t border-slate-200 pt-4 max-w-xl">
-                            <span className="font-semibold text-slate-700 text-xs block mb-1.5">Your Decision</span>
-                            <textarea
-                              className="field min-h-[4.5rem] w-full p-2.5 text-sm rounded-lg border border-line focus:border-brand focus:ring-2 focus:ring-brand/10 transition-shadow bg-white"
-                              placeholder="Add an optional comment / reason for your decision..."
-                              value={actionState[row.exception_id]?.comment || ''}
-                              onChange={(e) =>
-                                setActionState((prev) => ({
-                                  ...prev,
-                                  [row.exception_id]: { comment: e.target.value },
-                                }))
-                              }
-                            />
-                            <div className="flex gap-3 mt-3">
-                              <button
-                                className="btn-primary px-5 py-2 text-sm font-semibold transition-transform hover:scale-[1.01] active:scale-[0.99]"
-                                disabled={decideAction.loading}
-                                type="button"
-                                onClick={() => decideAction.run(row.exception_id, true)}
-                              >
-                                Approve Exception
-                              </button>
-                              <button
-                                className="btn-secondary border-red-200 hover:bg-red-50 text-red-700 px-5 py-2 text-sm font-semibold transition-transform hover:scale-[1.01] active:scale-[0.99]"
-                                disabled={decideAction.loading}
-                                type="button"
-                                onClick={() => decideAction.run(row.exception_id, false)}
-                              >
-                                Reject Exception
-                              </button>
-                            </div>
-                          </div>
-                        ) : row.status === 'PENDING' ? (
-                          <div className="mt-4 border-t border-slate-200 pt-4 max-w-xl">
-                            {hasUserAlreadyActed ? (
-                              <div className="rounded-xl border border-emerald-100 bg-emerald-50/40 p-4 flex items-center gap-2.5 text-xs text-emerald-800 font-bold">
-                                <CheckCircle2 size={16} className="shrink-0" />
-                                You have already approved this exception stage. It is now awaiting subsequent approval steps.
-                              </div>
-                            ) : (
-                              <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-4 flex items-center gap-2.5 text-xs text-slate-600 font-semibold">
-                                <Info size={16} className="shrink-0" />
-                                This exception request is pending approval from: {activeDecision ? formatRole(activeDecision.required_role) : 'next stage'}.
-                              </div>
-                            )}
-                          </div>
-                        ) : null}
-                      </td>
-                    </tr>
+      <section aria-label="Exception requests" className="overflow-hidden rounded-[14px] border border-slate-200 bg-white">
+        {loading && !rows.length ? (
+          <div className="flex items-center gap-2 px-4 py-6 text-xs font-bold text-slate-500">
+            <Clock className="animate-spin text-slate-400" size={15} /> Loading exception requests…
+          </div>
+        ) : null}
+        {!loading && !shown.length ? (
+          <div className="px-4 py-9 text-center text-[12.5px] text-slate-500">
+            <b className="mb-0.5 block text-sm text-ink">{tab === 'mine' ? "Nothing's waiting on you" : 'Nothing here'}</b>
+            {tab === 'mine' ? 'When an exception reaches your step, it shows up here.' : 'Try another tab or clear the filters.'}
+          </div>
+        ) : null}
+        {pageItems.map((row) => {
+          const id = row.exception_id;
+          const activeDecision = (row.decisions || []).find((d) => d.status === 'PENDING' || d.status === 'AWAITING');
+          const isPendingActive = activeDecision && activeDecision.status === 'PENDING';
+          const canUserDecide = Boolean(isPendingActive && roleMatches(activeDecision.required_role, role));
+          const hasUserAlreadyActed = (row.decisions || []).some(
+            (d) => roleMatches(d.required_role, role) && (d.status === 'APPROVED' || d.status === 'REJECTED'),
+          );
+          const yourTurn = canUserDecide && mineIds.has(id) && !decided[id];
+          const current = (row.decisions || []).find((d) => d.status === 'PENDING');
+          const left = row.status === 'PENDING' ? slaLeft(current?.sla_deadline_at, now) : null;
+          const open = expandedId === id;
+          const types = row.exception_types?.length ? row.exception_types : [row.exception_type];
+          return (
+            <div key={id} className={`relative border-t border-slate-100 first:border-t-0 ${yourTurn ? 'before:absolute before:inset-y-0 before:left-0 before:w-[3px] before:bg-brand' : ''}`}>
+              <div
+                role="button"
+                tabIndex={0}
+                aria-expanded={open}
+                onClick={(e) => {
+                  if (e.target.closest('a, button')) return;
+                  setExpandedId(open ? null : id);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setExpandedId(open ? null : id);
+                  }
+                }}
+                className="grid cursor-pointer gap-x-3.5 gap-y-2.5 px-4 py-3 hover:bg-[#fbfdfc] lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_140px] lg:items-center"
+              >
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-[7px] text-[13.5px] font-bold text-ink">
+                    <span>{row.exception_ref || `EXC-${String(id).padStart(4, '0')}`}</span>
+                    {types.map((t) => (
+                      <Pill key={t} title={formatExceptionType(t)}>{shortType(t)}</Pill>
+                    ))}
+                  </div>
+                  <div className="mt-0.5 text-xs text-slate-500">
+                    {row.employee || '—'}
+                    {row.requested_on ? ` · requested ${ago(row.requested_on)}` : ''}
+                  </div>
+                  {row.description ? <div className="mt-1 break-words text-xs italic text-slate-700">“{row.description}”</div> : null}
+                </div>
+                <div className="min-w-0">
+                  <ExceptionSubject row={row} />
+                  <div className="mt-1.5">
+                    <ApprovalChain decisions={row.decisions || []} yourTurn={yourTurn} />
+                  </div>
+                </div>
+                <div className="lg:text-right">
+                  {decided[id] ? (
+                    <DecidedPill decision={decided[id]} />
+                  ) : row.status === 'PENDING' ? (
+                    yourTurn ? (
+                      <Pill tone="brand">Your turn</Pill>
+                    ) : (
+                      <Pill tone="amber">With {current ? formatRole(current.required_role) : 'an approver'}</Pill>
+                    )
+                  ) : row.status === 'APPROVED' ? (
+                    <Pill tone="ok">Approved</Pill>
+                  ) : row.status === 'REJECTED' ? (
+                    <Pill tone="rose">Rejected</Pill>
+                  ) : (
+                    <Pill title={row.decision_comment || undefined}>Cancelled</Pill>
+                  )}
+                  {left && !decided[id] ? (
+                    <span className={`mt-1 block text-[11.5px] ${left.over ? 'font-bold text-rose-700' : 'text-slate-500'}`}>
+                      {left.over ? `Past SLA by ${left.text}` : `${left.text} left`}
+                    </span>
+                  ) : row.decided_by && row.status !== 'PENDING' ? (
+                    <span className="mt-1 block text-[11.5px] text-slate-500">by {row.decided_by}</span>
                   ) : null}
-                </Fragment>
-              );
-            })}
-              {rows.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="px-4 py-8 text-center text-slate-500 italic bg-slate-50/30">
-                    No exception requests found matching the current filters.
-                  </td>
-                </tr>
+                </div>
+              </div>
+              {open ? (
+                <div className="bg-[#fbfdfc] px-4 pb-[18px]">
+                  <ExceptionApprovalPanel
+                    row={row}
+                    canDecide={canUserDecide}
+                    hasActed={hasUserAlreadyActed}
+                    comment={actionState[id]?.comment || ''}
+                    onCommentChange={(value) => setActionState((prev) => ({ ...prev, [id]: { comment: value } }))}
+                    rejecting={Boolean(rejecting[id])}
+                    onRejectingChange={(value) => setRejecting((prev) => ({ ...prev, [id]: value }))}
+                    busy={decideAction.loading}
+                    decided={decided[id]}
+                    onApprove={() => decideAction.run(row, true).catch(() => {})}
+                    onReject={(reason) => decideAction.run(row, false, reason).catch(() => {})}
+                    now={now}
+                  />
+                </div>
               ) : null}
-            </tbody>
-          </table>
-        </div>
-        <Pagination page={page} totalPages={totalPages} onPageChange={setPage} total={total} pageSize={pageSize} startIndex={startIndex} />
+            </div>
+          );
+        })}
+        {shown.length ? (
+          <Pagination page={page} totalPages={totalPages} onPageChange={setPage} total={total} pageSize={pageSize} startIndex={startIndex} />
+        ) : null}
       </section>
-    </>
+    </section>
   );
 }
