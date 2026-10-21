@@ -315,3 +315,19 @@ textarea {
   .bounce-loader-tick path { stroke-dashoffset: 0; }
   .bounce-loader.is-done .bounce-loader-tick path { animation: none; }
 }
+
+/* Side panel next to a list (e.g. User management): slides in from the right beside it, up when
+   stacked below it, and back out when closed. In @layer utilities so lg: / motion-reduce: work. */
+@keyframes sheet-in { from { opacity: 0; transform: translateX(48px) scale(0.97); } to { opacity: 1; transform: none; } }
+@keyframes sheet-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateX(48px) scale(0.97); } }
+@keyframes sheet-up { from { opacity: 0; transform: translateY(32px) scale(0.98); } to { opacity: 1; transform: none; } }
+@keyframes sheet-down { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(32px) scale(0.98); } }
+@keyframes sheet-swap { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: none; } }
+
+@layer utilities {
+  .animate-sheet-in { animation: sheet-in 0.42s cubic-bezier(0.16, 1, 0.3, 1) both; }
+  .animate-sheet-out { animation: sheet-out 0.26s cubic-bezier(0.4, 0, 1, 1) both; }
+  .animate-sheet-up { animation: sheet-up 0.42s cubic-bezier(0.16, 1, 0.3, 1) both; }
+  .animate-sheet-down { animation: sheet-down 0.26s cubic-bezier(0.4, 0, 1, 1) both; }
+  .animate-sheet-swap { animation: sheet-swap 0.24s cubic-bezier(0.16, 1, 0.3, 1) both; }
+}

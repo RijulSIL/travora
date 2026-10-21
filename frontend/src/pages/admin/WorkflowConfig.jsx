@@ -1,875 +1,1042 @@
-import { ArrowDown, ArrowUp, Plus, Save, Trash2, GripVertical } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { ArrowDown, ArrowUp, GripVertical, Plus, Search, X } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 
-import PageHeader from '../../components/ui/PageHeader';
+import { Pill } from '../../components/approvals/ApprovalQueueParts';
+import {
+  CLAIM_CATEGORIES,
+  CLAIM_EXCEPTIONS,
+  CLAIM_SUBMIT_EXCEPTIONS,
+  DEADLINE_MODES,
+  DEPARTMENT_HEAD,
+  EXCEPTION_KEYS,
+  FLOW_NAMES,
+  HEAD_FLOWS,
+  MAX_STEPS,
+  ROLE_NAMES,
+  ROLE_SHORT,
+  ROLES_WORTH_WARNING_ABOUT,
+  STANDALONE_DEFAULTS,
+  STEP_ROLES,
+  TRAVEL_EXCEPTIONS,
+  errorMessage,
+  rolesCoveredByConfig,
+  sanitizeAutoApprove,
+  sanitizeMaxDays,
+  sanitizeSlaHours,
+} from '../../components/admin/approvalMatrix';
+import { BTN_GHOST, BTN_SM, CARD, EYEBROW, FIELD } from '../../components/policy/PolicyAdminParts';
+import ConfirmDialog from '../../components/ui/ConfirmDialog';
+import Skeleton from '../../components/ui/Skeleton';
 import { useSetPageTitle } from '../../context/PageTitleContext';
-import { useAsyncAction } from '../../hooks/useAsyncAction';
 import useToast from '../../hooks/useToast';
 import { adminApi } from '../../services/adminApi';
 import { canEditWorkflowConfig } from '../../services/permissions';
 import { useAuthStore } from '../../store/authStore';
+import { formatRole } from '../../utils/formatters';
 
-const DEADLINE_MODES = ['hard_block', 'soft_warning'];
-const DEFAULT_MAX_DAYS = 5;
+const STAGE_FLOWS = ['CLAIMS', 'TRAVEL_REQUEST', 'RELOCATION_REQUEST'];
+const FILTER = FIELD.replace('w-full', '');
+const j = (x) => JSON.stringify(x ?? null);
 
-// The only exception types ever actually raised against a travel request rather than a
-// claim — the dropdown below groups these into their own "Travel Requests" optgroup instead of
-// mixing them in with the claim exception types, so the label here stays plain (no inline
-// "(Travel Request)" suffix needed — the optgroup heading already says so).
-const TRAVEL_REQUEST_EXCEPTION_KEYS = new Set([
-  'AIR_TRAVEL_UNLOCK',
-  'FLIGHT_ADVANCE_BOOKING_OVERRIDE',
-  'TRAIN_ADVANCE_BOOKING_OVERRIDE',
-  'TRAVEL_REQUEST_LEAD_TIME_OVERRIDE',
-]);
+// Which Department heads tick covers a flow: claims, travel requests, or any exception type.
+const headFlowOf = (key) => (key === 'CLAIMS' ? 'claims' : key === 'TRAVEL_REQUEST' ? 'travel_requests' : EXCEPTION_KEYS.includes(key) ? 'exceptions' : null);
 
-const EXCEPTION_TYPES = {
-  "AIR_TRAVEL_UNLOCK": "Exception: Air Travel Unlock",
-  "TRAIN_TATKAL": "Exception: Train Tatkal",
-  "FLIGHT_ADVANCE_BOOKING_OVERRIDE": "Exception: Flight Advance Booking",
-  "TRAIN_ADVANCE_BOOKING_OVERRIDE": "Exception: Train Advance Booking",
-  "TRAVEL_REQUEST_LEAD_TIME_OVERRIDE": "Exception: Travel Request Lead Time (Other Modes)",
-  "FLIGHT_COST_DELTA": "Exception: Flight Cost Delta",
-  "ROOM_RENT_DEVIATION": "Exception: Room Rent Deviation",
-  "FOOD_DEVIATION": "Exception: Food & Meals Deviation",
-  "INCIDENTAL_DEVIATION": "Exception: Incidental Expenses Deviation",
-  "AIR_TRAVEL_L5_L6": "Exception: Air Travel L5/L6",
-  "HIRED_TAXI_UNAUTHORIZED": "Exception: Unauthorized Hired Taxi",
-  "MODE_DEVIATION": "Exception: Travel Mode Deviation",
-  "DAY_VISIT_EXTERNAL_MEETING": "Exception: Day Visit External Meeting Expenses",
-  // The one editable route for any expense category without its own dedicated rule above
-  // (Office Supplies, Telecom, ...) — every such category's generic deviation type is routed
-  // through this chain by the backend's _chain_for_type fallback.
-  "POLICY_EXCEPTION_GENERAL": "Exception: Other Category Deviation (Default)",
-};
-
-// Exception types a claim expense can be flagged with at submission — the ones the "When
-// flagged" Allow/Block setting applies to (see workflow_service.DEFAULT_EXCEPTION_SUBMISSION_MODE).
-const CLAIM_SUBMIT_EXCEPTION_KEYS = new Set([
-  'ROOM_RENT_DEVIATION',
-  'FOOD_DEVIATION',
-  'INCIDENTAL_DEVIATION',
-  'DAY_VISIT_EXTERNAL_MEETING',
-  'POLICY_EXCEPTION_GENERAL',
-  'TRAIN_TATKAL',
-  'AIR_TRAVEL_L5_L6',
-  'HIRED_TAXI_UNAUTHORIZED',
-]);
-const SUBMISSION_MODE_OPTIONS = [
-  { value: 'ALLOW', label: 'Allow with exception reason', hint: 'The employee gives a reason and the claim is submitted; this exception goes to its approvers alongside the claim.' },
-  { value: 'BLOCK', label: 'Block submission', hint: "The claim can't be submitted while it contains this expense, even with a reason." },
-];
-
-function sanitizeMaxWorkingDaysAfterReturn(raw) {
-  if (raw === '' || raw === undefined || raw === null) return DEFAULT_MAX_DAYS;
-  const n = typeof raw === 'number' ? raw : parseInt(String(raw).trim(), 10);
-  if (!Number.isFinite(n) || n < 1) return DEFAULT_MAX_DAYS;
-  return Math.floor(n);
-}
-
-function sanitizeSlaHours(raw) {
-  const n =
-    typeof raw === 'number' && Number.isFinite(raw)
-      ? Math.floor(raw)
-      : parseInt(String(raw ?? '').trim(), 10);
-  if (!Number.isFinite(n) || n < 1) return 48;
-  return n;
-}
-
-function sanitizeAutoApproveAmount(raw) {
-  const trimmed = String(raw ?? '').trim();
-  if (trimmed === '') return '0.00';
-  const n = Number(trimmed);
-  if (!Number.isFinite(n) || n < 0) return '0.00';
-  return n.toFixed(2);
-}
-
-// Only claim categories — Travel Request approval is a separate top-level "Workflow Type"
-// now (see selectedWorkflow === 'TRAVEL_REQUEST'), not nested under this claim-only selector,
-// since it was being mixed in with claim categories here and that was confusing: a travel
-// request isn't a claim category, it's a wholly different approval flow (pre-trip, not
-// reimbursement).
-const STAGE_CATEGORIES = [
-  { value: 'DEFAULT', label: 'Default (all categories)' },
-  { value: 'TRAVEL', label: 'Travel claims' },
-  { value: 'GENERAL', label: 'General reimbursements' },
-  { value: 'RELOCATION', label: 'Relocation claims' },
-];
-
-// Travel requests have their own approval chain, separate from claim reimbursement — no
-// finance stage required (there's no payment here), and the "shared default" they fall back to
-// when unconfigured is a single Reporting Manager step, not the claim stages list.
-const TRAVEL_REQUEST_DEFAULT_STAGES = [
-  { number: 1, label: 'Manager Review', route_role: 'REPORTING_MANAGER', sla_hours: 48 },
-];
-
-// Relocation requests (an employee asking for relocation approval before claiming relocation
-// expenses) — like travel requests, no finance stage; same as
-// workflow_service.RELOCATION_REQUEST_DEFAULT_STAGES when nothing is configured.
-const RELOCATION_REQUEST_DEFAULT_STAGES = [
-  { number: 1, label: 'Recruiter Review', route_role: 'RECRUITER', sla_hours: 48 },
-  { number: 2, label: 'CEO Approval', route_role: 'CEO', sla_hours: 48 },
-  { number: 3, label: 'HRBP Review', route_role: 'HRBP_HR', sla_hours: 48 },
-  { number: 4, label: 'Payroll Review', route_role: 'PAYROLL', sla_hours: 48 },
-];
-
-// Workflow types stored as a category override (category_overrides[key]) but shown as their own
-// top-level "Workflow Type" rather than a claim category.
-const STANDALONE_STAGE_WORKFLOWS = {
-  TRAVEL_REQUEST: { title: 'Approval Stages — Travel Requests', defaults: TRAVEL_REQUEST_DEFAULT_STAGES },
-  RELOCATION_REQUEST: { title: 'Approval Stages — Relocation Requests', defaults: RELOCATION_REQUEST_DEFAULT_STAGES },
-};
-
-const ALLOWED_STAGE_ROLES = ['REPORTING_MANAGER', 'HRBP_HR', 'PAYROLL', 'FINANCE', 'CEO', 'GROUP_HEAD_HR', 'IT_ADMIN', 'RECRUITER'];
-const STAGE_ROLE_LABELS = {
-  REPORTING_MANAGER: 'Reporting Manager',
-  HRBP_HR: 'HRBP / HR',
-  PAYROLL: 'Payroll',
-  FINANCE: 'Finance',
-  CEO: 'CEO',
-  GROUP_HEAD_HR: 'Group Head HR',
-  IT_ADMIN: 'IT Admin',
-  RECRUITER: 'Recruiter',
-};
-
-/** Which of ALLOWED_STAGE_ROLES to actually offer for a row's dropdown — `eligibleRoles` is
- * whichever of claimApproverEligibleRoles/exceptionApproverEligibleRoles matches this row's
- * workflow type (see Role Permissions page — approve_claims and approve_exception are two
- * separate permissions, so a claim/travel-request stage and an exception chain entry each need
- * their own eligibility set, not one shared list). Always also includes whatever this row is
- * *currently* set to even if that role has since lost the permission, so an existing selection
- * never silently vanishes out from under the admin. `eligibleRoles === null` means the
- * eligibility fetch didn't come back (not authorized to read the Permission Matrix, or it
- * failed) — show every role, same as before this feature existed, rather than block the page
- * over a secondary nicety. */
-function stageRoleOptions(eligibleRoles, currentValue) {
-  if (!eligibleRoles) return ALLOWED_STAGE_ROLES;
-  return ALLOWED_STAGE_ROLES.filter((role) => eligibleRoles.has(role) || role === currentValue);
-}
-
-function sanitizeStageRoles(stageList) {
-  return (stageList || []).map((s) => ({
-    ...s,
-    route_role: ALLOWED_STAGE_ROLES.includes(s.route_role) ? s.route_role : 'HRBP_HR',
-  }));
-}
-
-// Every role token that ever appears in a stage/chain, for the "you're about to remove this
-// role from the matrix entirely" save-time warning below. REPORTING_MANAGER is included even
-// though it's relative-to-employee — see workflow_service.get_approver_scope's identical
-// reasoning: a user holding that role is still the kind of user this token routes to.
-const ROLES_WORTH_WARNING_ABOUT = ['REPORTING_MANAGER', 'HRBP_HR', 'PAYROLL', 'FINANCE', 'CEO', 'GROUP_HEAD_HR', 'RECRUITER'];
-
-function roleLabel(role) {
-  return String(role || '')
-    .split('_')
-    .map((w) => w.charAt(0) + w.slice(1).toLowerCase())
-    .join(' ');
-}
-
-/** Every route_role/chain-role token present anywhere in a full workflow config — stages,
- * every category override (incl. TRAVEL_REQUEST), and exception_chains. Used to diff
- * before-vs-after on save: a role dropping out of this set entirely means anyone holding that
- * role loses every approval-queue nav item and the Exception Requests page (see
- * get_approver_scope / navConfig.js's applyApproverScope) — worth a confirmation, since nothing
- * else here would otherwise catch "admin meant to edit one stage but deleted the role instead." */
-function rolesCoveredByConfig(config) {
-  const roles = new Set();
-  const addStages = (list) => (list || []).forEach((s) => s?.route_role && roles.add(s.route_role));
-  addStages(config.stages);
-  for (const override of Object.values(config.category_overrides || {})) {
-    addStages(override?.stages);
+/** The config exactly as it will be saved: steps numbered, hours and amounts cleaned up, empty entries dropped. */
+function normalize(cfg) {
+  const stageList = (list) =>
+    (list || []).map((s, i) => ({
+      ...s,
+      number: i + 1,
+      route_role: STEP_ROLES.includes(s.route_role) ? s.route_role : 'HRBP_HR',
+      sla_hours: sanitizeSlaHours(s.sla_hours),
+    }));
+  const overrides = {};
+  for (const key of ['TRAVEL', 'GENERAL', 'RELOCATION', 'TRAVEL_REQUEST', 'RELOCATION_REQUEST']) {
+    const list = cfg.category_overrides?.[key]?.stages;
+    if (list?.length) overrides[key] = { stages: stageList(list) };
   }
-  for (const chain of Object.values(config.exception_chains || {})) {
-    (chain || []).forEach((r) => roles.add(r));
+  const chains = cfg.exception_chains || {};
+  const heads = {};
+  for (const [dept, h] of Object.entries(cfg.department_heads || {})) {
+    if (!h?.head_user_id) continue;
+    heads[dept] = {
+      head_user_id: Number(h.head_user_id),
+      claims: Boolean(h.claims),
+      travel_requests: Boolean(h.travel_requests),
+      exceptions: Boolean(h.exceptions),
+    };
   }
-  return roles;
+  return {
+    stages: stageList(cfg.stages),
+    category_overrides: overrides,
+    submission: {
+      max_working_days_after_return: sanitizeMaxDays(cfg.submission?.max_working_days_after_return),
+      deadline_mode: DEADLINE_MODES.includes(cfg.submission?.deadline_mode) ? cfg.submission.deadline_mode : 'hard_block',
+    },
+    auto_approve_below_amount: sanitizeAutoApprove(cfg.auto_approve_below_amount ?? '2000.00'),
+    exception_chains: chains,
+    exception_enabled: cfg.exception_enabled || {},
+    exception_submission_mode: cfg.exception_submission_mode || {},
+    // One SLA per chain step, trimmed or padded to the chain's length.
+    exception_sla_hours: Object.fromEntries(
+      Object.entries(chains).map(([type, chain]) => [type, (chain || []).map((_, i) => sanitizeSlaHours(cfg.exception_sla_hours?.[type]?.[i] ?? 48))]),
+    ),
+    department_heads: heads,
+  };
 }
 
-function errorMessage(err) {
-  if (!err) return '';
-  const d = err.response?.data?.detail;
-  if (typeof d === 'string') return d;
-  if (Array.isArray(d)) return d.map((x) => x?.msg || JSON.stringify(x)).join('; ') || err.message;
-  return err.message;
+/** Plain names of what differs between two configs, for the save bar and the dots in the list. */
+function changedParts(a, b) {
+  const out = [];
+  if (j(a.stages) !== j(b.stages) || ['TRAVEL', 'GENERAL', 'RELOCATION'].some((k) => j(a.category_overrides[k]) !== j(b.category_overrides[k]))) out.push('CLAIMS');
+  // Ahead of the per-exception entries: ticking Exceptions changes all of them at once.
+  if (j(a.department_heads) !== j(b.department_heads)) out.push('DEPARTMENT_HEADS');
+  ['TRAVEL_REQUEST', 'RELOCATION_REQUEST'].forEach((k) => {
+    if (j(a.category_overrides[k]) !== j(b.category_overrides[k])) out.push(k);
+  });
+  [...EXCEPTION_KEYS, 'POLICY_APPROVAL'].forEach((k) => {
+    if (
+      j(a.exception_chains[k]) !== j(b.exception_chains[k]) ||
+      j(a.exception_sla_hours[k]) !== j(b.exception_sla_hours[k]) ||
+      (a.exception_enabled[k] !== false) !== (b.exception_enabled[k] !== false) ||
+      (a.exception_submission_mode[k] || 'ALLOW') !== (b.exception_submission_mode[k] || 'ALLOW')
+    )
+      out.push(k);
+  });
+  if (j(a.submission) !== j(b.submission) || a.auto_approve_below_amount !== b.auto_approve_below_amount) out.push('SUBMISSION');
+  return out;
+}
+const changeName = (k) => (k === 'DEPARTMENT_HEADS' ? 'Department heads' : k === 'SUBMISSION' ? 'Submission rules' : FLOW_NAMES[k]);
+
+function Switch({ checked, onChange, disabled, label }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-[22px] w-[38px] shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${checked ? 'bg-brand' : 'bg-slate-300'}`}
+    >
+      <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-[19px]' : 'translate-x-[3px]'}`} />
+    </button>
+  );
+}
+
+function Segmented({ label, options, value, onChange, disabled }) {
+  return (
+    <div role="group" aria-label={label} className="inline-flex flex-wrap gap-0.5 rounded-[10px] bg-slate-100 p-[3px]">
+      {options.map(([v, text, danger]) => (
+        <button
+          key={v}
+          type="button"
+          aria-pressed={value === v}
+          disabled={disabled}
+          onClick={() => onChange(v)}
+          className={`rounded-[7px] px-2.5 py-[5px] text-xs font-bold disabled:cursor-not-allowed ${
+            value === v ? `bg-white shadow-sm ${danger ? 'text-rose-700' : 'text-ink'}` : 'text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          {text}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Option({ title, children, control }) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3.5 rounded-xl border border-slate-200 px-3 py-2.5">
+      <div className="min-w-0 flex-1">
+        <b className="text-[13px] text-ink">{title}</b>
+        <p className="mt-0.5 max-w-[62ch] text-xs text-slate-500">{children}</p>
+      </div>
+      {control}
+    </div>
+  );
+}
+
+function Warn({ children }) {
+  return <div className="rounded-[10px] border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">{children}</div>;
 }
 
 export default function WorkflowConfig() {
-  useSetPageTitle('Workflow Configuration');
+  useSetPageTitle('Approval Matrix');
   const permissions = useAuthStore((s) => s.profile?.permissions);
-  const isViewOnly = !canEditWorkflowConfig(permissions);
+  const canEdit = canEditWorkflowConfig(permissions);
   const { showToast } = useToast();
-  const [selectedWorkflow, setSelectedWorkflow] = useState('STANDARD');
-  const [selectedCategory, setSelectedCategory] = useState('DEFAULT');
-  const [stages, setStages] = useState([]);
-  const [categoryOverrides, setCategoryOverrides] = useState({});
-  const [exceptionChains, setExceptionChains] = useState({});
-  // Per-step SLA (working hours) for each exception chain, aligned with exceptionChains[type];
-  // a missing entry means the default 48h.
-  const [exceptionSlaHours, setExceptionSlaHours] = useState({});
-  // Per-type on/off switch — a disabled type is never flagged/blocked anywhere it would
-  // otherwise apply (travel-request creation, flight/train search, claim submission, ...);
-  // missing from this map means enabled, same as a fresh deployment with nothing configured.
-  const [exceptionEnabled, setExceptionEnabled] = useState({});
-  // Per-type "When flagged" at claim submission: ALLOW (employee gives a reason, an exception
-  // request runs alongside the claim) or BLOCK (the claim can't be submitted with that expense).
-  // The server fills in defaults for every type, so this always arrives complete.
-  const [exceptionSubmissionMode, setExceptionSubmissionMode] = useState({});
-  // What a category override "falls back to" when unconfigured — every claim category shares
-  // the main `stages` list, but Travel Request has its own, unrelated default.
-  const defaultStagesForCategory = (category) => STANDALONE_STAGE_WORKFLOWS[category]?.defaults || stages;
-  // Travel Request approval is stored the same way as a claim category override
-  // (category_overrides.TRAVEL_REQUEST) — it's just surfaced as its own top-level "Workflow
-  // Type" instead of nested in the claim "Applies to" selector, so it behaves exactly like one
-  // throughout the stage editor below, just keyed by 'TRAVEL_REQUEST' instead of selectedCategory.
-  // Relocation Approval (category_overrides.RELOCATION_REQUEST) works exactly the same way.
-  const isTravelRequestWorkflow = selectedWorkflow === 'TRAVEL_REQUEST';
-  const isRelocationWorkflow = selectedWorkflow === 'RELOCATION_REQUEST';
-  const isStandaloneStageWorkflow = isTravelRequestWorkflow || isRelocationWorkflow;
-  // Not an exception type, but stored in the same exception_chains dict (see
-  // workflow_service.EXCEPTION_APPROVAL_CHAINS["POLICY_APPROVAL"]) and rendered through the
-  // exact same chain-editor path below as any exception type — only the dropdown placement,
-  // heading text, and which permission gates its role options differ.
-  const isPolicyApprovalWorkflow = selectedWorkflow === 'POLICY_APPROVAL';
-  const isCategoryOverride = (selectedWorkflow === 'STANDARD' && selectedCategory !== 'DEFAULT') || isStandaloneStageWorkflow;
-  const overrideKey = isStandaloneStageWorkflow ? selectedWorkflow : selectedCategory;
-  // Claim, Travel Request and Relocation stages are full {label, route_role, sla_hours} objects
-  // with editable label/SLA — exception chains are just a bare ordered list of roles, so those two
-  // fields stay fixed/disabled for them.
-  const isStageBasedWorkflow = selectedWorkflow === 'STANDARD' || isStandaloneStageWorkflow;
-  const [draggedIdx, setDraggedIdx] = useState(null);
-  const [submission, setSubmission] = useState({
-    max_working_days_after_return: 5,
-    deadline_mode: 'hard_block',
-  });
-  const [autoApprove, setAutoApprove] = useState('2000.00');
-  const [loadError, setLoadError] = useState(null);
-  // Snapshot of the config exactly as last loaded from the server — diffed against what's
-  // about to be saved so we can warn before a role silently drops out of the matrix entirely.
-  const [lastLoadedConfig, setLastLoadedConfig] = useState(null);
-  // Which ALLOWED_STAGE_ROLES actually hold approve_claims / approve_exception / approve_policy
-  // right now (see Role Permissions) — null until loaded, meaning "unknown, show every role"
-  // (see stageRoleOptions). Three separate sets, one per permission: a claim/travel-request
-  // stage, an exception chain entry, and a policy-approval chain entry are each gated by a
-  // different permission — using one set for all three would e.g. offer Payroll (holds
-  // approve_claims) as a policy approver, or hide a role that holds approve_policy but not
-  // approve_exception from the Policy Approval chain.
-  const [claimApproverEligibleRoles, setClaimApproverEligibleRoles] = useState(null);
-  const [exceptionApproverEligibleRoles, setExceptionApproverEligibleRoles] = useState(null);
-  const [policyApproverEligibleRoles, setPolicyApproverEligibleRoles] = useState(null);
+
+  const [cfg, setCfg] = useState(null);
+  const [base, setBase] = useState(null);
+  const [loadError, setLoadError] = useState('');
+  const [saveError, setSaveError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [confirmDrop, setConfirmDrop] = useState(null);
+  const [people, setPeople] = useState([]);
+  const [knownDepartments, setKnownDepartments] = useState([]);
+  const [departmentSizes, setDepartmentSizes] = useState({});
+  // Which roles hold approve_claims / approve_exception / approve_policy (Role permissions). null
+  // means unknown (not allowed to read it, or it failed): offer every role, as before.
+  const [eligible, setEligible] = useState({ claim: null, exception: null, policy: null });
+
+  const [sel, setSel] = useState('CLAIMS');
+  const [cat, setCat] = useState('DEFAULT');
+  const [query, setQuery] = useState('');
+  // Drag to reorder steps: a step only becomes draggable while its grip is held (so text in its
+  // inputs can still be selected); dropAt is the gap it would land in (0 = before the first).
+  const [armed, setArmed] = useState(null);
+  const [dragFrom, setDragFrom] = useState(null);
+  const [dropAt, setDropAt] = useState(null);
 
   const load = async () => {
     try {
-      setLoadError(null);
+      setLoadError('');
       const res = await adminApi.workflowConfig();
-      const cfg = res.data?.config || {};
-      setLastLoadedConfig(cfg);
-
-      // Best-effort — a role that can edit the Approval Matrix but wasn't also granted
-      // view_permission_matrix simply won't see eligibility filtering on the role dropdown; it
-      // falls back to offering every role, exactly like before this feature existed.
-      try {
-        const permRes = await adminApi.permissionMatrix();
-        const permissionsByRole = permRes.data?.config?.permissions || {};
-        const rolesHolding = (perm) =>
-          new Set(
-            Object.entries(permissionsByRole)
-              .filter(([, perms]) => (perms || []).includes(perm))
-              .map(([role]) => role)
-          );
-        setClaimApproverEligibleRoles(rolesHolding('approve_claims'));
-        setExceptionApproverEligibleRoles(rolesHolding('approve_exception'));
-        setPolicyApproverEligibleRoles(rolesHolding('approve_policy'));
-      } catch {
-        setClaimApproverEligibleRoles(null);
-        setExceptionApproverEligibleRoles(null);
-        setPolicyApproverEligibleRoles(null);
-      }
-
-
-      setStages(sanitizeStageRoles(cfg.stages || []));
-
-      const loadedOverrides = cfg.category_overrides || {};
-      const sanitizedOverrides = {};
-      for (const cat of ['TRAVEL', 'GENERAL', 'RELOCATION', 'TRAVEL_REQUEST', 'RELOCATION_REQUEST']) {
-        if (loadedOverrides[cat]?.stages?.length) {
-          sanitizedOverrides[cat] = { stages: sanitizeStageRoles(loadedOverrides[cat].stages) };
-        }
-      }
-      setCategoryOverrides(sanitizedOverrides);
-      setSelectedCategory('DEFAULT');
-      setExceptionChains(cfg.exception_chains || {});
-      setExceptionSlaHours(cfg.exception_sla_hours || {});
-      setExceptionEnabled(cfg.exception_enabled || {});
-      setExceptionSubmissionMode(cfg.exception_submission_mode || {});
-
-      const sub = cfg.submission || {};
-      setSubmission({
-        max_working_days_after_return: sanitizeMaxWorkingDaysAfterReturn(
-          sub.max_working_days_after_return,
-        ),
-        deadline_mode: DEADLINE_MODES.includes(sub.deadline_mode)
-          ? sub.deadline_mode
-          : 'hard_block',
-      });
-      setAutoApprove(sanitizeAutoApproveAmount(cfg.auto_approve_below_amount ?? '2000.00'));
+      const loaded = normalize(res.data?.config || {});
+      setCfg(loaded);
+      setBase(loaded);
     } catch (err) {
-      setLoadError(err);
+      setLoadError(errorMessage(err) || 'Could not load the approval matrix.');
     }
   };
 
   useEffect(() => {
     load();
+    adminApi
+      .permissionMatrix()
+      .then((res) => {
+        const byRole = res.data?.config?.permissions || {};
+        const holding = (perm) => new Set(Object.entries(byRole).filter(([, perms]) => (perms || []).includes(perm)).map(([role]) => role));
+        setEligible({ claim: holding('approve_claims'), exception: holding('approve_exception'), policy: holding('approve_policy') });
+      })
+      .catch(() => {});
+    adminApi
+      .departmentHeadCandidates()
+      .then((res) => {
+        setPeople(res.data?.people || []);
+        setKnownDepartments(res.data?.departments || []);
+        setDepartmentSizes(res.data?.department_sizes || {});
+      })
+      .catch(() => {});
   }, []);
 
-  const saveAction = useAsyncAction(async () => {
-    const normalizeStages = (list) =>
-      list.map((s, idx) => ({ ...s, number: idx + 1, sla_hours: sanitizeSlaHours(s.sla_hours) }));
+  const changes = useMemo(() => (cfg && base ? changedParts(normalize(cfg), base) : []), [cfg, base]);
+  // The company's departments (Company profile), plus any already given a head here.
+  const departments = useMemo(
+    () => [...new Set([...knownDepartments, ...Object.keys(cfg?.department_heads || {})])],
+    [knownDepartments, cfg],
+  );
 
-    const category_overrides = {};
-    for (const [cat, override] of Object.entries(categoryOverrides)) {
-      if (override?.stages?.length) {
-        category_overrides[cat] = { stages: normalizeStages(override.stages) };
-      }
+  if (!cfg) {
+    return (
+      <section className="flex flex-col gap-3.5">
+        <h1 className="text-xl font-extrabold text-ink">Approval matrix</h1>
+        {loadError ? (
+          <div role="alert" className="rounded-[10px] border border-rose-200 bg-rose-50 px-3 py-2.5 text-[13px] text-rose-700">
+            {loadError}
+          </div>
+        ) : (
+          <Skeleton variant="table" rows={6} columns={1} />
+        )}
+      </section>
+    );
+  }
+
+  const isOn = (k) => cfg.exception_enabled[k] !== false;
+  const modeOf = (k) => cfg.exception_submission_mode[k] || 'ALLOW';
+  const chainOf = (k) => (cfg.exception_chains[k] || []).map((role, i) => ({ route_role: role, sla_hours: cfg.exception_sla_hours[k]?.[i] ?? 48 }));
+  const stagesOf = (k, category = cat) =>
+    k === 'CLAIMS'
+      ? category === 'DEFAULT'
+        ? cfg.stages
+        : cfg.category_overrides[category]?.stages || cfg.stages
+      : cfg.category_overrides[k]?.stages || STANDALONE_DEFAULTS[k];
+  const listOf = (k) => (STAGE_FLOWS.includes(k) ? stagesOf(k) : chainOf(k));
+  const summary = (list) => list.map((s) => ROLE_SHORT[s.route_role] || formatRole(s.route_role)).join(' → ');
+  const headsFor = (flow) => departments.filter((d) => cfg.department_heads[d]?.head_user_id && cfg.department_heads[d]?.[flow]);
+  const personName = (id) => {
+    const p = people.find((x) => x.user_id === Number(id));
+    return p ? p.name : `User #${id}`;
+  };
+
+  const update = (fn) => setCfg((current) => fn(structuredClone(current)));
+
+  // Writes a step list back to wherever the selected flow keeps it.
+  const writeList = (draft, key, next) => {
+    if (key === 'CLAIMS') {
+      if (cat === 'DEFAULT') draft.stages = next;
+      else draft.category_overrides[cat] = { stages: next };
+    } else if (STAGE_FLOWS.includes(key)) {
+      draft.category_overrides[key] = { stages: next };
+    } else {
+      draft.exception_chains[key] = next.map((s) => s.route_role);
+      draft.exception_sla_hours[key] = next.map((s) => sanitizeSlaHours(s.sla_hours));
     }
+  };
+  const changeList = (fn) =>
+    update((draft) => {
+      const current = STAGE_FLOWS.includes(sel) ? structuredClone(stagesOf(sel)) : chainOf(sel);
+      writeList(draft, sel, fn(current));
+      return draft;
+    });
 
-    const config = {
-      stages: normalizeStages(stages),
-      category_overrides,
-      submission: {
-        max_working_days_after_return: sanitizeMaxWorkingDaysAfterReturn(
-          submission.max_working_days_after_return,
-        ),
-        deadline_mode: DEADLINE_MODES.includes(submission.deadline_mode)
-          ? submission.deadline_mode
-          : 'hard_block',
-      },
-      auto_approve_below_amount: sanitizeAutoApproveAmount(autoApprove),
-      exception_chains: exceptionChains,
-      exception_enabled: exceptionEnabled,
-      exception_submission_mode: exceptionSubmissionMode,
-      // Only chains that still exist, each trimmed/padded to its chain's length.
-      exception_sla_hours: Object.fromEntries(
-        Object.entries(exceptionChains).map(([type, chain]) => [
-          type,
-          (chain || []).map((_, i) => sanitizeSlaHours(exceptionSlaHours[type]?.[i] ?? 48)),
-        ]),
-      ),
+  // Keeps a real "Department head" step in a flow while any department has it ticked: added at
+  // the default spot (just before Finance on claims, last elsewhere) the first time, removed
+  // when no department needs it. Returns the lists that are already full, if any.
+  const syncHeadSteps = (draft, flow) => {
+    const needed = departments.some((d) => draft.department_heads[d]?.head_user_id && draft.department_heads[d]?.[flow]);
+    const full = [];
+    const fix = (list, beforeFinance, name) => {
+      const has = list.some((s) => s.route_role === DEPARTMENT_HEAD);
+      if (needed && !has) {
+        if (list.length >= MAX_STEPS) {
+          full.push(name);
+          return list;
+        }
+        const at = beforeFinance ? list.map((s) => s.route_role).lastIndexOf('FINANCE') : -1;
+        const next = [...list];
+        next.splice(at >= 0 ? at : next.length, 0, { label: 'Department head approval', route_role: DEPARTMENT_HEAD, sla_hours: 48 });
+        return next;
+      }
+      return !needed && has ? list.filter((s) => s.route_role !== DEPARTMENT_HEAD) : list;
     };
-
-    if (lastLoadedConfig) {
-      const before = rolesCoveredByConfig(lastLoadedConfig);
-      const after = rolesCoveredByConfig(config);
-      const dropped = ROLES_WORTH_WARNING_ABOUT.filter((r) => before.has(r) && !after.has(r));
-      if (dropped.length) {
-        const names = dropped.map(roleLabel).join(', ');
-        const proceed = window.confirm(
-          `After this save, ${names} will no longer be assigned to any claim stage, travel-request stage, relocation stage, or exception chain anywhere in the Approval Matrix. Anyone holding ${dropped.length > 1 ? 'these roles' : 'this role'} will lose access to Pending Approvals and Exception Requests entirely.\n\nSave anyway?`
-        );
-        if (!proceed) return;
-      }
+    if (flow === 'claims') {
+      draft.stages = fix(draft.stages, true, 'Claims');
+      ['TRAVEL', 'GENERAL', 'RELOCATION'].forEach((c) => {
+        if (draft.category_overrides[c]) draft.category_overrides[c] = { stages: fix(draft.category_overrides[c].stages, true, `${c.toLowerCase()} claims`) };
+      });
+    } else if (flow === 'travel_requests') {
+      const current = draft.category_overrides.TRAVEL_REQUEST?.stages || STANDALONE_DEFAULTS.TRAVEL_REQUEST;
+      const next = fix(current, false, 'Travel requests');
+      if (next !== current) draft.category_overrides.TRAVEL_REQUEST = { stages: next };
+    } else {
+      EXCEPTION_KEYS.forEach((k) => {
+        const current = (draft.exception_chains[k] || []).map((role, i) => ({ route_role: role, sla_hours: draft.exception_sla_hours[k]?.[i] ?? 48 }));
+        const next = fix(current, false, FLOW_NAMES[k]);
+        if (next !== current) {
+          draft.exception_chains[k] = next.map((s) => s.route_role);
+          draft.exception_sla_hours[k] = next.map((s) => sanitizeSlaHours(s.sla_hours));
+        }
+      });
     }
+    return full;
+  };
 
-    const res = await adminApi.updateWorkflowConfig(config);
-    await load();
+  const setHead = (dept, userId) =>
+    update((draft) => {
+      if (!userId) delete draft.department_heads[dept];
+      else draft.department_heads[dept] = { claims: false, travel_requests: false, exceptions: false, ...draft.department_heads[dept], head_user_id: Number(userId) };
+      HEAD_FLOWS.forEach(([flow]) => syncHeadSteps(draft, flow));
+      return draft;
+    });
+  const setHeadFlow = (dept, flow, on) => {
+    const draft = structuredClone(cfg);
+    draft.department_heads[dept] = { ...draft.department_heads[dept], [flow]: on };
+    const full = syncHeadSteps(draft, flow);
+    if (on && full.length) {
+      showToast(`${full.join(', ')} already ${full.length === 1 ? 'has' : 'have'} ${MAX_STEPS} steps. Remove one first.`, 'error');
+      return;
+    }
+    setCfg(draft);
+  };
 
-    const reassigned = res.data?.reassigned || {};
-    const totalReassigned = Object.values(reassigned).reduce((sum, n) => sum + (n || 0), 0);
-    if (totalReassigned > 0) {
+  const discard = () => {
+    setCfg(base);
+    setSaveError('');
+  };
+
+  const doSave = async (config) => {
+    setConfirmDrop(null);
+    setSaving(true);
+    setSaveError('');
+    try {
+      const res = await adminApi.updateWorkflowConfig(config);
+      const saved = normalize(res.data?.config || config);
+      setCfg(saved);
+      setBase(saved);
+      const reassigned = res.data?.reassigned || {};
       const parts = [];
-      if (reassigned.claims) parts.push(`${reassigned.claims} claim stage${reassigned.claims > 1 ? 's' : ''}`);
+      if (reassigned.claims) parts.push(`${reassigned.claims} claim step${reassigned.claims > 1 ? 's' : ''}`);
       if (reassigned.travel_request) parts.push(`${reassigned.travel_request} travel request${reassigned.travel_request > 1 ? 's' : ''}`);
       if (reassigned.exceptions) parts.push(`${reassigned.exceptions} exception approval${reassigned.exceptions > 1 ? 's' : ''}`);
-      showToast(
-        `Workflow configuration saved. Reassigned to the new approver: ${parts.join(', ')}.`,
-        'success'
-      );
-    } else {
-      showToast('Workflow configuration saved.', 'success');
+      showToast(parts.length ? `Approval matrix saved. Moved to the new approver: ${parts.join(', ')}.` : 'Approval matrix saved.', 'success');
+    } catch (err) {
+      setSaveError(errorMessage(err) || 'Could not save the approval matrix.');
+    } finally {
+      setSaving(false);
     }
-  });
+  };
 
-  const displayError = loadError || saveAction.error;
+  const save = () => {
+    const config = normalize(cfg);
+    const before = rolesCoveredByConfig(base);
+    const after = rolesCoveredByConfig(config);
+    const dropped = ROLES_WORTH_WARNING_ABOUT.filter((r) => before.has(r) && !after.has(r));
+    if (dropped.length) setConfirmDrop({ config, dropped });
+    else doSave(config);
+  };
+
+  // ---- Left-hand list ----
+  const q = query.trim().toLowerCase();
+  const groups = [
+    {
+      title: 'Approvals',
+      items: [
+        ['CLAIMS', summary(cfg.stages), ['TRAVEL', 'GENERAL', 'RELOCATION'].some((c) => cfg.category_overrides[c]) ? <Pill tone="brand">Custom by category</Pill> : null],
+        ['TRAVEL_REQUEST', summary(stagesOf('TRAVEL_REQUEST')), cfg.category_overrides.TRAVEL_REQUEST ? null : <Pill>Default</Pill>],
+        ['RELOCATION_REQUEST', summary(stagesOf('RELOCATION_REQUEST')), cfg.category_overrides.RELOCATION_REQUEST ? null : <Pill>Default</Pill>],
+        ['POLICY_APPROVAL', summary(chainOf('POLICY_APPROVAL')), null],
+      ],
+    },
+    {
+      title: 'Claim exceptions',
+      items: Object.keys(CLAIM_EXCEPTIONS).map((k) => [
+        k,
+        isOn(k) ? summary(chainOf(k)) : 'Switched off',
+        !isOn(k) ? <Pill>Off</Pill> : CLAIM_SUBMIT_EXCEPTIONS.has(k) && modeOf(k) === 'BLOCK' ? <Pill tone="rose">Blocks claim</Pill> : null,
+      ]),
+    },
+    {
+      title: 'Travel request exceptions',
+      items: Object.keys(TRAVEL_EXCEPTIONS).map((k) => [k, isOn(k) ? summary(chainOf(k)) : 'Switched off', !isOn(k) ? <Pill>Off</Pill> : null]),
+    },
+  ];
+
+  // ---- Editor for the selected flow ----
+  const stageBased = STAGE_FLOWS.includes(sel);
+  const isPolicy = sel === 'POLICY_APPROVAL';
+  const isException = !stageBased && !isPolicy;
+  const list = listOf(sel);
+  const roleEligible = sel === 'RELOCATION_REQUEST' ? null : stageBased ? eligible.claim : isPolicy ? eligible.policy : eligible.exception;
+  const headFlow = headFlowOf(sel);
+  const headDepts = headFlow ? headsFor(headFlow) : [];
+  const customRoute = sel === 'CLAIMS' ? cat !== 'DEFAULT' && Boolean(cfg.category_overrides[cat]) : stageBased && Boolean(cfg.category_overrides[sel]);
+  const catName = CLAIM_CATEGORIES.find(([v]) => v === cat)?.[1];
+  const description =
+    sel === 'CLAIMS'
+      ? 'Every claim goes through these steps in order. There must be a Finance step.'
+      : sel === 'TRAVEL_REQUEST'
+        ? 'A trip request goes through these steps before the Travel Desk books it.'
+        : sel === 'RELOCATION_REQUEST'
+          ? 'Someone without relocation approval asks for it here; once the last step approves, they can raise relocation claims (which then follow Claims → Relocation).'
+          : isPolicy
+            ? 'A new policy version needs these approvals before it can take effect.'
+            : CLAIM_EXCEPTIONS[sel]
+              ? 'When a claim has this, an exception request goes to these approvers, in order.'
+              : 'When a travel request has this, an exception request goes to these approvers, in order.';
+  const roleOptions = (current) =>
+    STEP_ROLES.filter((r) => (r === DEPARTMENT_HEAD ? headFlow !== null || current === r : !roleEligible || roleEligible.has(r) || r === current));
+  const noFinance = sel === 'CLAIMS' && !list.some((s) => s.route_role === 'FINANCE');
+  const noName = stageBased && list.some((s) => !String(s.label || '').trim());
+  const headSteps = list.filter((s) => s.route_role === DEPARTMENT_HEAD).length;
 
   return (
-    <>
-      <PageHeader
-        title=""
-        actions={
-          <>
-            {isViewOnly ? <span className="badge bg-slate-100 text-slate-700">View Only</span> : null}
-            {!isViewOnly ? (
-              <button
-                type="button"
-                className="btn-primary"
-                onClick={() => saveAction.run()}
-                disabled={saveAction.loading}
-              >
-                <Save size={17} />
-                {saveAction.loading ? 'Saving…' : 'Save Changes'}
-              </button>
-            ) : null}
-          </>
-        }
-      />
-      {displayError ? (
-        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-          {errorMessage(displayError)}
+    <section className={`flex flex-col gap-3.5 ${changes.length && canEdit ? 'pb-24' : ''}`}>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-extrabold text-ink">Approval matrix</h1>
+          <p className="mt-0.5 text-[13px] text-slate-500">Who approves what, in what order, and how long each step has.</p>
         </div>
-      ) : null}
-
-      <section className="panel mb-4 flex flex-wrap items-center justify-between gap-4 p-4">
-        <div className="flex flex-wrap items-center gap-4">
-          <label className="text-sm font-semibold text-slate-700">
-            Workflow Type:
-          </label>
-          <select className="field min-w-64 bg-slate-50 py-1.5 text-sm" value={selectedWorkflow} onChange={(event) => setSelectedWorkflow(event.target.value)}>
-            <option value="STANDARD">Claim Approval</option>
-            <option value="TRAVEL_REQUEST">Travel Request Approval</option>
-            <option value="RELOCATION_REQUEST">Relocation Approval</option>
-            <option value="POLICY_APPROVAL">Policy Approval</option>
-            <optgroup label="Exception Workflows — Claims">
-              {Object.entries(EXCEPTION_TYPES)
-                .filter(([key]) => !TRAVEL_REQUEST_EXCEPTION_KEYS.has(key))
-                .map(([key, label]) => (
-                  <option key={key} value={key}>{label}</option>
-                ))}
-            </optgroup>
-            <optgroup label="Exception Workflows — Travel Requests">
-              {Object.entries(EXCEPTION_TYPES)
-                .filter(([key]) => TRAVEL_REQUEST_EXCEPTION_KEYS.has(key))
-                .map(([key, label]) => (
-                  <option key={key} value={key}>{label}</option>
-                ))}
-            </optgroup>
-          </select>
-          {selectedWorkflow === 'STANDARD' ? (
-            <>
-              <label className="text-sm font-semibold text-slate-700">Applies to:</label>
-              <select
-                className="field min-w-56 bg-slate-50 py-1.5 text-sm"
-                value={selectedCategory}
-                onChange={(event) => setSelectedCategory(event.target.value)}
-              >
-                {STAGE_CATEGORIES.map((c) => (
-                  <option key={c.value} value={c.value}>{c.label}</option>
-                ))}
-              </select>
-            </>
-          ) : null}
-        </div>
-      </section>
-
-      {isCategoryOverride ? (
-        <section className="panel mb-4 flex flex-wrap items-center justify-between gap-3 p-4">
-          {categoryOverrides[overrideKey]?.stages?.length ? (
-            <span className="badge bg-brand/10 text-brand">
-              Custom route configured{isStandaloneStageWorkflow ? '' : ' for this category'}
-            </span>
-          ) : (
-            <span className="badge bg-slate-100 text-slate-700">Using the shared default route below</span>
-          )}
-          {!isViewOnly && categoryOverrides[overrideKey]?.stages?.length ? (
-            <button
-              type="button"
-              className="btn-secondary text-xs"
-              onClick={() =>
-                setCategoryOverrides((prev) => {
-                  const next = { ...prev };
-                  delete next[overrideKey];
-                  return next;
-                })
-              }
-            >
-              Reset to shared default
-            </button>
-          ) : null}
-        </section>
-      ) : null}
-
-      {/* Policy approval isn't an optional, detectable condition the way an exception type
-          is — there's nothing to "disable", a policy version always needs approval before
-          going active — so it gets no on/off toggle even though it shares the chain editor. */}
-      {!isStageBasedWorkflow && !isPolicyApprovalWorkflow ? (
-        <section className="panel mb-4 flex flex-wrap items-center justify-between gap-3 p-4">
-          <div>
-            <div className="text-sm font-semibold text-ink">
-              {exceptionEnabled[selectedWorkflow] === false ? 'Exception disabled' : 'Exception enabled'}
+        <div className="flex flex-wrap items-stretch gap-2">
+          {[
+            ['Approval flows', 4],
+            ['Exceptions on', `${EXCEPTION_KEYS.filter(isOn).length} / ${EXCEPTION_KEYS.length}`],
+            ['Block a claim', Object.keys(CLAIM_EXCEPTIONS).filter((k) => CLAIM_SUBMIT_EXCEPTIONS.has(k) && isOn(k) && modeOf(k) === 'BLOCK').length],
+          ].map(([label, value]) => (
+            <div key={label} className="min-w-[96px] rounded-xl border border-slate-200 bg-white px-3 py-[7px]">
+              <b className="block text-[17px] text-ink">{value}</b>
+              <span className="text-[11.5px] font-semibold text-slate-500">{label}</span>
             </div>
-            <p className="text-xs text-slate-500">
-              {exceptionEnabled[selectedWorkflow] === false
-                ? "This condition is never flagged — a request or claim that would otherwise trip it goes through untouched, with no approval needed."
-                : 'This condition is actively checked and routes through the approval chain below whenever it fires.'}
-            </p>
-          </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={exceptionEnabled[selectedWorkflow] !== false}
-            aria-label="Toggle this exception on or off"
-            disabled={isViewOnly}
-            onClick={() =>
-              setExceptionEnabled((prev) => {
-                const currentlyEnabled = prev[selectedWorkflow] !== false;
-                return { ...prev, [selectedWorkflow]: !currentlyEnabled };
-              })
-            }
-            className={`relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-              exceptionEnabled[selectedWorkflow] === false ? 'bg-slate-300' : 'bg-brand'
-            }`}
-          >
-            <span
-              className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
-                exceptionEnabled[selectedWorkflow] === false ? 'left-0.5' : 'left-[22px]'
-              }`}
-            />
-          </button>
-        </section>
+          ))}
+          {!canEdit ? <span className="self-center rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-600">View only</span> : null}
+        </div>
+      </div>
+
+      {saveError ? (
+        <div role="alert" className="rounded-[10px] border border-rose-200 bg-rose-50 px-3 py-2.5 text-[13px] text-rose-700">
+          {saveError}
+        </div>
       ) : null}
 
-      {CLAIM_SUBMIT_EXCEPTION_KEYS.has(selectedWorkflow) && exceptionEnabled[selectedWorkflow] !== false ? (
-        <section className="panel mb-4 flex flex-wrap items-center justify-between gap-3 p-4">
-          <div className="min-w-0 flex-1">
-            <div className="text-sm font-semibold text-ink">When flagged on a claim</div>
-            <p className="text-xs text-slate-500">
-              {SUBMISSION_MODE_OPTIONS.find((o) => o.value === (exceptionSubmissionMode[selectedWorkflow] || 'ALLOW'))?.hint}
-            </p>
-          </div>
-          <div role="radiogroup" aria-label="When flagged on a claim" className="inline-flex shrink-0 rounded-lg border border-slate-200 bg-slate-50 p-0.5">
-            {SUBMISSION_MODE_OPTIONS.map((option) => {
-              const selected = (exceptionSubmissionMode[selectedWorkflow] || 'ALLOW') === option.value;
+      <div className="grid items-start gap-3.5 lg:grid-cols-[300px_minmax(0,1fr)] xl:grid-cols-[320px_minmax(0,1fr)]">
+        <aside aria-label="Approval flows" className={`${CARD} flex max-h-[360px] flex-col lg:sticky lg:top-[calc(var(--app-nav-h,56px)+12px)] lg:max-h-[calc(100vh-var(--app-nav-h,56px)-24px)]`}>
+          <label className="relative border-b border-slate-100 p-2.5">
+            <span className="sr-only">Find a flow or exception</span>
+            <Search size={14} className="pointer-events-none absolute left-5 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input className={`${FILTER} w-full pl-8`} placeholder="Find a flow or exception" value={query} onChange={(e) => setQuery(e.target.value)} />
+          </label>
+          <div className="overflow-y-auto">
+            {groups.map((group) => {
+              const items = group.items.filter(([k]) => !q || FLOW_NAMES[k].toLowerCase().includes(q));
+              if (!items.length) return null;
               return (
-                <button
-                  key={option.value}
-                  type="button"
-                  role="radio"
-                  aria-checked={selected}
-                  disabled={isViewOnly}
-                  onClick={() => setExceptionSubmissionMode((prev) => ({ ...prev, [selectedWorkflow]: option.value }))}
-                  className={`rounded-md px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed ${
-                    selected
-                      ? option.value === 'BLOCK'
-                        ? 'bg-white text-rose-700 shadow-sm'
-                        : 'bg-white text-brand shadow-sm'
-                      : 'text-slate-500 hover:text-slate-700'
-                  }`}
-                >
-                  {option.label}
-                </button>
+                <div key={group.title}>
+                  <div className={`${EYEBROW} flex justify-between px-3.5 pb-1 pt-2.5`}>
+                    <span>{group.title}</span>
+                    <span>{items.length}</span>
+                  </div>
+                  {items.map(([k, line, tag]) => {
+                    const off = EXCEPTION_KEYS.includes(k) && !isOn(k);
+                    return (
+                      <button
+                        key={k}
+                        type="button"
+                        aria-current={sel === k || undefined}
+                        onClick={() => setSel(k)}
+                        className={`block w-full border-l-[3px] py-2 pl-[11px] pr-3.5 text-left ${sel === k ? 'border-l-brand bg-brand/[0.07]' : 'border-l-transparent hover:bg-slate-50'}`}
+                      >
+                        <span className="flex items-center justify-between gap-2">
+                          <span className={`flex min-w-0 items-center gap-1.5 text-[13px] font-bold ${off ? 'text-slate-400' : 'text-ink'}`}>
+                            {changes.includes(k) ? <span title="Unsaved change" className="h-1.5 w-1.5 flex-none rounded-full bg-amber-500" /> : null}
+                            <span className="truncate">{FLOW_NAMES[k]}</span>
+                          </span>
+                          {tag}
+                        </span>
+                        <span className={`mt-0.5 block truncate text-[11.5px] ${off ? 'text-slate-400' : 'text-slate-500'}`}>{line}</span>
+                      </button>
+                    );
+                  })}
+                </div>
               );
             })}
           </div>
-        </section>
-      ) : null}
+        </aside>
 
-      <section className="panel p-4">
-        <h2 className="mb-3 text-base font-semibold text-ink">
-          {selectedWorkflow === 'STANDARD'
-            ? `Approval Stages — ${STAGE_CATEGORIES.find((c) => c.value === selectedCategory)?.label}`
-            : isStandaloneStageWorkflow
-              ? STANDALONE_STAGE_WORKFLOWS[selectedWorkflow].title
-              : isPolicyApprovalWorkflow
-                ? 'Approval Chain — Policy Versions'
-                : EXCEPTION_TYPES[selectedWorkflow]}
-        </h2>
-        <p className="mb-3 text-xs text-slate-500">
-          {isStandaloneStageWorkflow || !isStageBasedWorkflow
-            ? 'Stages run in order. Maximum 6 stages.'
-            : 'Stages run in order. Finance must be the final stage. Maximum 6 stages.'}
-          {isRelocationWorkflow
-            ? ' An employee who doesn’t already have relocation approval sends a request through these stages; once the last one approves, they can raise relocation claims against it. The claims themselves follow Claim Approval → Relocations, ending with Finance.'
-            : ''}
-          {!isPolicyApprovalWorkflow
-            ? ' SLA hours count working days only (weekends and Holiday Calendar days are skipped). If an approver misses their SLA it passes to the next stage — except the last stage, which keeps getting reminders every 4 working hours.'
-            : ''}
-        </p>
-        <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-center text-[11px] font-bold uppercase tracking-wider text-slate-500">
-            <tr>
-              <th className="px-4 py-3">#</th>
-              <th className="px-4 py-3">Label</th>
-              <th className="px-4 py-3">Approver Role</th>
-              <th className="px-4 py-3">SLA (hours)</th>
-              {!isViewOnly ? <th className="px-4 py-3 w-32">Actions</th> : null}
-            </tr>
-          </thead>
-          <tbody>
-            {(() => {
-              const currentStages = isCategoryOverride
-                ? categoryOverrides[overrideKey]?.stages?.length
-                  ? categoryOverrides[overrideKey].stages
-                  : defaultStagesForCategory(overrideKey)
-                : selectedWorkflow === 'STANDARD'
-                  ? stages
-                  : (exceptionChains[selectedWorkflow] || []).map((r, i) => ({
-                      label: `Exception Approval ${i + 1}`,
-                      route_role: r,
-                      sla_hours: exceptionSlaHours[selectedWorkflow]?.[i] ?? 48,
-                    }));
-
-              const updateCurrentStages = (newStages) => {
-                if (isCategoryOverride) {
-                  setCategoryOverrides((prev) => ({ ...prev, [overrideKey]: { stages: newStages } }));
-                } else if (selectedWorkflow === 'STANDARD') {
-                  setStages(newStages);
-                } else {
-                  setExceptionChains({
-                    ...exceptionChains,
-                    [selectedWorkflow]: newStages.map(s => s.route_role),
-                  });
-                  // SLA hours travel with their step when steps are reordered or removed.
-                  setExceptionSlaHours((prev) => ({
-                    ...prev,
-                    [selectedWorkflow]: newStages.map((s) => sanitizeSlaHours(s.sla_hours ?? 48)),
-                  }));
-                }
-              };
-
-              return currentStages.map((stage, idx) => (
-                <tr
-                  key={idx}
-                  className={`border-t border-line transition-colors hover:bg-slate-50/50 ${draggedIdx === idx ? 'opacity-50 bg-slate-100' : ''} ${!isViewOnly ? 'cursor-move' : ''}`}
-                  draggable={!isViewOnly}
-                  onDragStart={() => setDraggedIdx(idx)}
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={() => {
-                    if (draggedIdx === null || draggedIdx === idx) return;
-                    const n = [...currentStages];
-                    const item = n[draggedIdx];
-                    n.splice(draggedIdx, 1);
-                    n.splice(idx, 0, item);
-                    updateCurrentStages(n);
-                    setDraggedIdx(null);
-                  }}
-                >
-                  <td className="px-4 py-3 text-center">
-                  <div className="flex items-center justify-center gap-3">
-                    {!isViewOnly && <GripVertical className="text-slate-300 cursor-move hover:text-slate-500 transition-colors" size={16} />}
-                    <div className="flex h-7 w-7 items-center justify-center rounded-full bg-brand/10 text-xs font-bold text-brand shadow-sm">
-                      {idx + 1}
+        <div className="flex min-w-0 flex-col gap-3.5">
+          <section aria-label={FLOW_NAMES[sel]} className={CARD}>
+            <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 px-4 py-3.5">
+              <div>
+                <h2 className="text-base font-extrabold text-ink">{FLOW_NAMES[sel]}</h2>
+                <p className="mt-0.5 max-w-[70ch] text-[12.5px] leading-normal text-slate-500">{description}</p>
+              </div>
+              <Pill tone={isException && !isOn(sel) ? 'slate' : 'brand'}>
+                {list.length} step{list.length === 1 ? '' : 's'}
+              </Pill>
+            </div>
+            <div className="flex flex-col gap-3.5 px-4 py-3.5">
+              {sel === 'CLAIMS' ? (
+                <Option
+                  title="Applies to"
+                  control={
+                    <div className="flex flex-wrap items-center gap-2">
+                      {customRoute && canEdit ? (
+                        <button
+                          type="button"
+                          className={BTN_SM}
+                          onClick={() =>
+                            update((d) => {
+                              delete d.category_overrides[cat];
+                              return d;
+                            })
+                          }
+                        >
+                          Use the shared route
+                        </button>
+                      ) : null}
+                      <Segmented label="Claim category" options={CLAIM_CATEGORIES} value={cat} onChange={setCat} />
                     </div>
-                  </div>
-                </td>
-                <td className="px-4 py-3 text-center">
-                  <input
-                    className="w-full rounded-lg border border-transparent bg-slate-50 px-3 py-1.5 text-sm hover:border-slate-200 focus:border-brand focus:bg-white focus:ring-1 focus:ring-brand/30 transition-all outline-none disabled:opacity-50 disabled:bg-slate-100 disabled:text-slate-500"
-                    disabled={isViewOnly || !isStageBasedWorkflow}
-                    value={stage.label ?? ''}
-                    placeholder="Stage Label"
-                    onChange={(e) => {
-                      const next = [...currentStages];
-                      next[idx] = { ...next[idx], label: e.target.value };
-                      updateCurrentStages(next);
-                    }}
-                  />
-                </td>
-                <td className="px-4 py-3 text-center">
-                  <select
-                    className="w-full rounded-lg border border-transparent bg-slate-50 px-3 py-1.5 text-sm hover:border-slate-200 focus:border-brand focus:bg-white focus:ring-1 focus:ring-brand/30 transition-all outline-none disabled:opacity-50"
-                    disabled={isViewOnly}
-                    value={stage.route_role ?? 'HRBP_HR'}
-                    onChange={(e) => {
-                      const next = [...currentStages];
-                      next[idx] = { ...next[idx], route_role: e.target.value };
-                      updateCurrentStages(next);
-                    }}
-                  >
-                    {(() => {
-                      // Relocation stages aren't permission-gated (the stage role alone decides
-                      // who acts, e.g. a Recruiter with no approval permission) — offer every role.
-                      const eligibleRoles = isRelocationWorkflow
-                        ? null
-                        : isStageBasedWorkflow
-                        ? claimApproverEligibleRoles
-                        : isPolicyApprovalWorkflow
-                          ? policyApproverEligibleRoles
-                          : exceptionApproverEligibleRoles;
-                      return stageRoleOptions(eligibleRoles, stage.route_role ?? 'HRBP_HR').map((role) => (
-                        <option key={role} value={role}>
-                          {STAGE_ROLE_LABELS[role]}
-                          {eligibleRoles && !eligibleRoles.has(role) ? ' (no longer eligible)' : ''}
-                        </option>
-                      ));
-                    })()}
-                  </select>
-                </td>
-                <td className="px-4 py-3 text-center">
-                  <div className="flex items-center justify-center gap-2">
-                    <input
-                      className="w-20 text-center rounded-lg border border-transparent bg-slate-50 px-3 py-1.5 text-sm hover:border-slate-200 focus:border-brand focus:bg-white focus:ring-1 focus:ring-brand/30 transition-all outline-none disabled:opacity-50 disabled:bg-slate-100 disabled:text-slate-500"
-                      type="number"
-                      min="1"
-                      disabled={isViewOnly || isPolicyApprovalWorkflow}
-                      value={stage.sla_hours ?? ''}
-                      onChange={(e) => {
-                        const next = [...currentStages];
-                        const v = e.target.value;
-                        const n = v === '' ? NaN : Number(v);
-                        next[idx] = {
-                          ...next[idx],
-                          sla_hours:
-                            Number.isFinite(n) && n >= 1 ? Math.floor(n) : sanitizeSlaHours(next[idx].sla_hours),
-                        };
-                        updateCurrentStages(next);
-                      }}
-                    />
-                    <span className="text-xs font-medium text-slate-400 uppercase tracking-wider">hrs</span>
-                  </div>
-                </td>
-                {!isViewOnly ? (
-                  <td className="px-4 py-3 text-center">
-                    <div className="flex items-center justify-center gap-1">
-                      <div className="flex flex-col bg-slate-50 rounded-lg border border-slate-200 overflow-hidden shadow-[0_1px_2px_0_rgba(0,0,0,0.05)]">
-                        <button
-                          type="button"
-                          className="p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700 disabled:opacity-30 transition-colors"
-                          disabled={idx === 0}
-                          onClick={() => {
-                            const n = [...currentStages];
-                            [n[idx - 1], n[idx]] = [n[idx], n[idx - 1]];
-                            updateCurrentStages(n);
-                          }}
-                        >
-                          <ArrowUp size={12} />
-                        </button>
-                        <div className="h-px w-full bg-slate-200"></div>
-                        <button
-                          type="button"
-                          className="p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700 disabled:opacity-30 transition-colors"
-                          disabled={idx === currentStages.length - 1}
-                          onClick={() => {
-                            const n = [...currentStages];
-                            [n[idx], n[idx + 1]] = [n[idx + 1], n[idx]];
-                            updateCurrentStages(n);
-                          }}
-                        >
-                          <ArrowDown size={12} />
-                        </button>
-                      </div>
+                  }
+                >
+                  {cat === 'DEFAULT'
+                    ? 'The shared route every claim uses unless its category has its own.'
+                    : customRoute
+                      ? `${catName} claims have their own route.`
+                      : `${catName} claims use the shared route. Change a step to give them their own.`}
+                </Option>
+              ) : null}
+              {sel === 'TRAVEL_REQUEST' || sel === 'RELOCATION_REQUEST' ? (
+                <Option
+                  title={customRoute ? 'Custom route' : 'Default route'}
+                  control={
+                    customRoute && canEdit ? (
                       <button
                         type="button"
-                        className="ml-2 p-1.5 rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-30 transition-colors"
-                        disabled={currentStages.length <= 1}
-                        title="Remove stage"
-                        onClick={() => updateCurrentStages(currentStages.filter((_, i) => i !== idx))}
+                        className={BTN_SM}
+                        onClick={() =>
+                          update((d) => {
+                            delete d.category_overrides[sel];
+                            return d;
+                          })
+                        }
                       >
-                        <Trash2 size={16} />
+                        Back to default
                       </button>
-                    </div>
-                  </td>
-                ) : null}
-              </tr>
-              ));
-            })()}
-          </tbody>
-        </table>
-        {!isViewOnly && (() => {
-          const activeStages = isCategoryOverride
-            ? categoryOverrides[overrideKey]?.stages?.length
-              ? categoryOverrides[overrideKey].stages
-              : defaultStagesForCategory(overrideKey)
-            : selectedWorkflow === 'STANDARD'
-              ? stages
-              : exceptionChains[selectedWorkflow] || [];
-          return activeStages.length < 6;
-        })() ? (
-          <button
-            type="button"
-            className="btn-secondary mt-3"
-            onClick={() => {
-              const newStage = { label: 'New Stage', route_role: 'HRBP_HR', sla_hours: 48 };
-              if (isCategoryOverride) {
-                const base = categoryOverrides[overrideKey]?.stages?.length
-                  ? categoryOverrides[overrideKey].stages
-                  : defaultStagesForCategory(overrideKey);
-                setCategoryOverrides((prev) => ({ ...prev, [overrideKey]: { stages: [...base, newStage] } }));
-              } else if (selectedWorkflow === 'STANDARD') {
-                setStages([...stages, newStage]);
-              } else {
-                setExceptionChains({
-                  ...exceptionChains,
-                  [selectedWorkflow]: [...(exceptionChains[selectedWorkflow] || []), 'HRBP_HR']
-                });
-                setExceptionSlaHours((prev) => ({
-                  ...prev,
-                  [selectedWorkflow]: [
-                    ...(exceptionChains[selectedWorkflow] || []).map((_, i) => prev[selectedWorkflow]?.[i] ?? 48),
-                    48,
-                  ],
-                }));
-              }
-            }}
-          >
-            <Plus size={15} /> Add Stage
-          </button>
-        ) : null}
-      </section>
+                    ) : null
+                  }
+                >
+                  {customRoute ? 'Set up for this flow.' : 'The built-in steps. Change one to make your own.'}
+                </Option>
+              ) : null}
+              {isException ? (
+                <Option
+                  title={isOn(sel) ? 'Switched on' : 'Switched off'}
+                  control={
+                    <Switch
+                      label="Switch this exception on or off"
+                      checked={isOn(sel)}
+                      disabled={!canEdit}
+                      onChange={(on) =>
+                        update((d) => {
+                          d.exception_enabled[sel] = on;
+                          return d;
+                        })
+                      }
+                    />
+                  }
+                >
+                  {isOn(sel)
+                    ? 'This is checked, and goes to the approvers below whenever it happens.'
+                    : 'Never flagged: anything that would trip it goes through without approval.'}
+                </Option>
+              ) : null}
+              {isException && CLAIM_SUBMIT_EXCEPTIONS.has(sel) && isOn(sel) ? (
+                <Option
+                  title="When it's on a claim"
+                  control={
+                    <Segmented
+                      label="When it's on a claim"
+                      disabled={!canEdit}
+                      options={[
+                        ['ALLOW', 'Allow with a reason'],
+                        ['BLOCK', 'Block the claim', true],
+                      ]}
+                      value={modeOf(sel)}
+                      onChange={(v) =>
+                        update((d) => {
+                          d.exception_submission_mode[sel] = v;
+                          return d;
+                        })
+                      }
+                    />
+                  }
+                >
+                  {modeOf(sel) === 'BLOCK'
+                    ? "The claim can't be submitted while it has this expense, even with a reason."
+                    : 'The employee gives a reason and submits; this exception goes to its approvers alongside the claim.'}
+                </Option>
+              ) : null}
 
-      <section className="panel mt-4 p-6">
-        <div className="mb-5">
-          <h2 className="text-[15px] font-bold text-ink">Claim Submission Rules</h2>
-          <p className="mt-1 text-xs text-slate-500">Configure global deadlines and auto-approval thresholds.</p>
+              <div>
+                <div
+                  className={`${EYEBROW} hidden gap-2.5 px-[11px] pb-1.5 sm:grid ${
+                    stageBased ? 'sm:grid-cols-[48px_minmax(0,1.2fr)_minmax(0,1fr)_128px_92px]' : 'sm:grid-cols-[48px_minmax(0,1fr)_128px_92px]'
+                  }`}
+                >
+                  <span>#</span>
+                  {stageBased ? <span>Step</span> : null}
+                  <span>Approver</span>
+                  <span className="text-right">Time to act</span>
+                  <span />
+                </div>
+                <ol className={`flex flex-col ${isException && !isOn(sel) ? 'opacity-50' : ''}`}>
+                  {list.map((step, i) => {
+                    const head = step.route_role === DEPARTMENT_HEAD;
+                    const dropLine = <span aria-hidden className="my-0.5 block h-[3px] rounded-full bg-brand" />;
+                    return (
+                      <li
+                        key={`${sel}-${cat}-${i}`}
+                        className={`flex flex-col ${dragFrom === i ? 'opacity-40' : ''}`}
+                        draggable={canEdit && armed === i}
+                        onDragStart={(e) => {
+                          e.dataTransfer.effectAllowed = 'move';
+                          e.dataTransfer.setData('text/plain', String(i));
+                          setDragFrom(i);
+                        }}
+                        onDragOver={(e) => {
+                          if (dragFrom === null) return;
+                          e.preventDefault();
+                          const box = e.currentTarget.getBoundingClientRect();
+                          setDropAt(e.clientY < box.top + box.height / 2 ? i : i + 1);
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          const from = dragFrom;
+                          const to = dropAt;
+                          if (from !== null && to !== null && to !== from && to !== from + 1) {
+                            changeList((l) => {
+                              const [moved] = l.splice(from, 1);
+                              l.splice(to > from ? to - 1 : to, 0, moved);
+                              return l;
+                            });
+                          }
+                          setDragFrom(null);
+                          setDropAt(null);
+                          setArmed(null);
+                        }}
+                        onDragEnd={() => {
+                          setDragFrom(null);
+                          setDropAt(null);
+                          setArmed(null);
+                        }}
+                      >
+                        {i ? <span aria-hidden className="ml-[34px] h-3.5 w-0.5 bg-slate-200" /> : null}
+                        {dragFrom !== null && dropAt === i && dropAt !== dragFrom && dropAt !== dragFrom + 1 ? dropLine : null}
+                        <div
+                          className={`grid grid-cols-[48px_minmax(0,1fr)] items-center gap-2.5 rounded-xl border px-2.5 py-[9px] ${
+                            stageBased ? 'sm:grid-cols-[48px_minmax(0,1.2fr)_minmax(0,1fr)_128px_auto]' : 'sm:grid-cols-[48px_minmax(0,1fr)_128px_auto]'
+                          } ${head ? 'border-dashed border-[#b7d3c8] bg-[#f7fbf9]' : 'border-slate-200 bg-white'}`}
+                        >
+                          <span className="flex items-center gap-0.5">
+                            {canEdit ? (
+                              <span
+                                role="button"
+                                tabIndex={-1}
+                                aria-label={`Drag step ${i + 1} to reorder`}
+                                title="Drag to reorder"
+                                onPointerDown={() => setArmed(i)}
+                                onPointerUp={() => setArmed(null)}
+                                className="grid h-7 w-4 cursor-grab place-items-center text-slate-300 hover:text-slate-500 active:cursor-grabbing"
+                              >
+                                <GripVertical size={15} />
+                              </span>
+                            ) : (
+                              <span className="w-4" />
+                            )}
+                            <span className="grid h-7 w-7 place-items-center rounded-full bg-brand/10 text-xs font-extrabold text-brand">{i + 1}</span>
+                          </span>
+                          {stageBased ? (
+                            <input
+                              aria-label={`Step ${i + 1} name`}
+                              className={FIELD}
+                              placeholder="Step name"
+                              disabled={!canEdit}
+                              value={step.label ?? ''}
+                              onChange={(e) =>
+                                changeList((l) => {
+                                  l[i] = { ...l[i], label: e.target.value };
+                                  return l;
+                                })
+                              }
+                            />
+                          ) : null}
+                          <select
+                            aria-label={`Step ${i + 1} approver`}
+                            className={`${FIELD} col-start-2 sm:col-start-auto`}
+                            disabled={!canEdit}
+                            value={step.route_role}
+                            onChange={(e) =>
+                              changeList((l) => {
+                                l[i] = { ...l[i], route_role: e.target.value };
+                                return l;
+                              })
+                            }
+                          >
+                            {roleOptions(step.route_role).map((r) => (
+                              <option key={r} value={r}>
+                                {ROLE_NAMES[r]}
+                                {r !== DEPARTMENT_HEAD && roleEligible && !roleEligible.has(r) ? ' (no longer eligible)' : ''}
+                              </option>
+                            ))}
+                          </select>
+                          <label className="relative col-start-2 block sm:col-start-auto">
+                            <span className="sr-only">Step {i + 1} working hours to act</span>
+                            <input
+                              type="number"
+                              min="1"
+                              className={`${FIELD} pr-14 text-right`}
+                              disabled={!canEdit || isPolicy}
+                              value={step.sla_hours ?? 48}
+                              onChange={(e) =>
+                                changeList((l) => {
+                                  const n = Number(e.target.value);
+                                  l[i] = { ...l[i], sla_hours: Number.isFinite(n) && n >= 1 ? Math.floor(n) : l[i].sla_hours };
+                                  return l;
+                                })
+                              }
+                            />
+                            <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-slate-400">work hrs</span>
+                          </label>
+                          {canEdit ? (
+                            <span className="col-start-2 flex gap-1 sm:col-start-auto">
+                              <button
+                                type="button"
+                                aria-label={`Move step ${i + 1} up`}
+                                className={`${BTN_SM} w-7 px-0`}
+                                disabled={i === 0}
+                                onClick={() =>
+                                  changeList((l) => {
+                                    [l[i - 1], l[i]] = [l[i], l[i - 1]];
+                                    return l;
+                                  })
+                                }
+                              >
+                                <ArrowUp size={12} />
+                              </button>
+                              <button
+                                type="button"
+                                aria-label={`Move step ${i + 1} down`}
+                                className={`${BTN_SM} w-7 px-0`}
+                                disabled={i === list.length - 1}
+                                onClick={() =>
+                                  changeList((l) => {
+                                    [l[i], l[i + 1]] = [l[i + 1], l[i]];
+                                    return l;
+                                  })
+                                }
+                              >
+                                <ArrowDown size={12} />
+                              </button>
+                              <button
+                                type="button"
+                                aria-label={`Remove step ${i + 1}`}
+                                className={`${BTN_SM} w-7 px-0 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700`}
+                                disabled={list.length <= 1}
+                                onClick={() => changeList((l) => l.filter((_, idx) => idx !== i))}
+                              >
+                                <X size={12} />
+                              </button>
+                            </span>
+                          ) : null}
+                          {head ? (
+                            <span className="col-start-2 col-end-[-1] text-[11.5px] font-semibold text-brand">
+                              {headDepts.length
+                                ? `Only for ${headDepts.join(', ')}. Everyone else skips this step.`
+                                : 'No department has this ticked yet, so everyone skips this step.'}
+                            </span>
+                          ) : null}
+                        </div>
+                        {dragFrom !== null && i === list.length - 1 && dropAt === list.length && dragFrom !== list.length - 1 ? dropLine : null}
+                      </li>
+                    );
+                  })}
+                </ol>
+              </div>
+
+              {noFinance ? <Warn>Claims need a Finance step, otherwise nobody pays them. Add one before saving.</Warn> : null}
+              {noName ? <Warn>Every step needs a name.</Warn> : null}
+              {headSteps > 1 ? <Warn>There&apos;s more than one Department head step here; the head would be asked more than once.</Warn> : null}
+              {canEdit ? (
+                <div className="flex flex-wrap items-center justify-between gap-2.5">
+                  <button
+                    type="button"
+                    className={BTN_GHOST}
+                    disabled={list.length >= MAX_STEPS}
+                    onClick={() => changeList((l) => [...l, { label: 'New step', route_role: 'HRBP_HR', sla_hours: 48 }])}
+                  >
+                    <Plus size={14} />
+                    Add step
+                  </button>
+                  <span className="text-xs text-slate-500">
+                    {list.length}/{MAX_STEPS} steps
+                  </span>
+                </div>
+              ) : null}
+              {!isPolicy ? (
+                <p className="rounded-[10px] border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-relaxed text-slate-500">
+                  Hours count working time only; weekends and Holiday calendar days are skipped. If someone misses their time, it passes to the next step. The
+                  last step can&apos;t pass it on, so it gets a reminder every 4 working hours instead.
+                </p>
+              ) : null}
+            </div>
+          </section>
+
+          <section aria-label="Department heads" className={CARD}>
+            <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 px-4 py-3.5">
+              <div>
+                <h2 className="text-[14.5px] font-extrabold text-ink">Department heads</h2>
+                <p className="mt-0.5 max-w-[72ch] text-[12.5px] leading-normal text-slate-500">
+                  Pick a head for a department and tick where they must also approve. Ticking adds a <b className="text-ink">Department head</b> step to that
+                  flow (first placed just before Finance on claims, last elsewhere); move it to any position like other steps. Departments left unticked skip
+                  that step.
+                </p>
+              </div>
+              {changes.includes('DEPARTMENT_HEADS') ? <Pill tone="amber">Changed</Pill> : null}
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[620px] border-collapse text-[12.5px]">
+                <thead>
+                  <tr className={`${EYEBROW} text-left`}>
+                    <th className="border-b border-slate-200 bg-slate-50 px-3 py-2">Department</th>
+                    <th className="border-b border-slate-200 bg-slate-50 px-3 py-2">Head</th>
+                    {HEAD_FLOWS.map(([flow, label]) => (
+                      <th key={flow} className="border-b border-slate-200 bg-slate-50 px-3 py-2 text-center">
+                        {label}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {departments.map((dept) => {
+                    const h = cfg.department_heads[dept] || {};
+                    const count = departmentSizes[dept] || 0;
+                    const active = h.head_user_id && HEAD_FLOWS.some(([flow]) => h[flow]);
+                    return (
+                      <tr key={dept} className={active ? 'bg-[#f7fbf9]' : ''}>
+                        <td className="border-t border-slate-100 px-3 py-2">
+                          <b className="text-ink">{dept}</b>
+                          <span className="block text-[11.5px] text-slate-500">
+                            {count} {count === 1 ? 'person' : 'people'}
+                          </span>
+                        </td>
+                        <td className="border-t border-slate-100 px-3 py-2">
+                          <select
+                            aria-label={`Head of ${dept}`}
+                            className={`${FIELD} min-w-[180px]`}
+                            disabled={!canEdit}
+                            value={h.head_user_id || ''}
+                            onChange={(e) => setHead(dept, e.target.value)}
+                          >
+                            <option value="">No head set</option>
+                            {h.head_user_id && !people.some((p) => p.user_id === Number(h.head_user_id)) ? (
+                              <option value={h.head_user_id}>{personName(h.head_user_id)}</option>
+                            ) : null}
+                            {people.map((p) => (
+                              <option key={p.user_id} value={p.user_id}>
+                                {p.name}
+                                {p.department ? ` · ${p.department}` : ''}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        {HEAD_FLOWS.map(([flow, label]) => (
+                          <td key={flow} className="border-t border-slate-100 px-3 py-2 text-center">
+                            <input
+                              type="checkbox"
+                              aria-label={`${dept}: ${label}`}
+                              title={h.head_user_id ? '' : 'Pick a head first'}
+                              className="h-4 w-4 accent-brand disabled:opacity-35"
+                              disabled={!canEdit || !h.head_user_id}
+                              checked={Boolean(h[flow])}
+                              onChange={(e) => setHeadFlow(dept, flow, e.target.checked)}
+                            />
+                          </td>
+                        ))}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <p className="border-t border-slate-100 px-4 py-2.5 text-xs text-slate-500">
+              If the person asking is the head themselves, or the head is already their reporting manager, this step is skipped so nobody approves twice.
+            </p>
+          </section>
+
+          <section aria-label="Claim submission rules" className={CARD}>
+            <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 px-4 py-3.5">
+              <div>
+                <h2 className="text-[14.5px] font-extrabold text-ink">Claim submission rules</h2>
+                <p className="mt-0.5 text-[12.5px] text-slate-500">Apply to every claim.</p>
+              </div>
+              {changes.includes('SUBMISSION') ? <Pill tone="amber">Changed</Pill> : null}
+            </div>
+            <div className="grid grid-cols-1 gap-3 px-4 py-3.5 md:grid-cols-3">
+              <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700">
+                Submit within
+                <input
+                  type="number"
+                  min="1"
+                  className={FIELD}
+                  disabled={!canEdit}
+                  value={cfg.submission.max_working_days_after_return}
+                  onChange={(e) =>
+                    update((d) => {
+                      d.submission.max_working_days_after_return = sanitizeMaxDays(e.target.value);
+                      return d;
+                    })
+                  }
+                />
+                <span className="text-[11.5px] font-medium text-slate-500">Working days after the trip ends.</span>
+              </label>
+              <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700">
+                After the deadline
+                <select
+                  className={FIELD}
+                  disabled={!canEdit}
+                  value={cfg.submission.deadline_mode}
+                  onChange={(e) =>
+                    update((d) => {
+                      d.submission.deadline_mode = e.target.value;
+                      return d;
+                    })
+                  }
+                >
+                  <option value="hard_block">Block the claim</option>
+                  <option value="soft_warning">Allow, with a warning</option>
+                </select>
+                <span className="text-[11.5px] font-medium text-slate-500">Whether a late claim can still be submitted.</span>
+              </label>
+              <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700">
+                Auto-approve below
+                <span className="relative block">
+                  <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 font-bold text-slate-400">₹</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="100"
+                    className={`${FIELD} pl-6`}
+                    disabled={!canEdit}
+                    value={cfg.auto_approve_below_amount}
+                    onChange={(e) =>
+                      update((d) => {
+                        d.auto_approve_below_amount = e.target.value;
+                        return d;
+                      })
+                    }
+                    onBlur={(e) =>
+                      update((d) => {
+                        d.auto_approve_below_amount = sanitizeAutoApprove(e.target.value);
+                        return d;
+                      })
+                    }
+                  />
+                </span>
+                <span className="text-[11.5px] font-medium text-slate-500">
+                  {Number(cfg.auto_approve_below_amount) > 0 ? 'Claims under this skip the approval steps.' : 'Off: ₹0 means every claim goes through the steps.'}
+                </span>
+              </label>
+            </div>
+          </section>
         </div>
-        <div className="grid gap-6 md:grid-cols-3">
-          <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-5 shadow-sm transition-all hover:shadow-md">
-            <label className="text-sm">
-              <span className="mb-2 block font-semibold text-slate-700">Max working days after return</span>
-              <input
-                className="field w-full bg-white"
-                type="number"
-                min="1"
-                readOnly={isViewOnly}
-                value={submission.max_working_days_after_return ?? ''}
-                onChange={(e) =>
-                  setSubmission({
-                    ...submission,
-                    max_working_days_after_return: sanitizeMaxWorkingDaysAfterReturn(e.target.value),
-                  })
-                }
-              />
-              <p className="mt-2 text-[11px] text-slate-500 leading-relaxed">
-                Employees must submit within this many working days of returning.
-              </p>
-            </label>
+      </div>
+
+      {canEdit && changes.length ? (
+        <div
+          role="region"
+          aria-label="Unsaved changes"
+          className="fixed bottom-[calc(env(safe-area-inset-bottom,0px)+76px)] left-1/2 z-40 flex w-[min(720px,calc(100%-32px))] -translate-x-1/2 flex-wrap items-center justify-between gap-3 rounded-[14px] bg-ink py-2.5 pl-4 pr-3 text-white shadow-[0_20px_40px_-16px_rgba(15,23,42,0.5)] md:bottom-4"
+        >
+          <div className="min-w-0">
+            <b className="block text-[13px]">
+              {changes.length} unsaved change{changes.length === 1 ? '' : 's'}
+            </b>
+            <span className="block truncate text-xs text-slate-300">
+              {changes.slice(0, 4).map(changeName).join(', ')}
+              {changes.length > 4 ? ` and ${changes.length - 4} more` : ''}
+            </span>
           </div>
-          <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-5 shadow-sm transition-all hover:shadow-md">
-            <label className="text-sm">
-              <span className="mb-2 block font-semibold text-slate-700">Deadline mode</span>
-              <select
-                className="field w-full bg-white"
-                disabled={isViewOnly}
-                value={submission.deadline_mode ?? 'hard_block'}
-                onChange={(e) =>
-                  setSubmission({ ...submission, deadline_mode: e.target.value })
-                }
-              >
-                <option value="hard_block">Hard Block (Reject after deadline)</option>
-                <option value="soft_warning">Soft Warning (Show warning)</option>
-              </select>
-              <p className="mt-2 text-[11px] text-slate-500 leading-relaxed">
-                Choose whether to strictly reject late claims or just warn the submitter.
-              </p>
-            </label>
-          </div>
-          <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-5 shadow-sm transition-all hover:shadow-md">
-            <label className="text-sm">
-              <span className="mb-2 block font-semibold text-slate-700">Auto-approve threshold (₹)</span>
-              <input
-                className="field w-full bg-white"
-                type="number"
-                min="0"
-                step="100"
-                readOnly={isViewOnly}
-                value={autoApprove}
-                onChange={(e) => setAutoApprove(e.target.value)}
-              />
-              <p className="mt-2 text-[11px] text-slate-500 leading-relaxed">
-                Claims below this amount skip the approval chain and are auto-approved.
-              </p>
-            </label>
-          </div>
+          <span className="flex gap-2">
+            <button type="button" className={`${BTN_GHOST} border-slate-600 bg-transparent text-slate-200 hover:bg-white/10`} onClick={discard} disabled={saving}>
+              Discard
+            </button>
+            <button
+              type="button"
+              className="inline-flex h-[34px] items-center justify-center gap-1.5 whitespace-nowrap rounded-[10px] border border-white bg-white px-[13px] text-[12.5px] font-bold text-ink hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-45"
+              onClick={save}
+              disabled={saving}
+            >
+              {saving ? 'Saving…' : 'Save changes'}
+            </button>
+          </span>
         </div>
-      </section>
-    </>
+      ) : null}
+
+      <ConfirmDialog
+        open={Boolean(confirmDrop)}
+        title="Save anyway?"
+        description={
+          confirmDrop
+            ? `After this save, ${confirmDrop.dropped.map((r) => ROLE_NAMES[r]).join(', ')} won't be on any approval step or exception route. Anyone with ${
+                confirmDrop.dropped.length > 1 ? 'these roles' : 'this role'
+              } loses Pending approvals and Exception requests entirely.`
+            : ''
+        }
+        confirmLabel="Save anyway"
+        confirmVariant="danger"
+        onCancel={() => setConfirmDrop(null)}
+        onConfirm={() => confirmDrop && doSave(confirmDrop.config)}
+      />
+    </section>
   );
 }

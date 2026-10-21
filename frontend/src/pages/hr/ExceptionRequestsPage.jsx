@@ -235,7 +235,12 @@ export default function ExceptionRequestsPage() {
           const id = row.exception_id;
           const activeDecision = (row.decisions || []).find((d) => d.status === 'PENDING' || d.status === 'AWAITING');
           const isPendingActive = activeDecision && activeDecision.status === 'PENDING';
-          const canUserDecide = Boolean(isPendingActive && roleMatches(activeDecision.required_role, role));
+          // A Department head step isn't a role: the server already lists it under "Waiting on
+          // you" only for the head of that person's department (and still checks on decide).
+          const canUserDecide = Boolean(
+            isPendingActive &&
+              (roleMatches(activeDecision.required_role, role) || (activeDecision.required_role === 'DEPARTMENT_HEAD' && mineIds.has(id))),
+          );
           const hasUserAlreadyActed = (row.decisions || []).some(
             (d) => roleMatches(d.required_role, role) && (d.status === 'APPROVED' || d.status === 'REJECTED'),
           );

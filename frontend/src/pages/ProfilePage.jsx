@@ -556,7 +556,8 @@ export default function ProfilePage() {
   // Shown only when turned on: delegation by the org-wide admin switch, auto-approve when the
   // organisation's auto-approve limit is above ₹0 (a manager can still have their own amount off).
   const showOutOfOffice = Boolean(profile?.can_create_delegation) && profile?.delegation_feature_enabled !== false;
-  const showAutoApprove = profile?.role === 'REPORTING_MANAGER' && Number(profile?.org_auto_approve_ceiling || 0) > 0;
+  // Anyone with the Manager setting (whatever their role).
+  const showAutoApprove = (profile?.is_manager || profile?.role === 'REPORTING_MANAGER') && Number(profile?.org_auto_approve_ceiling || 0) > 0;
 
   const [orgChart, setOrgChart] = useState(null);
   const [orgChartError, setOrgChartError] = useState(false);

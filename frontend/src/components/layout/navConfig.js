@@ -383,6 +383,9 @@ const CONFIGURABLE_NAV_ITEMS = [
   exceptionRequestsItem(),
 ];
 
+/** The manager pages someone gets from having people report to them. */
+const TEAM_PATHS = new Set(['/claims/pending', '/hr/exceptions', '/team/claims', '/team/spend']);
+
 /** Flattens `children`/`submenu` groups (e.g. NEW_CLAIM_ITEM, Pending Approvals' Claims/Travel
  * split) into their child rows in place — used anywhere paths need to be compared/listed
  * without caring about the expand/collapse grouping, which only matters to the desktop
@@ -483,11 +486,19 @@ export function getNavConfig(role, profile = null) {
     }
   }
 
-  const sections = [...baseConfig.sections];
-  if (delegated.length) sections.push({ title: 'Delegated Access', items: delegated });
-  if (permissionGranted.length) sections.push({ title: 'Additional Access', items: permissionGranted });
+  // The Manager setting (on top of any role, see backend rbac.is_manager) — the manager pages it
+  // brings get their own "My Team" heading.
+  const teamItems = profile?.is_manager ? permissionGranted.filter((item) => TEAM_PATHS.has(item.to)) : [];
+  const otherGranted = permissionGranted.filter((item) => !teamItems.includes(item));
 
-  return { ...baseConfig, sections: applyNavFiltersToSections(sections, scope, permissions) };
+  const sections = [...baseConfig.sections];
+  if (teamItems.length) sections.push({ title: 'My Team', items: teamItems });
+  if (delegated.length) sections.push({ title: 'Delegated Access', items: delegated });
+  if (otherGranted.length) sections.push({ title: 'Additional Access', items: otherGranted });
+
+  // An Employee with the Manager setting gets the old Reporting Manager phone tabs (approvals first).
+  const mobile = profile?.is_manager && role === 'EMPLOYEE' ? navByRole.REPORTING_MANAGER.mobile : baseConfig.mobile;
+  return { ...baseConfig, mobile, sections: applyNavFiltersToSections(sections, scope, permissions) };
 }
 
 /** Flat list of nav rows in display order (for mobile tab → label lookup). Groups like

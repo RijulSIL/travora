@@ -1,4 +1,4 @@
-import { Lock } from 'lucide-react';
+import { Download, Lock } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
 import { BTN_GHOST, BTN_MAIN, CARD, ErrorNote, PolicyHead, Seg, VersionBar, useCanConfigurePolicy, usePolicyVersions } from '../../components/policy/PolicyAdminParts';
@@ -128,6 +128,19 @@ export default function ExpenseLimitsMatrix() {
     await load();
   });
 
+  // One Excel file with every level × city group limit in the selected version (as saved).
+  const downloadAction = useAsyncAction(async () => {
+    const res = await adminApi.exportExpenseLimits(versionId);
+    const url = URL.createObjectURL(res.data);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `expense-limits-v${version?.version_number || versionId}-${new Date().toLocaleDateString('en-CA')}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  });
+
   const tier = tiers.find((t) => t.code === tierCode);
   const tierHasCaps = (code) => limits.some((l) => l.city_group === code) || Object.values(drafts).some((d) => d.city_group === code);
   const showGrid = tier && (tierHasCaps(tier.code) || startEmpty[tier.code]);
@@ -143,9 +156,20 @@ export default function ExpenseLimitsMatrix() {
             The most each level can claim per expense, in each city group. <b>Strict</b> caps can&apos;t be exceeded without an exception; <b>Flagged</b> ones can, but are flagged for review.
           </>
         }
-      />
+      >
+        <button
+          type="button"
+          className={BTN_GHOST}
+          disabled={!versionId || downloadAction.loading}
+          title={dirtyCount ? 'Downloads the saved limits. Save your changes first to include them.' : 'Every level and city group in this version, in one Excel file'}
+          onClick={() => downloadAction.run().catch(() => {})}
+        >
+          <Download size={14} />
+          {downloadAction.loading ? 'Preparing…' : 'Download Excel'}
+        </button>
+      </PolicyHead>
       <VersionBar versions={versions} versionId={versionId} onSelect={setVersionId} canConfigure={canConfigure} />
-      <ErrorNote error={versionsError || loadError || saveAction.error} />
+      <ErrorNote error={versionsError || loadError || saveAction.error || downloadAction.error} />
       {tiers.length ? (
         <div className="overflow-x-auto">
           <Seg

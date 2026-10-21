@@ -1,10 +1,11 @@
 from decimal import Decimal
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.auth import Role, User
+from app.core.rbac import MANAGER_ROLES, is_manager
+from app.models.auth import User
 from app.models.budget import BudgetConfig, DepartmentBudget, ManagerBudget
 from app.models.employee import Employee
 
@@ -90,8 +91,8 @@ async def upsert_manager_budget(
     manager_user_id: int, monthly_amount: Decimal, user_id: int | None, db: AsyncSession
 ) -> ManagerBudget:
     manager = await db.get(User, manager_user_id)
-    if manager is None or manager.role != Role.REPORTING_MANAGER:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reporting manager not found")
+    if not is_manager(manager):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Manager not found")
 
     existing = (
         await db.execute(select(ManagerBudget).where(ManagerBudget.manager_user_id == manager_user_id))
@@ -118,17 +119,18 @@ async def delete_manager_budget(budget_id: int, db: AsyncSession) -> None:
 
 
 async def list_department_options(db: AsyncSession) -> list[str]:
-    result = await db.execute(
-        select(Employee.department).where(Employee.department.is_not(None)).distinct().order_by(Employee.department)
-    )
-    return [d for d in result.scalars().all() if d]
+    # The company's list (Company profile), plus any department someone is still in.
+    from app.services.department_service import departments_with_people
+
+    return await departments_with_people(db)
 
 
 async def list_manager_options(db: AsyncSession) -> list[dict]:
+    # Everyone with the Manager setting (always on for the CEO), whatever their role.
     result = await db.execute(
         select(User, Employee)
         .outerjoin(Employee, Employee.employee_id == User.employee_id)
-        .where(User.role == Role.REPORTING_MANAGER)
+        .where(or_(User.is_manager.is_(True), User.role.in_(MANAGER_ROLES)))
         .order_by(User.full_name)
     )
     return [

@@ -26,6 +26,7 @@ export default function AppNavbar({ onOpenSidebar }) {
   const [items, setItems] = useState([]);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const userMenuRef = useRef(null);
+  const bellRef = useRef(null);
   const [scrolledAway, setScrolledAway] = useState(false);
 
   // Slides away while scrolling down, comes back on any scroll up (or near the top). Small
@@ -89,6 +90,23 @@ export default function AppNavbar({ onOpenSidebar }) {
     return () => document.removeEventListener('mousedown', handler);
   }, [userMenuOpen]);
 
+  // Close the notifications panel on outside click or Esc
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDown = (e) => {
+      if (bellRef.current && !bellRef.current.contains(e.target)) setOpen(false);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
   const handleLogout = async () => {
     try {
       // Send the saved token too: logout cancels it as well as the cookie's, which can differ.
@@ -134,11 +152,12 @@ export default function AppNavbar({ onOpenSidebar }) {
         {/* Right side controls */}
         <div className="flex items-center gap-1.5">
           {/* Notifications */}
-          <div className="relative">
+          <div className="relative" ref={bellRef}>
             <button
               type="button"
               className="relative inline-flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 transition-colors"
               aria-label="Notifications"
+              aria-expanded={open}
               onClick={() => setOpen((v) => !v)}
             >
               <Bell size={18} />
@@ -151,11 +170,13 @@ export default function AppNavbar({ onOpenSidebar }) {
             {open ? (
               <NotificationPanel
                 items={items}
+                count={count}
                 onMarkAllRead={async () => {
                   await reimbursementApi.markAllNotificationsRead();
                   refresh();
                 }}
                 onSelect={handleSelectNotification}
+                onClose={() => setOpen(false)}
               />
             ) : null}
           </div>

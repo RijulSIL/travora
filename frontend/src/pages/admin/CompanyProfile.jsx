@@ -1,6 +1,7 @@
 import { Save } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
+import DepartmentsCard from '../../components/admin/DepartmentsCard';
 import PageHeader from '../../components/ui/PageHeader';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
@@ -15,6 +16,14 @@ export default function CompanyProfile() {
     bank_details: { account_name: '', account_number: '', ifsc: '' },
   });
   const [loadError, setLoadError] = useState(null);
+  // [{ name, original }] — original is the name when loaded (null if added since), for renames.
+  const [departments, setDepartments] = useState([]);
+  const [departmentCounts, setDepartmentCounts] = useState({});
+
+  const loadDepartments = (data) => {
+    setDepartments((data.departments || []).map((name) => ({ name, original: name })));
+    setDepartmentCounts(data.department_counts || {});
+  };
 
   useEffect(() => {
     adminApi.companyProfile()
@@ -26,16 +35,20 @@ export default function CompanyProfile() {
           office_locations: response.data.office_locations.join(', '),
           bank_details: response.data.bank_details || { account_name: '', account_number: '', ifsc: '' },
         });
+        loadDepartments(response.data);
       })
       .catch((error) => setLoadError(error));
   }, []);
 
   const saveAction = useAsyncAction(async () => {
-    await adminApi.updateCompanyProfile({
+    const res = await adminApi.updateCompanyProfile({
       ...form,
       gstins: form.gstins.split(',').map((item) => item.trim()).filter(Boolean),
       office_locations: form.office_locations.split(',').map((item) => item.trim()).filter(Boolean),
+      departments: departments.map((d) => d.name),
+      department_renames: Object.fromEntries(departments.filter((d) => d.original && d.original !== d.name).map((d) => [d.original, d.name])),
     });
+    if (res?.data) loadDepartments(res.data);
   });
   const error = loadError || saveAction.error;
 
@@ -97,6 +110,9 @@ export default function CompanyProfile() {
             </div>
           </div>
         </section>
+      </div>
+      <div className="mt-6">
+        <DepartmentsCard items={departments} onChange={setDepartments} counts={departmentCounts} />
       </div>
     </>
   );

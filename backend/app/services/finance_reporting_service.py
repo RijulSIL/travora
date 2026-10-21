@@ -766,12 +766,45 @@ async def list_exception_requests_log(
         for leg in leg_rows:
             legs_map.setdefault(leg.travel_request_id, []).append(leg)
 
+    # Someone without a company-wide view (HR, Finance, Payroll, CEO, admins have one) only sees
+    # exceptions from people who report to them, ones they raised or acted on, and ones waiting on
+    # them — a manager (by role or by having reports) shouldn't browse the whole company's history.
+    narrow_viewer = False
+    my_report_ids: set[str] = set()
+    if current_user is not None:
+        from app.services.permission_config_service import get_effective_permission_matrix
+
+        matrix = await get_effective_permission_matrix(db)
+        company_wide = {"view_reports", "configure_policy", "process_payments"}
+        narrow_viewer = not (matrix.get(current_user.role, set()) & company_wide)
+        if narrow_viewer and current_user.employee_id:
+            my_report_ids = set(
+                (
+                    await db.execute(
+                        select(Employee.employee_id).where(Employee.reporting_manager_id == current_user.employee_id)
+                    )
+                ).scalars().all()
+            )
+
     response: list[dict] = []
     for exc, claim_ref, full_name, employee_id, email, _uid, _email2, _full_name2, travel_request in result:
         approvals = approvals_map.get(exc.id, [])
         if status_value and status_value.upper() == "PENDING" and current_user:
             from app.services.workflow_service import _can_user_act_on_exception
             if not await _can_user_act_on_exception(current_user, exc, approvals, db):
+                continue
+        elif narrow_viewer:
+            from app.services.workflow_service import _can_user_act_on_exception
+
+            involved = (
+                (employee_id and employee_id in my_report_ids)
+                or exc.requested_by_user_id == current_user.id
+                or exc.decided_by_user_id == current_user.id
+                or any(a.acted_by_user_id == current_user.id for a in approvals)
+            )
+            if not involved and not (
+                exc.status == "PENDING" and await _can_user_act_on_exception(current_user, exc, approvals, db)
+            ):
                 continue
         # Every reference in this log follows the same "PREFIX-0000" shape (matching the
         # persisted CLM-YYYY-NNNN claim_reference) instead of mixing a bare id, a padded

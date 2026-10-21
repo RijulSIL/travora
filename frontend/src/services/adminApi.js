@@ -12,6 +12,12 @@ export const adminApi = {
   changeUserRole: (userId, role) => api.put(`/admin/users/${userId}/role`, { role }),
   deactivateUser: (userId) => api.delete(`/admin/users/${userId}`),
   updateUser: (userId, payload) => api.put(`/admin/users/${userId}`, payload),
+  // Who reports to a manager, and what's waiting on them at the manager step.
+  userTeam: (userId) => api.get(`/admin/users/${userId}/team`),
+  // Turn Manager on for someone and put these people under them (CSV import's one-click fix).
+  addToUserTeam: (userId, employeeIds) => api.post(`/admin/users/${userId}/team/add`, { employee_ids: employeeIds }),
+  moveUserTeam: (userId, newManagerEmployeeId) =>
+    api.post(`/admin/users/${userId}/team/move`, { new_manager_employee_id: newManagerEmployeeId }),
   impactLevels: (params) => api.get('/admin/impact-levels', { params }),
   createImpactLevel: (payload) => api.post('/admin/impact-levels', payload),
   updateImpactLevel: (id, payload) => api.put(`/admin/impact-levels/${id}`, payload),
@@ -32,6 +38,8 @@ export const adminApi = {
   updateProjectRecipient: (id, payload) => api.put(`/admin/travel-options/project-recipients/${id}`, payload),
   deleteProjectRecipient: (id) => api.delete(`/admin/travel-options/project-recipients/${id}`),
   expenseLimits: (params) => api.get('/admin/expense-limits', { params }),
+  exportExpenseLimits: (policyVersionId) =>
+    api.get('/admin/expense-limits/export', { params: { policy_version_id: policyVersionId }, responseType: 'blob' }),
   createExpenseLimit: (payload) => api.post('/admin/expense-limits', payload),
   updateExpenseLimit: (id, payload) => api.put(`/admin/expense-limits/${id}`, payload),
   deleteExpenseLimit: (id) => api.delete(`/admin/expense-limits/${id}`),
@@ -56,6 +64,7 @@ export const adminApi = {
   updateNotificationTemplate: (id, payload) => api.put(`/notifications/templates/${id}`, payload),
   workflowConfig: () => api.get('/workflow/config'),
   updateWorkflowConfig: (config) => api.put('/workflow/config', { config }),
+  departmentHeadCandidates: () => api.get('/workflow/department-head-candidates'),
   holidays: () => api.get('/admin/holidays'),
   createHoliday: (payload) => api.post('/admin/holidays', payload),
   updateHoliday: (id, payload) => api.put(`/admin/holidays/${id}`, payload),

@@ -62,7 +62,9 @@ class MeOut(BaseModel):
     # queue") at all — EMPLOYEE and IT_ADMIN don't, so they can't create a delegation
     # regardless of the org-wide toggle above.
     can_create_delegation: bool = False
-    # Only populated for REPORTING_MANAGER: their personal claim auto-approve threshold
+    # The Manager setting (always on for the CEO): people can report to them, on top of their role.
+    is_manager: bool = False
+    # Only populated for managers: their personal claim auto-approve threshold
     # (null = disabled, always require manual review) and the org-wide ceiling it is capped at.
     auto_approve_threshold: str | None = None
     org_auto_approve_ceiling: str | None = None

@@ -10,6 +10,9 @@ from app.core.database import Base
 
 class Role(str, enum.Enum):
     EMPLOYEE = "EMPLOYEE"
+    # No longer given to anyone: being a manager is the User.is_manager setting, on top of any
+    # role. The value stays as the name of the approval step "this person's manager" and as the
+    # key of the Manager row in Role permissions; a legacy user/token still counts as a manager.
     REPORTING_MANAGER = "REPORTING_MANAGER"
     HRBP_HR = "HRBP_HR"
     PAYROLL = "PAYROLL"
@@ -35,6 +38,9 @@ class User(Base):
     role: Mapped[Role] = mapped_column(Enum(Role, native_enum=False, length=50), nullable=False, default=Role.EMPLOYEE)
     mfa_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # The Manager setting: people can report to them, and they get the Manager permissions on top
+    # of their role. Always on for the CEO. See rbac.is_manager.
+    is_manager: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
     auto_approve_threshold: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()

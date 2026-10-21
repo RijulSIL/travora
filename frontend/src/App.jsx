@@ -36,7 +36,6 @@ const TravelDeskPage = lazy(() => import('./pages/travel/TravelDeskPage'));
 const TravelRequestsPage = lazy(() => import('./pages/travel/TravelRequestsPage'));
 const CityGroupClassification = lazy(() => import('./pages/admin/CityGroupClassification'));
 const CompanyProfile = lazy(() => import('./pages/admin/CompanyProfile'));
-const Dashboard = lazy(() => import('./pages/admin/Dashboard'));
 const AuditLogs = lazy(() => import('./pages/admin/AuditLogs'));
 const ExpenseCategoryManager = lazy(() => import('./pages/admin/ExpenseCategoryManager'));
 const ExpenseLimitsMatrix = lazy(() => import('./pages/admin/ExpenseLimitsMatrix'));
@@ -163,7 +162,8 @@ export default function App() {
             {/* Admin: generic read-only (workflow/policy viewers); bank details only with view_sensitive_admin */}
             <Route element={<RoleGuard anyOf={['configure_policy', 'view_admin_readonly']} />}>
               <Route path="admin" element={<Outlet />}>
-                <Route index element={<Dashboard />} />
+                {/* IT Admin's Home already shows the system snapshot this page used to. */}
+                <Route index element={<Navigate to="/dashboard" replace />} />
                 <Route path="policy-versions" element={<PolicyVersionManager />} />
                 <Route path="expense-limits" element={<ExpenseLimitsMatrix />} />
                 <Route path="expense-categories" element={<ExpenseCategoryManager />} />

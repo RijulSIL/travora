@@ -5,11 +5,11 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.rbac import is_direct_report
+from app.core.rbac import MANAGER_ROLES, acts_as_manager, is_direct_report, is_manager
 from app.core.timezone import now_ist
 from app.models.auth import Delegation, Role, User
 from app.models.claim_workflow import (
@@ -190,6 +190,7 @@ def _exception_label(row: ExceptionRequest) -> str:
 # risking duplicates or an out-of-hierarchy ordering.
 _CANONICAL_EXCEPTION_ROLE_ORDER = [
     "REPORTING_MANAGER",
+    "DEPARTMENT_HEAD",
     "FUNCTION_HEAD",
     "HRBP_HR",
     "PAYROLL",
@@ -247,6 +248,110 @@ def _now() -> datetime:
     return now_ist()
 
 
+# --- Department heads ---------------------------------------------------------------------
+# An admin can name a head per department (Approval Matrix -> Department heads) and tick which
+# flows they must also approve: claims, travel requests, exceptions. A ticked flow gets a
+# DEPARTMENT_HEAD step (placed by the admin like any other step); it resolves to the head of the
+# subject employee's department, and is left out entirely for anyone whose department isn't
+# ticked for that flow, who is the head themselves, or whose reporting manager is the head.
+DEPARTMENT_HEAD = "DEPARTMENT_HEAD"
+DEPARTMENT_HEAD_FLOWS = ("claims", "travel_requests", "exceptions")
+
+
+def _department_head_entry(cfg: dict, department: str | None) -> dict | None:
+    """The configured entry for `department`, matched case-insensitively."""
+    if not department:
+        return None
+    heads = cfg.get("department_heads") or {}
+    wanted = department.strip().lower()
+    for name, entry in heads.items():
+        if isinstance(entry, dict) and str(name).strip().lower() == wanted:
+            return entry
+    return None
+
+
+async def _department_head_user(employee_id: str | None, db: AsyncSession, cfg: dict | None = None) -> User | None:
+    """The active head of this employee's department, whatever flows are ticked — who a
+    DEPARTMENT_HEAD step that already exists on a request belongs to."""
+    if not employee_id:
+        return None
+    emp = await db.get(Employee, employee_id)
+    if emp is None:
+        return None
+    entry = _department_head_entry(cfg if cfg is not None else await get_workflow_config(db), emp.department)
+    head_id = entry.get("head_user_id") if entry else None
+    if not head_id:
+        return None
+    head = await db.get(User, int(head_id))
+    return head if head is not None and head.is_active else None
+
+
+async def department_head_applies(employee_id: str | None, flow: str, cfg: dict, db: AsyncSession) -> bool:
+    """Whether a new request from this employee in `flow` gets its DEPARTMENT_HEAD step."""
+    if not employee_id:
+        return False
+    emp = await db.get(Employee, employee_id)
+    if emp is None:
+        return False
+    entry = _department_head_entry(cfg, emp.department)
+    if not entry or not entry.get(flow):
+        return False
+    head = await _department_head_user(employee_id, db, cfg)
+    if head is None:
+        return False
+    # Nobody approves their own request, and a head who is already the reporting manager isn't asked twice.
+    if head.employee_id and head.employee_id in (employee_id, emp.reporting_manager_id):
+        return False
+    return True
+
+
+async def is_department_head_for(user_id: int, subject_employee_id: str | None, db: AsyncSession) -> bool:
+    """Is `user_id` (directly, or covering for them on an active delegation) the head of this
+    employee's department? Lets a head open the requests they're asked to approve."""
+    user = await db.get(User, user_id)
+    if user is None:
+        return False
+    return await _user_matches_required_role(user, DEPARTMENT_HEAD, subject_employee_id, db)
+
+
+async def _without_inapplicable_head(
+    roles: list[str], employee_id: str | None, flow: str, cfg: dict, db: AsyncSession
+) -> list[str]:
+    """An exception chain for this subject: DEPARTMENT_HEAD dropped when it doesn't apply. Never
+    returns an empty chain (that would leave the request with no approver) — same last-resort
+    fallback _chain_for_type uses."""
+    if DEPARTMENT_HEAD not in roles or await department_head_applies(employee_id, flow, cfg, db):
+        return roles
+    return [r for r in roles if r != DEPARTMENT_HEAD] or ["HRBP_HR"]
+
+
+async def department_head_scope(user: User, db: AsyncSession) -> dict:
+    """What a user who is a department head approves because of it — merged into their approver
+    scope so Pending approvals / Exception requests show up even when their own role isn't
+    otherwise on those routes."""
+    cfg = await get_workflow_config(db)
+    flows = set()
+    for entry in (cfg.get("department_heads") or {}).values():
+        if isinstance(entry, dict) and entry.get("head_user_id") and int(entry["head_user_id"]) == user.id:
+            flows |= {f for f in DEPARTMENT_HEAD_FLOWS if entry.get(f)}
+    scope = {"claim_categories": [], "travel_request": False, "exceptions": []}
+    if not flows:
+        return scope
+    if "claims" in flows:
+        for category in _APPROVER_SCOPE_CATEGORIES:
+            cat_cfg = await get_workflow_config(db, category=category)
+            if any(s.get("route_role") == DEPARTMENT_HEAD for s in cat_cfg.get("stages") or []):
+                scope["claim_categories"].append(category)
+    if "travel_requests" in flows:
+        scope["travel_request"] = any(s["route_role"] == DEPARTMENT_HEAD for s in _travel_request_stage_defs(cfg))
+    if "exceptions" in flows:
+        chains = cfg.get("exception_chains") or EXCEPTION_APPROVAL_CHAINS
+        scope["exceptions"] = [
+            t for t, chain in chains.items() if t != "POLICY_APPROVAL" and DEPARTMENT_HEAD in (chain or [])
+        ]
+    return scope
+
+
 async def _active_delegator_ids(user_id: int, db: AsyncSession) -> list[int]:
     """User ids of everyone currently delegating to `user_id` (active, in-window Delegation
     row with them as delegatee). Shared by every claim/exception authorization check below —
@@ -286,10 +391,8 @@ async def _user_ids_for_role(route_role: str, employee_id: str | None, db: Async
         if employee is None or not employee.reporting_manager_id:
             return []
         result = await db.execute(
-            select(User.id).where(
-                User.employee_id == employee.reporting_manager_id,
-                User.role == Role.REPORTING_MANAGER,
-            )
+            # Whoever this person reports to, whatever their own role (see rbac.MANAGER_PERMISSIONS).
+            select(User.id).where(User.employee_id == employee.reporting_manager_id)
         )
         return [int(user_id) for user_id in result.scalars().all()]
     if route_role == "FUNCTION_HEAD":
@@ -302,6 +405,9 @@ async def _user_ids_for_role(route_role: str, employee_id: str | None, db: Async
             select(User.id).where(User.employee_id == fh.employee_id)
         )
         return [int(user_id) for user_id in result.scalars().all()]
+    if route_role == DEPARTMENT_HEAD:
+        head = await _department_head_user(employee_id, db)
+        return [head.id] if head else []
     if route_role in {
         Role.HRBP_HR.value,
         Role.PAYROLL.value,
@@ -415,6 +521,7 @@ _ALLOWED_WORKFLOW_ROLES = {
     Role.IT_ADMIN.value,
     Role.RECRUITER.value,
     "FUNCTION_HEAD",
+    DEPARTMENT_HEAD,
 }
 
 # Non-claim approval workflows stored alongside the claim category overrides (same stage shape,
@@ -473,6 +580,32 @@ def _validate_workflow_config(config: dict) -> None:
                     label_prefix=f"{category} override stage",
                     require_finance_stage=category not in _NON_CLAIM_WORKFLOWS,
                 )
+                # Department heads cover claims, travel requests and exceptions only.
+                if category == "RELOCATION_REQUEST" and any(
+                    isinstance(s, dict) and s.get("route_role") == DEPARTMENT_HEAD for s in override["stages"]
+                ):
+                    raise HTTPException(status_code=422, detail="Relocation requests can't have a Department head step")
+
+    if DEPARTMENT_HEAD in ((config.get("exception_chains") or {}).get("POLICY_APPROVAL") or []):
+        raise HTTPException(status_code=422, detail="Policy approval can't have a Department head step")
+
+    department_heads = config.get("department_heads")
+    if department_heads is not None:
+        if not isinstance(department_heads, dict):
+            raise HTTPException(status_code=422, detail="department_heads must be an object")
+        for dept, entry in department_heads.items():
+            if not isinstance(dept, str) or not dept.strip():
+                raise HTTPException(status_code=422, detail="department_heads needs a department name for every entry")
+            if not isinstance(entry, dict):
+                raise HTTPException(status_code=422, detail=f"department_heads['{dept}'] must be an object")
+            head_id = entry.get("head_user_id")
+            if isinstance(head_id, bool) or not isinstance(head_id, int) or head_id <= 0:
+                raise HTTPException(status_code=422, detail=f"department_heads['{dept}'] needs a head")
+            for flow in DEPARTMENT_HEAD_FLOWS:
+                if not isinstance(entry.get(flow, False), bool):
+                    raise HTTPException(
+                        status_code=422, detail=f"department_heads['{dept}'].{flow} must be true or false"
+                    )
 
     submission = config.get("submission")
     if submission is None or not isinstance(submission, dict):
@@ -681,7 +814,53 @@ async def get_approver_scope(role: Role, db: AsyncSession) -> dict:
 # REPORTING_MANAGER and FUNCTION_HEAD are resolved relative to each claim's employee
 # (see _user_ids_for_role / _get_function_head), so an org-wide "any user has this role"
 # count doesn't reflect real routing capability for them — only check the absolute roles.
-_ROLES_REQUIRING_COVERAGE = _ALLOWED_WORKFLOW_ROLES - {Role.REPORTING_MANAGER.value, "FUNCTION_HEAD"}
+_ROLES_REQUIRING_COVERAGE = _ALLOWED_WORKFLOW_ROLES - {Role.REPORTING_MANAGER.value, "FUNCTION_HEAD", DEPARTMENT_HEAD}
+
+
+async def department_head_candidates(db: AsyncSession) -> list[dict]:
+    """Active people who can be named a department head: those whose role can approve claims
+    (Role permissions -> approve_claims). The approve endpoints check that permission, so anyone
+    else picked as head would be shown items they could never act on."""
+    from app.services.permission_config_service import get_effective_permission_matrix
+
+    matrix = await get_effective_permission_matrix(db)
+    roles = [role for role, perms in matrix.items() if "approve_claims" in perms]
+    can_approve = User.role.in_(roles)
+    # Managers get the Manager row (REPORTING_MANAGER key) on top of their role.
+    if "approve_claims" in matrix.get(Role.REPORTING_MANAGER, set()):
+        can_approve = or_(can_approve, User.is_manager.is_(True), User.role.in_(MANAGER_ROLES))
+    rows = (
+        await db.execute(
+            select(User, Employee)
+            .outerjoin(Employee, Employee.employee_id == User.employee_id)
+            .where(User.is_active.is_(True), can_approve)
+            .order_by(User.full_name, User.email)
+        )
+    ).all()
+    return [
+        {
+            "user_id": user.id,
+            "name": user.full_name or (employee.full_name if employee else None) or user.email,
+            "email": user.email,
+            "role": user.role.value,
+            "department": employee.department if employee else None,
+        }
+        for user, employee in rows
+    ]
+
+
+async def _assert_department_heads_valid(config: dict, db: AsyncSession) -> None:
+    """Every named head must be an active person who can approve (see department_head_candidates)."""
+    heads = config.get("department_heads") or {}
+    if not heads:
+        return
+    allowed = {p["user_id"] for p in await department_head_candidates(db)}
+    for dept, entry in heads.items():
+        if int(entry["head_user_id"]) not in allowed:
+            raise HTTPException(
+                status_code=422,
+                detail=f"The head picked for {dept} isn't an active person who can approve claims",
+            )
 
 
 async def _assert_roles_have_active_users(config: dict, db: AsyncSession) -> None:
@@ -725,6 +904,11 @@ def _single_role_stage_swaps(old_defs: list[dict], new_defs: list[dict]) -> dict
     both sides, is left out entirely: those are structural chain edits (branch added/removed,
     stage added/removed/reordered), not a plain reassignment, and are out of scope for the
     automatic in-flight migration below — see save_workflow_config's note."""
+    # A step added or removed shifts every later step's number, so "stage 4 used to be Finance,
+    # now it's the new step" would wrongly re-route everything waiting at Finance. Different
+    # lengths are a structural edit: leave in-flight requests alone, as described above.
+    if len(old_defs) != len(new_defs):
+        return {}
     old_by_number: dict[int, list[dict]] = {}
     for d in old_defs:
         old_by_number.setdefault(int(d["number"]), []).append(d)
@@ -905,6 +1089,7 @@ async def _migrate_inflight_approvals(old_config: dict | None, new_config: dict,
 async def save_workflow_config(config: dict, user_id: int | None, db: AsyncSession) -> tuple[dict, dict[str, int]]:
     _validate_workflow_config(config)
     await _assert_roles_have_active_users(config, db)
+    await _assert_department_heads_valid(config, db)
     row = await db.get(WorkflowConfigRow, 1)
     old_config = row.config_json if row is not None else None
     if row is None:
@@ -1130,6 +1315,9 @@ async def _user_matches_required_role(
         if fh.employee_id == user.employee_id:
             return True
         return bool(delegator_emp_ids) and fh.employee_id in delegator_emp_ids
+    if required_role == DEPARTMENT_HEAD:
+        head = await _department_head_user(subject_employee_id, db)
+        return head is not None and (head.id == user.id or head.id in active_delegator_ids)
     try:
         role_enum = Role(required_role)
     except ValueError:
@@ -1145,17 +1333,15 @@ async def _can_user_act_on_claim_stage(
         
     route_role = stage_row.required_role if stage_row and stage_row.required_role else str(stage_def.get("route_role") or "")
     if route_role == Role.REPORTING_MANAGER.value:
-        # User OR their delegators must have REPORTING_MANAGER role
-        has_role = user.role == Role.REPORTING_MANAGER
-        if not has_role and not active_delegator_ids:
-            return False
-            
+        # The claimant's own manager (or someone covering for them) acts here, whatever their
+        # role. Only a claim with no employee record falls back to any manager.
+        has_role = is_manager(user)
         if not claim.employee_id:
-            return True
+            return has_role
         emp = await db.get(Employee, claim.employee_id)
         if emp is None:
-            return True
-            
+            return has_role
+
         # Check if user is the manager
         if user.employee_id and emp.reporting_manager_id == user.employee_id:
             return True
@@ -1222,6 +1408,9 @@ async def _can_user_act_on_claim_stage(
             if fh.employee_id in delegator_emp_ids:
                 return True
         return False
+    if route_role == DEPARTMENT_HEAD:
+        head = await _department_head_user(claim.employee_id, db)
+        return head is not None and (head.id == user.id or head.id in active_delegator_ids)
     return False
 
 
@@ -1243,6 +1432,11 @@ async def init_claim_approval_chain(claim: ClaimDraft, db: AsyncSession) -> None
             )
         )
         requests = result.scalars().all()
+        chains_by_req: dict[int, list[str]] = {}
+        for req in requests:
+            chains_by_req[req.id] = await _without_inapplicable_head(
+                _resolve_exception_chain(cfg, req.exception_type), claim.employee_id, "exceptions", cfg, db
+            )
         for req in requests:
             # Check if stages already exist to prevent duplicate creation
             existing = (await db.execute(
@@ -1251,7 +1445,7 @@ async def init_claim_approval_chain(claim: ClaimDraft, db: AsyncSession) -> None
             if existing:
                 continue
 
-            chain = _resolve_exception_chain(cfg, req.exception_type)
+            chain = chains_by_req[req.id]
             for i, role in enumerate(chain):
                 status_val = ExceptionRequestStatus.PENDING.value if i == 0 else "AWAITING"
                 db.add(
@@ -1264,7 +1458,7 @@ async def init_claim_approval_chain(claim: ClaimDraft, db: AsyncSession) -> None
         await db.flush()
         # Notify first approvers of exceptions
         for req in requests:
-            chain = _resolve_exception_chain(cfg, req.exception_type)
+            chain = chains_by_req[req.id]
             if chain:
                 await _notify_exception_approver(claim, req, chain[0], db)
         return
@@ -1302,7 +1496,12 @@ async def init_claim_approval_chain(claim: ClaimDraft, db: AsyncSession) -> None
             return True
         return True
 
-    filtered_defs = [s for s in stage_defs if _eval_cond(s.get("conditional"))]
+    head_applies = await department_head_applies(claim.employee_id, "claims", cfg, db)
+    filtered_defs = [
+        s
+        for s in stage_defs
+        if _eval_cond(s.get("conditional")) and (s["route_role"] != DEPARTMENT_HEAD or head_applies)
+    ]
     if not filtered_defs:
         filtered_defs = stage_defs[:1]
 
@@ -2094,6 +2293,9 @@ async def list_pending_approvals(user_id: int, db: AsyncSession) -> list[dict]:
         delegator_roles = [r.value for r in (await db.execute(roles_q)).scalars().all()]
         
     user_roles = [user.role.value] + delegator_roles
+    # Anyone with people reporting to them gets those people's manager step, whatever their role.
+    if Role.REPORTING_MANAGER.value not in user_roles and await acts_as_manager(user.id, db):
+        user_roles.append(Role.REPORTING_MANAGER.value)
 
     # Each claim's own category can have its own configured stage roles (see
     # get_workflow_config's category param), so stage-number -> route_role isn't a single
@@ -2118,7 +2320,11 @@ async def list_pending_approvals(user_id: int, db: AsyncSession) -> list[dict]:
 
         active_stage_number = int(claim.current_approval_stage or 0)
         stage_def = stage_by_number.get(active_stage_number)
-        if stage_def is None or str(stage_def["route_role"]) not in user_roles:
+        # A Department head step isn't tied to anyone's system role — it belongs to whoever heads
+        # this claimant's department, which _can_user_act_on_claim_stage below decides.
+        if stage_def is None or (
+            str(stage_def["route_role"]) not in user_roles and stage_def["route_role"] != DEPARTMENT_HEAD
+        ):
             continue
 
         stages = await _load_stages(claim.id, db)
@@ -2179,10 +2385,8 @@ async def _user_ids_for_exception_role(claim: ClaimDraft, role: str, db: AsyncSe
         if employee is None or not employee.reporting_manager_id:
             return []
         result = await db.execute(
-            select(User.id).where(
-                User.employee_id == employee.reporting_manager_id,
-                User.role == Role.REPORTING_MANAGER,
-            )
+            # Whoever this person reports to, whatever their own role (see rbac.MANAGER_PERMISSIONS).
+            select(User.id).where(User.employee_id == employee.reporting_manager_id)
         )
         return [int(user_id) for user_id in result.scalars().all()]
     if role == "FUNCTION_HEAD":
@@ -2195,7 +2399,10 @@ async def _user_ids_for_exception_role(claim: ClaimDraft, role: str, db: AsyncSe
             select(User.id).where(User.employee_id == fh.employee_id)
         )
         return [int(user_id) for user_id in result.scalars().all()]
-    
+    if role == DEPARTMENT_HEAD:
+        head = await _department_head_user(claim.employee_id, db)
+        return [head.id] if head else []
+
     try:
         r_enum = Role(role)
         result = await db.execute(select(User.id).where(User.role == r_enum))
@@ -2215,10 +2422,8 @@ async def _user_ids_for_exception_role_for_travel(travel_request, role: str, db:
         if employee is None or not employee.reporting_manager_id:
             return []
         result = await db.execute(
-            select(User.id).where(
-                User.employee_id == employee.reporting_manager_id,
-                User.role == Role.REPORTING_MANAGER,
-            )
+            # Whoever this person reports to, whatever their own role (see rbac.MANAGER_PERMISSIONS).
+            select(User.id).where(User.employee_id == employee.reporting_manager_id)
         )
         return [int(user_id) for user_id in result.scalars().all()]
     if role == "FUNCTION_HEAD":
@@ -2229,6 +2434,9 @@ async def _user_ids_for_exception_role_for_travel(travel_request, role: str, db:
             return []
         result = await db.execute(select(User.id).where(User.employee_id == fh.employee_id))
         return [int(user_id) for user_id in result.scalars().all()]
+    if role == DEPARTMENT_HEAD:
+        head = await _department_head_user(employee_id, db)
+        return [head.id] if head else []
 
     try:
         r_enum = Role(role)
@@ -2316,6 +2524,12 @@ async def init_travel_request_approval_chain(travel_request, db: AsyncSession) -
 
     cfg = await get_workflow_config(db)
     stage_defs = _travel_request_stage_defs(cfg)
+    if any(s["route_role"] == DEPARTMENT_HEAD for s in stage_defs):
+        subject = await db.get(User, travel_request.employee_user_id)
+        if not await department_head_applies(subject.employee_id if subject else None, "travel_requests", cfg, db):
+            stage_defs = [s for s in stage_defs if s["route_role"] != DEPARTMENT_HEAD] or _normalize_stage_defs(
+                {"stages": TRAVEL_REQUEST_DEFAULT_STAGES}
+            )
     now = _now()
 
     await db.execute(
@@ -2657,7 +2871,14 @@ async def create_travel_exception_request(
 
     cfg = await get_workflow_config(db)
     chains_cfg = cfg.get("exception_chains", EXCEPTION_APPROVAL_CHAINS)
-    required_roles = _merge_exception_chains(exception_types, chains_cfg)
+    subject = await db.get(User, travel_request.employee_user_id)
+    required_roles = await _without_inapplicable_head(
+        _merge_exception_chains(exception_types, chains_cfg),
+        subject.employee_id if subject else None,
+        "exceptions",
+        cfg,
+        db,
+    )
     steps = [
         ExceptionApproval(exception_request_id=row.id, required_role=role, status="AWAITING")
         for role in required_roles
@@ -2770,7 +2991,9 @@ async def raise_submitted_claim_exception(
     db.add(row)
     await db.flush()
 
-    chain = _resolve_exception_chain(cfg, exception_type)
+    chain = await _without_inapplicable_head(
+        _resolve_exception_chain(cfg, exception_type), claim.employee_id, "exceptions", cfg, db
+    )
     steps = [ExceptionApproval(exception_request_id=row.id, required_role=role, status="AWAITING") for role in chain]
     db.add_all(steps)
     if steps:

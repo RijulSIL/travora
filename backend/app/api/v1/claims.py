@@ -112,13 +112,12 @@ async def employee_claims(
     if requested_user_id and requested_user_id != current_user_id:
         # IT_ADMIN/FINANCE/HRBP_HR/PAYROLL/CEO/GROUP_HEAD_HR already hold view_reports or
         # process_payments org-wide (see PERMISSION_MATRIX) — cross-user access for them is
-        # by design. REPORTING_MANAGER holds neither, so it's scoped to literal direct
-        # reports only, same as /claims/team — anyone else falls back to their own claims.
+        # by design. Anyone else (a Reporting Manager, or any role that manages people) is
+        # scoped to literal direct reports only, same as /claims/team — otherwise their own claims.
         broad_view_roles = {Role.IT_ADMIN, Role.FINANCE, Role.HRBP_HR, Role.PAYROLL, Role.CEO, Role.GROUP_HEAD_HR}
-        if role == Role.REPORTING_MANAGER:
-            if not await is_direct_report(manager_user_id=current_user_id, target_user_id=requested_user_id, db=db):
-                requested_user_id = current_user_id
-        elif role not in broad_view_roles:
+        if role not in broad_view_roles and not await is_direct_report(
+            manager_user_id=current_user_id, target_user_id=requested_user_id, db=db
+        ):
             requested_user_id = current_user_id
     rows = await list_claims(current_user_id, db, employee_user_id=requested_user_id)
     response = []

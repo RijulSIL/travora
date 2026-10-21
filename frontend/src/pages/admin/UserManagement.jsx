@@ -1,54 +1,53 @@
-import { Check, Plus, Search, UserX, X, ChevronDown } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { ChevronRight, Eye, EyeOff, Plus, Search, Upload, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import PageHeader from '../../components/ui/PageHeader';
+import { Pill, Tabs } from '../../components/approvals/ApprovalQueueParts';
+import { ManagerSetting, MoveTeam, TeamList } from '../../components/admin/ManagerSetting';
+import UserImportDialog from '../../components/admin/UserImportDialog';
+import { roleAccent, roleChip } from '../../components/layout/roleAccent';
+import { BTN_GHOST, BTN_MAIN, BTN_NO, BTN_SM, CARD, EYEBROW, FIELD, LABEL } from '../../components/policy/PolicyAdminParts';
+import { CLAIM_STAGE } from '../../components/reports/statusPalette';
+import ConfirmDialog from '../../components/ui/ConfirmDialog';
+import Pagination from '../../components/ui/Pagination';
+import Skeleton from '../../components/ui/Skeleton';
 import { useSetPageTitle } from '../../context/PageTitleContext';
-import { useAsyncAction } from '../../hooks/useAsyncAction';
 import useToast from '../../hooks/useToast';
+import { usePagination } from '../../hooks/usePagination';
 import { adminApi } from '../../services/adminApi';
 import { reimbursementApi } from '../../services/reimbursementApi';
-import Skeleton from '../../components/ui/Skeleton';
-import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import { formatRole } from '../../utils/formatters';
 
-function ToggleSwitch({ checked, onChange, disabled }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-        checked ? 'bg-brand' : 'bg-slate-300'
-      }`}
-    >
-      <span
-        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
-          checked ? 'translate-x-6' : 'translate-x-1'
-        }`}
-      />
-    </button>
-  );
-}
+// A role is someone's job; being a manager is the separate Manager setting (is_manager), so
+// Reporting Manager is no longer a role. Older CSV files may still say REPORTING_MANAGER — it's
+// read as Employee + Manager.
+const ROLES = ['EMPLOYEE', 'HRBP_HR', 'PAYROLL', 'FINANCE', 'IT_ADMIN', 'CEO', 'GROUP_HEAD_HR', 'RECRUITER'];
+const IMPORT_ROLES = [...ROLES, 'REPORTING_MANAGER'];
 
-const roles = ['EMPLOYEE', 'REPORTING_MANAGER', 'HRBP_HR', 'PAYROLL', 'FINANCE', 'IT_ADMIN', 'CEO', 'GROUP_HEAD_HR', 'RECRUITER'];
+const CLAIM_KIND = { TRAVEL: 'Travel', GENERAL: 'General', RELOCATION: 'Relocation' };
 
-const departmentsList = [
-  'Engineering',
-  'Human Resources',
-  'Finance',
-  'Sales',
-  'Marketing',
-  'Operations',
-  'IT',
-  'Legal',
-  'Customer Support',
-  'Design',
-  'Product',
-];
+const CLAIM_TONE = {
+  PAID: 'ok',
+  READY_FOR_PAYMENT: 'sky',
+  SUBMITTED: 'sky',
+  IN_APPROVAL: 'sky',
+  PENDING_EXCEPTION: 'amber',
+  ON_HOLD: 'slate',
+  SENT_BACK: 'rose',
+  REJECTED: 'rose',
+  DRAFT: 'slate',
+};
 
-const USERS_PAGE_SIZE = 10;
+const EMPTY_CREATE = {
+  email: '',
+  full_name: '',
+  password: '',
+  role: 'EMPLOYEE',
+  employee_id: '',
+  impact_level_id: '',
+  reporting_manager_id: '',
+  department: '',
+  is_manager: false,
+};
 
 function localIsoDate(d = new Date()) {
   const pad = (n) => String(n).padStart(2, '0');
@@ -61,171 +60,312 @@ function policyInForce(versions) {
   const today = localIsoDate();
   return (versions || [])
     .filter((v) => v.effective_from && v.effective_from <= today && (!v.effective_to || v.effective_to >= today))
-    .sort((a, b) => (b.effective_from.localeCompare(a.effective_from)) || (b.id - a.id))[0];
+    .sort((a, b) => b.effective_from.localeCompare(a.effective_from) || b.id - a.id)[0];
 }
 
-const emptyCreateForm = {
-  email: '',
-  full_name: '',
-  password: '',
-  role: 'EMPLOYEE',
-  employee_id: '',
-  impact_level_id: '',
-  reporting_manager_id: '',
-  department: '',
+const initials = (name, email) => {
+  const parts = (name || email || 'U').trim().split(/\s+/);
+  return (parts.length > 1 ? parts[0][0] + parts[1][0] : parts[0].slice(0, 2)).toUpperCase();
 };
+const money = (v) => `₹${Number(v || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const day = (v) => (v ? new Date(v).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '');
+const errorText = (err, fallback) => {
+  const detail = err?.response?.data?.detail;
+  return typeof detail === 'string' ? detail : fallback;
+};
+const FILTER = FIELD.replace('w-full', '');
+const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
-const getInitials = (name, email) => {
-  if (name) {
-    const parts = name.trim().split(' ');
-    if (parts.length > 1) return (parts[0][0] + parts[1][0]).toUpperCase();
-    return name.substring(0, 2).toUpperCase();
-  }
-  return email ? email.substring(0, 2).toUpperCase() : 'U';
-};
+function Avatar({ user, large = false }) {
+  return (
+    <span
+      className={`grid flex-none place-items-center rounded-full font-extrabold text-white ${roleAccent(user.role)} ${large ? 'h-12 w-12 text-base' : 'h-[34px] w-[34px] text-xs'}`}
+    >
+      {initials(user.full_name, user.email)}
+    </span>
+  );
+}
+
+function RolePill({ role }) {
+  return <span className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-bold ${roleChip(role)}`}>{formatRole(role)}</span>;
+}
+
+function ManagerPill({ count }) {
+  return (
+    <span className="inline-flex items-center whitespace-nowrap rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700">
+      Manager{count ? ` · ${count}` : ''}
+    </span>
+  );
+}
+
+function Switch({ checked, onChange, disabled, label }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-[22px] w-[38px] shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${checked ? 'bg-brand' : 'bg-slate-300'}`}
+    >
+      <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-[19px]' : 'translate-x-[3px]'}`} />
+    </button>
+  );
+}
+
+function Fact({ label, children, wide = false }) {
+  return (
+    <div className={wide ? 'col-span-full' : ''}>
+      <span className="block text-[11px] font-semibold text-slate-500">{label}</span>
+      <b className="text-[12.5px] font-bold text-ink">{children}</b>
+    </div>
+  );
+}
+
+function Group({ children }) {
+  return <div className={`${EYEBROW} col-span-full mt-1`}>{children}</div>;
+}
 
 export default function UserManagement() {
   useSetPageTitle('User Management');
   const { showToast } = useToast();
-  const [delegationEnabled, setDelegationEnabled] = useState(true);
-  const [users, setUsers] = useState([]);
-  const [filters, setFilters] = useState({ department: '', impact_level_id: '', role: '' });
-  const [roleDrafts, setRoleDrafts] = useState({});
-  const [status, setStatus] = useState('');
-  const [loadError, setLoadError] = useState(null);
-  const [createOpen, setCreateOpen] = useState(false);
-  const [createForm, setCreateForm] = useState(emptyCreateForm);
-  const [importOpen, setImportOpen] = useState(false);
-  const [importRows, setImportRows] = useState([]);
-  const [importFile, setImportFile] = useState(null);
-  const [selectedUser, setSelectedUser] = useState(null);
-  const [recentClaims, setRecentClaims] = useState([]);
-  const [confirmDeactivate, setConfirmDeactivate] = useState(null);
+  const [users, setUsers] = useState(null);
+  const [loadError, setLoadError] = useState('');
+  const [delegationEnabled, setDelegationEnabled] = useState(false);
+  const [delegationBusy, setDelegationBusy] = useState(false);
   const [impactLevels, setImpactLevels] = useState([]);
   const [activePolicyId, setActivePolicyId] = useState(null);
   const [reportingManagers, setReportingManagers] = useState([]);
   const [officeLocations, setOfficeLocations] = useState([]);
-  const [isEditing, setIsEditing] = useState(false);
+  // The company's departments (Company profile page).
+  const [departmentList, setDepartmentList] = useState([]);
+
+  const [tab, setTab] = useState('active');
+  const [query, setQuery] = useState('');
+  const [roleFilter, setRoleFilter] = useState('');
+  const [deptFilter, setDeptFilter] = useState('');
+  const [levelFilter, setLevelFilter] = useState('');
+  const [managerFilter, setManagerFilter] = useState('');
+
+  // The side panel: null, { mode: 'view' | 'edit', userId }, or { mode: 'add' }.
+  const [panel, setPanel] = useState(null);
+  const [panelAnim, setPanelAnim] = useState('enter');
+  const [leaving, setLeaving] = useState(false);
+  const panelRef = useRef(null);
+  const leaveTimer = useRef(null);
+
   const [editForm, setEditForm] = useState({});
-  const [currentPage, setCurrentPage] = useState(1);
+  const [createForm, setCreateForm] = useState(EMPTY_CREATE);
+  const [showPassword, setShowPassword] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [panelError, setPanelError] = useState('');
+  const [recentClaims, setRecentClaims] = useState(null);
+  const [confirmDeactivate, setConfirmDeactivate] = useState(null);
+  // A manager being deactivated whose people have to be moved first.
+  const [moveBeforeDeactivate, setMoveBeforeDeactivate] = useState(null);
+  const [movedNote, setMovedNote] = useState('');
+  const [importOpen, setImportOpen] = useState(false);
+
+  const loadManagers = useCallback(() => {
+    adminApi
+      .getReportingManagers()
+      .then((res) => setReportingManagers(res.data || []))
+      .catch(() => {});
+  }, []);
 
   const loadUsers = useCallback(async () => {
     try {
-      setLoadError(null);
-      const params = Object.fromEntries(Object.entries(filters).filter(([, value]) => value));
-      const response = await adminApi.users({ ...params, limit: 200 });
-      setUsers(response.data);
-
-
-    } catch (error) {
-      setLoadError(error);
+      setLoadError('');
+      const res = await adminApi.users({ limit: 200 });
+      setUsers(res.data || []);
+    } catch (err) {
+      setUsers((current) => current || []);
+      setLoadError(errorText(err, 'Could not load users.'));
     }
-  }, [filters]);
-
-  const totalUserPages = Math.max(1, Math.ceil(users.length / USERS_PAGE_SIZE));
-
-  useEffect(() => {
-    setCurrentPage((page) => Math.min(page, totalUserPages));
-  }, [totalUserPages]);
-
-  const pagedUsers = users.slice(
-    (currentPage - 1) * USERS_PAGE_SIZE,
-    currentPage * USERS_PAGE_SIZE,
-  );
+  }, []);
 
   useEffect(() => {
     loadUsers();
-  }, [loadUsers]);
+    adminApi
+      .delegationConfig()
+      .then((res) => setDelegationEnabled(Boolean(res.data?.enabled)))
+      .catch(() => {});
+    Promise.all([adminApi.impactLevels(), adminApi.policyVersions()])
+      .then(([levelRes, policyRes]) => {
+        setImpactLevels(levelRes.data || []);
+        const active = policyInForce(policyRes.data) || (policyRes.data || []).find((p) => p.status === 'ACTIVE');
+        if (active) setActivePolicyId(active.id);
+      })
+      .catch(() => {});
+    loadManagers();
+    adminApi
+      .companyProfile()
+      .then((res) => {
+        setOfficeLocations(res.data?.office_locations || []);
+        setDepartmentList(res.data?.departments || []);
+      })
+      .catch(() => {});
+  }, [loadUsers, loadManagers]);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await adminApi.delegationConfig();
-        setDelegationEnabled(Boolean(res.data?.enabled));
-      } catch (err) {
-        console.error('Failed to load delegation config', err);
-      }
-    })();
-  }, []);
+  useEffect(() => () => clearTimeout(leaveTimer.current), []);
 
-  const delegationToggleAction = useAsyncAction(async (next) => {
-    const res = await adminApi.updateDelegationConfig({ enabled: next });
-    setDelegationEnabled(Boolean(res.data?.enabled));
-    showToast(
-      next ? 'Delegation enabled.' : 'Delegation disabled — existing delegations are now inactive.',
-      'success'
+  const all = useMemo(() => users || [], [users]);
+  const levelsInForce = impactLevels.filter((l) => l.policy_version_id === activePolicyId && !l.is_deprecated);
+  const levelById = (id) => (id ? impactLevels.find((l) => l.id === Number(id)) || null : null);
+  const ceoLevel = () => levelsInForce.find((l) => l.level_code === 'L1') || [...impactLevels].reverse().find((l) => l.level_code === 'L1');
+  const managerName = (user) => {
+    if (!user.reporting_manager_id) return null;
+    const match = all.find((u) => u.employee_id === user.reporting_manager_id) || reportingManagers.find((m) => m.employee_id === user.reporting_manager_id);
+    return match ? match.full_name || match.email : user.reporting_manager_id;
+  };
+  const departments = [...new Set(all.map((u) => u.department).filter(Boolean))].sort();
+  // Active people who report to this user.
+  const teamOf = (user) => (user?.employee_id ? all.filter((u) => u.is_active && u.reporting_manager_id === user.employee_id) : []);
+
+  const matching = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return all.filter(
+      (u) =>
+        (!q || [u.full_name, u.email, u.employee_id].some((v) => String(v || '').toLowerCase().includes(q))) &&
+        (!roleFilter || u.role === roleFilter) &&
+        (!deptFilter || u.department === deptFilter) &&
+        (!levelFilter || String(u.impact_level_id) === levelFilter) &&
+        (!managerFilter || (managerFilter === 'yes') === Boolean(u.is_manager)),
     );
-  });
+  }, [all, query, roleFilter, deptFilter, levelFilter, managerFilter]);
+  const shown = useMemo(() => matching.filter((u) => tab === 'all' || (tab === 'active' ? u.is_active : !u.is_active)), [matching, tab]);
+  const { page, setPage, totalPages, pageItems, startIndex, pageSize, total } = usePagination(shown);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const [impactRes, policyRes] = await Promise.all([
-          adminApi.impactLevels(),
-          adminApi.policyVersions()
-        ]);
-        setImpactLevels(impactRes.data);
-        const activePolicy = policyInForce(policyRes.data) || policyRes.data.find(p => p.status === 'ACTIVE');
-        if (activePolicy) setActivePolicyId(activePolicy.id);
-      } catch (err) {
-        console.error('Failed to load impact levels/policies', err);
-      }
-    })();
-  }, []);
+  const selected = panel && panel.mode !== 'add' ? all.find((u) => u.user_id === panel.userId) : null;
+  const panelOpen = Boolean(panel && (panel.mode === 'add' || selected));
+  const noLevel = all.filter((u) => !u.impact_level_id).length;
 
+  // Bring the panel into view when it opens below the list (narrow screens); leave the page alone otherwise.
+  const panelKey = panel ? `${panel.mode}-${panel.userId ?? ''}` : '';
   useEffect(() => {
-    (async () => {
-      try {
-        const res = await adminApi.getReportingManagers();
-        setReportingManagers(res.data);
-      } catch (err) {
-        console.error('Failed to load reporting managers', err);
-      }
-    })();
-  }, []);
+    if (!panelKey) return;
+    const el = panelRef.current;
+    if (!el) return;
+    const top = el.getBoundingClientRect().top;
+    if (top < 0 || top > window.innerHeight - 120) el.scrollIntoView({ behavior: reducedMotion() ? 'auto' : 'smooth', block: 'start' });
+  }, [panelKey]);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await adminApi.companyProfile();
-        if (res.data && res.data.office_locations) {
-          setOfficeLocations(res.data.office_locations);
-        }
-      } catch (err) {
-        console.error('Failed to load office locations', err);
-      }
-    })();
-  }, []);
+  const openPanel = (next) => {
+    clearTimeout(leaveTimer.current);
+    setLeaving(false);
+    setPanelAnim(panelOpen ? 'swap' : 'enter');
+    setPanelError('');
+    setPanel(next);
+  };
 
-  useEffect(() => {
-    if (createOpen || importOpen || selectedUser) {
-      document.body.style.overflow = 'hidden';
-    } else {
-      document.body.style.overflow = '';
+  const openUser = (user) => {
+    openPanel({ mode: 'view', userId: user.user_id });
+    setRecentClaims(null);
+    reimbursementApi
+      .claims({ employee_user_id: user.user_id })
+      .then((res) => setRecentClaims((res.data || []).slice(0, 3)))
+      .catch(() => setRecentClaims([]));
+  };
+
+  const startEdit = () => {
+    setEditForm({
+      full_name: selected.full_name || '',
+      role: selected.role || 'EMPLOYEE',
+      impact_level_id: selected.impact_level_id || '',
+      department: selected.department || '',
+      office_location: selected.office_location || '',
+      reporting_manager_id: selected.reporting_manager_id || '',
+      is_manager: Boolean(selected.is_manager),
+    });
+    setMovedNote('');
+    openPanel({ mode: 'edit', userId: selected.user_id });
+  };
+
+  const startAdd = () => {
+    setCreateForm(EMPTY_CREATE);
+    setShowPassword(false);
+    openPanel({ mode: 'add' });
+  };
+
+  // Slide the panel out, then remove it.
+  const closePanel = () => {
+    if (!panelOpen || leaving) return;
+    if (reducedMotion()) {
+      setPanel(null);
+      return;
     }
-    return () => {
-      document.body.style.overflow = '';
-    };
-  }, [createOpen, importOpen, selectedUser]);
+    setLeaving(true);
+    leaveTimer.current = setTimeout(() => {
+      setLeaving(false);
+      setPanel(null);
+    }, 280);
+  };
 
-  const roleAction = useAsyncAction(async (user, role) => {
-    await adminApi.changeUserRole(user.user_id, role);
+  // The CEO is always level L1 and always a manager.
+  const withCeoLevel = (form, role) => {
+    const next = { ...form, role };
     if (role === 'CEO') {
-      const l1 = [...impactLevels].reverse().find(l => l.level_code === 'L1');
-      if (l1 && user.impact_level_id !== l1.id) {
-        await adminApi.updateUser(user.user_id, { impact_level_id: l1.id });
-      }
+      const l1 = ceoLevel();
+      if (l1) next.impact_level_id = l1.id;
+      next.is_manager = true;
     }
-    await loadUsers();
-  });
+    return next;
+  };
 
-  const deactivateAction = useAsyncAction(async (user) => {
-    await adminApi.deactivateUser(user.user_id);
+  // People were moved off a manager (before turning Manager off or deactivating them).
+  const afterTeamMoved = async (user, { name, count, waiting }) => {
     await loadUsers();
-  });
-  const searchAction = useAsyncAction(loadUsers);
+    loadManagers();
+    const what = `${count} ${count === 1 ? 'person' : 'people'}${waiting ? ` and ${waiting} waiting ${waiting === 1 ? 'item' : 'items'}` : ''}`;
+    showToast(`Moved ${what} to ${name}.`, 'success');
+    return what;
+  };
 
-  const createUserAction = useAsyncAction(async () => {
+  const toggleDelegation = async (next) => {
+    setDelegationBusy(true);
+    try {
+      const res = await adminApi.updateDelegationConfig({ enabled: next });
+      setDelegationEnabled(Boolean(res.data?.enabled));
+      showToast(next ? 'Delegation turned on.' : 'Delegation turned off. Existing handovers are paused.', 'success');
+    } catch (err) {
+      showToast(errorText(err, 'Could not change delegation.'), 'error');
+    } finally {
+      setDelegationBusy(false);
+    }
+  };
+
+  const saveEdit = async () => {
+    setSaving(true);
+    setPanelError('');
+    try {
+      // Role changes go through the role endpoint, which records them in the audit log.
+      if (editForm.role !== selected.role) await adminApi.changeUserRole(selected.user_id, editForm.role);
+      await adminApi.updateUser(selected.user_id, {
+        full_name: editForm.full_name.trim() || null,
+        impact_level_id: editForm.impact_level_id ? Number(editForm.impact_level_id) : null,
+        department: editForm.department.trim() || null,
+        office_location: editForm.office_location.trim() || null,
+        // Blank clears the manager.
+        reporting_manager_id: editForm.reporting_manager_id || '',
+        is_manager: editForm.role === 'CEO' ? true : editForm.is_manager,
+      });
+      await loadUsers();
+      loadManagers();
+      showToast(`Saved ${editForm.full_name.trim() || selected.email}.`, 'success');
+      openPanel({ mode: 'view', userId: selected.user_id });
+    } catch (err) {
+      setPanelError(errorText(err, 'Could not save the changes.'));
+      await loadUsers();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveCreate = async (event) => {
+    event.preventDefault();
+    setSaving(true);
+    setPanelError('');
     const payload = {
       email: createForm.email.trim(),
       password: createForm.password,
@@ -235,761 +375,639 @@ export default function UserManagement() {
       impact_level_id: createForm.impact_level_id ? Number(createForm.impact_level_id) : null,
       reporting_manager_id: createForm.reporting_manager_id || null,
       department: createForm.department.trim() || null,
+      is_manager: createForm.role === 'CEO' ? true : createForm.is_manager,
     };
-    await adminApi.createUser(payload);
-    setStatus(`Created user ${payload.email}`);
-    setCreateForm(emptyCreateForm);
-    setCreateOpen(false);
-    await loadUsers();
-  });
-  const updateUserAction = useAsyncAction(async () => {
-    const payload = {
-      full_name: editForm.full_name.trim() || null,
-      role: editForm.role,
-      impact_level_id: editForm.impact_level_id ? Number(editForm.impact_level_id) : null,
-      department: editForm.department.trim() || null,
-      office_location: editForm.office_location.trim() || null,
-      reporting_manager_id: editForm.reporting_manager_id || null,
-    };
-    await adminApi.updateUser(selectedUser.user_id, payload);
-    setStatus(`Updated user ${selectedUser.email}`);
-    setIsEditing(false);
-    await loadUsers();
-    setSelectedUser({ ...selectedUser, ...payload });
-  });
-  const importAction = useAsyncAction(async () => {
-    if (!importFile) return;
-    const formData = new FormData();
-    formData.append('file', importFile);
-    await adminApi.bulkImportUsers(formData);
-    setStatus('Bulk import completed');
-    setImportOpen(false);
-    setImportRows([]);
-    setImportFile(null);
-    await loadUsers();
-  });
-
-  const openProfile = async (user) => {
-    setSelectedUser(user);
-    setIsEditing(false);
-    setEditForm({
-      full_name: user.full_name || '',
-      role: user.role || 'EMPLOYEE',
-      impact_level_id: user.impact_level_id || '',
-      department: user.department || '',
-      office_location: user.office_location || '',
-      reporting_manager_id: user.reporting_manager_id || '',
-    });
-    const res = await reimbursementApi.claims({ employee_user_id: user.user_id });
-    setRecentClaims((res.data || []).slice(0, 3));
+    try {
+      const res = await adminApi.createUser(payload);
+      await loadUsers();
+      loadManagers();
+      showToast(`Added ${payload.full_name || payload.email}.`, 'success');
+      if (res.data?.id) openUser({ user_id: res.data.id });
+      else closePanel();
+    } catch (err) {
+      setPanelError(errorText(err, 'Could not add this user.'));
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const error =
-    loadError ||
-    roleAction.error ||
-    deactivateAction.error ||
-    searchAction.error ||
-    createUserAction.error;
-
-  const impactLevelById = (id) => {
-    if (!id) return null;
-    return impactLevels.find((l) => l.id === id || l.id === Number(id)) || null;
+  const deactivate = async (user) => {
+    setConfirmDeactivate(null);
+    try {
+      await adminApi.deactivateUser(user.user_id);
+      await loadUsers();
+      showToast(`${user.full_name || user.email} is now inactive.`, 'success');
+    } catch (err) {
+      showToast(errorText(err, 'Could not deactivate this user.'), 'error');
+    }
   };
 
-  const roleDraftKey = (user) => user.user_id;
-  const selectedRole = (user) => roleDrafts[roleDraftKey(user)] || user.role || 'EMPLOYEE';
-  const setSelectedRole = (user, role) => {
-    setRoleDrafts((current) => ({ ...current, [roleDraftKey(user)]: role }));
-  };
+  const levelOptions = (current) =>
+    impactLevels
+      .filter((l) => (l.policy_version_id === activePolicyId && !l.is_deprecated) || l.id === Number(current))
+      .map((l) => (
+        <option key={l.id} value={l.id}>
+          {l.level_code} · {l.level_name}
+          {l.policy_version_id !== activePolicyId ? ' (older policy)' : ''}
+        </option>
+      ));
+  // Anyone can be a manager, whatever their role — just not their own.
+  const managerOptions = (selfEmployeeId) =>
+    reportingManagers
+      .filter((m) => m.employee_id !== selfEmployeeId)
+      .map((m) => (
+        <option key={m.employee_id} value={m.employee_id}>
+          {m.full_name} ({m.employee_id})
+        </option>
+      ));
+
+  let panelBody = null;
+  if (panel?.mode === 'add') {
+    panelBody = (
+      <form onSubmit={saveCreate} className="contents">
+        <PanelHead title="Add user" sub="They sign in with this email and password." onClose={closePanel} />
+        <div className="grid grid-cols-1 gap-x-3 gap-y-2.5 px-4 py-3.5 sm:grid-cols-2">
+          <Group>Sign-in</Group>
+          <label className="block">
+            <span className={LABEL}>Full name</span>
+            <input className={FIELD} value={createForm.full_name} onChange={(e) => setCreateForm({ ...createForm, full_name: e.target.value })} />
+          </label>
+          <label className="block">
+            <span className={LABEL}>Work email *</span>
+            <input type="email" required className={FIELD} value={createForm.email} onChange={(e) => setCreateForm({ ...createForm, email: e.target.value })} />
+          </label>
+          <label className="col-span-full block">
+            <span className={LABEL}>Password *</span>
+            <span className="relative block">
+              <input
+                type={showPassword ? 'text' : 'password'}
+                required
+                minLength={8}
+                placeholder="At least 8 characters"
+                className={`${FIELD} pr-9`}
+                value={createForm.password}
+                onChange={(e) => setCreateForm({ ...createForm, password: e.target.value })}
+              />
+              <button
+                type="button"
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+                onClick={() => setShowPassword((v) => !v)}
+                className="absolute right-2 top-1/2 grid h-6 w-6 -translate-y-1/2 place-items-center rounded text-slate-400 hover:text-slate-600"
+              >
+                {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+              </button>
+            </span>
+          </label>
+          <Group>Role &amp; level</Group>
+          <label className="block">
+            <span className={LABEL}>Role</span>
+            <select className={FIELD} value={createForm.role} onChange={(e) => setCreateForm(withCeoLevel(createForm, e.target.value))}>
+              {ROLES.map((r) => (
+                <option key={r} value={r}>
+                  {formatRole(r)}
+                </option>
+              ))}
+            </select>
+            <span className="mt-1 block text-[11px] text-slate-400">CEO is always level L1.</span>
+          </label>
+          <label className="block">
+            <span className={LABEL}>Impact level</span>
+            <select className={FIELD} value={createForm.impact_level_id} onChange={(e) => setCreateForm({ ...createForm, impact_level_id: e.target.value })}>
+              <option value="">Not set</option>
+              {levelOptions(createForm.impact_level_id)}
+            </select>
+          </label>
+          <ManagerSetting
+            name={createForm.full_name.trim()}
+            value={createForm.role === 'CEO' || createForm.is_manager}
+            locked={createForm.role === 'CEO'}
+            onChange={(next) => setCreateForm({ ...createForm, is_manager: next })}
+          />
+          <label className="col-span-full block">
+            <span className={LABEL}>Reporting manager</span>
+            <select className={FIELD} value={createForm.reporting_manager_id} onChange={(e) => setCreateForm({ ...createForm, reporting_manager_id: e.target.value })}>
+              <option value="">None</option>
+              {managerOptions(createForm.employee_id)}
+            </select>
+          </label>
+          <Group>Work details</Group>
+          <label className="block">
+            <span className={LABEL}>Department</span>
+            <select className={FIELD} value={createForm.department} onChange={(e) => setCreateForm({ ...createForm, department: e.target.value })}>
+              <option value="">Not set</option>
+              {departmentList.map((d) => (
+                <option key={d} value={d}>
+                  {d}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block">
+            <span className={LABEL}>Employee ID</span>
+            <input className={FIELD} placeholder="Optional" value={createForm.employee_id} onChange={(e) => setCreateForm({ ...createForm, employee_id: e.target.value })} />
+            <span className="mt-1 block text-[11px] text-slate-400">An employee profile is made if needed.</span>
+          </label>
+          {panelError ? <PanelError>{panelError}</PanelError> : null}
+        </div>
+        <PanelFoot>
+          <button type="button" className={BTN_GHOST} onClick={closePanel}>
+            Cancel
+          </button>
+          <button type="submit" className={BTN_MAIN} disabled={saving}>
+            <Plus size={14} />
+            {saving ? 'Adding…' : 'Add user'}
+          </button>
+        </PanelFoot>
+      </form>
+    );
+  } else if (panel?.mode === 'edit' && selected) {
+    const noProfile = !selected.employee_id;
+    const team = teamOf(selected);
+    const isCeo = editForm.role === 'CEO';
+    // Turning Manager off while people still report to them: move them first.
+    const mustMove = selected.is_manager && !isCeo && !editForm.is_manager && team.length > 0;
+    panelBody = (
+      <>
+        <PanelHead title={`Edit ${selected.full_name || selected.email}`} sub={selected.email} onClose={closePanel} />
+        <div className="grid grid-cols-1 gap-x-3 gap-y-2.5 px-4 py-3.5 sm:grid-cols-2">
+          <label className="col-span-full block">
+            <span className={LABEL}>Full name</span>
+            <input className={FIELD} value={editForm.full_name} onChange={(e) => setEditForm({ ...editForm, full_name: e.target.value })} />
+          </label>
+          <Group>Role &amp; level</Group>
+          <label className="block">
+            <span className={LABEL}>Role</span>
+            <select className={FIELD} value={editForm.role} onChange={(e) => setEditForm(withCeoLevel(editForm, e.target.value))}>
+              {ROLES.map((r) => (
+                <option key={r} value={r}>
+                  {formatRole(r)}
+                </option>
+              ))}
+            </select>
+            <span className="mt-1 block text-[11px] text-slate-400">CEO is always level L1.</span>
+          </label>
+          <ManagerSetting
+            name={selected.full_name || selected.email}
+            value={isCeo || editForm.is_manager}
+            locked={isCeo}
+            team={team}
+            onChange={(next) => {
+              setMovedNote('');
+              setEditForm({ ...editForm, is_manager: next });
+            }}
+          />
+          {mustMove ? (
+            <MoveTeam
+              user={selected}
+              team={team}
+              managers={reportingManagers}
+              errorText={errorText}
+              onMoved={async (result) => {
+                const what = await afterTeamMoved(selected, result);
+                setMovedNote(`Moved ${what} to ${result.name}. Save to finish turning Manager off.`);
+              }}
+            />
+          ) : null}
+          {movedNote && !mustMove ? (
+            <div className="col-span-full rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-xs text-emerald-800">✓ {movedNote}</div>
+          ) : null}
+          {noProfile ? (
+            <div className="col-span-full rounded-[10px] border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              This account has no employee profile, so its level, manager, department and office can&apos;t be set here.
+            </div>
+          ) : null}
+          <label className="block">
+            <span className={LABEL}>Impact level</span>
+            <select className={FIELD} disabled={noProfile} value={editForm.impact_level_id} onChange={(e) => setEditForm({ ...editForm, impact_level_id: e.target.value })}>
+              <option value="">Not set</option>
+              {levelOptions(editForm.impact_level_id)}
+            </select>
+          </label>
+          <label className="col-span-full block">
+            <span className={LABEL}>Reporting manager</span>
+            <select className={FIELD} disabled={noProfile} value={editForm.reporting_manager_id} onChange={(e) => setEditForm({ ...editForm, reporting_manager_id: e.target.value })}>
+              <option value="">None</option>
+              {managerOptions(selected?.employee_id)}
+            </select>
+          </label>
+          <Group>Work details</Group>
+          <label className="block">
+            <span className={LABEL}>Department</span>
+            <select className={FIELD} disabled={noProfile} value={editForm.department} onChange={(e) => setEditForm({ ...editForm, department: e.target.value })}>
+              <option value="">Not set</option>
+              {/* Someone in a department since taken off the list still sees theirs. */}
+              {[...new Set([...departmentList, editForm.department].filter(Boolean))].map((d) => (
+                <option key={d} value={d}>
+                  {d}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block">
+            <span className={LABEL}>Office</span>
+            <select className={FIELD} disabled={noProfile} value={editForm.office_location} onChange={(e) => setEditForm({ ...editForm, office_location: e.target.value })}>
+              <option value="">Not set</option>
+              {[...new Set([...officeLocations, editForm.office_location].filter(Boolean))].map((o) => (
+                <option key={o} value={o}>
+                  {o}
+                </option>
+              ))}
+            </select>
+          </label>
+          {panelError ? <PanelError>{panelError}</PanelError> : null}
+        </div>
+        <PanelFoot>
+          <button type="button" className={BTN_GHOST} onClick={() => openPanel({ mode: 'view', userId: selected.user_id })}>
+            Cancel
+          </button>
+          <button type="button" className={BTN_MAIN} onClick={saveEdit} disabled={saving || mustMove} title={mustMove ? 'Move their people first' : undefined}>
+            {saving ? 'Saving…' : 'Save changes'}
+          </button>
+        </PanelFoot>
+      </>
+    );
+  } else if (selected) {
+    const level = levelById(selected.impact_level_id);
+    const manager = managerName(selected);
+    const team = teamOf(selected);
+    panelBody = (
+      <>
+        <PanelHead title="Profile" onClose={closePanel} />
+        <div className="flex flex-col gap-3.5 px-4 py-3.5">
+          <div className="flex items-center gap-3">
+            <Avatar user={selected} large />
+            <div className="min-w-0">
+              <b className="block truncate text-base text-ink">{selected.full_name || selected.email}</b>
+              <span className="block truncate text-xs text-slate-500">{selected.email}</span>
+              <div className="mt-1 flex flex-wrap gap-[5px]">
+                <RolePill role={selected.role} />
+                {selected.is_manager ? <ManagerPill /> : null}
+                <Pill tone={selected.is_active ? 'ok' : 'slate'}>{selected.is_active ? 'Active' : 'Inactive'}</Pill>
+              </div>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 gap-x-3.5 gap-y-3 sm:grid-cols-2">
+            <Fact label="Employee ID">
+              <span className="font-mono">{selected.employee_id || '—'}</span>
+            </Fact>
+            <Fact label="Impact level">
+              {level ? (
+                <>
+                  {level.level_code} · {level.level_name}
+                  {level.policy_version_id !== activePolicyId ? <span className="font-semibold text-slate-400"> (older policy)</span> : null}
+                </>
+              ) : (
+                <Pill tone="amber">Not set</Pill>
+              )}
+            </Fact>
+            <Fact label="Department">{selected.department || '—'}</Fact>
+            <Fact label="Office">{selected.office_location || '—'}</Fact>
+            <Fact label="Reporting manager" wide>
+              {manager ? (
+                <>
+                  {manager} <span className="font-semibold text-slate-400">({selected.reporting_manager_id})</span>
+                </>
+              ) : (
+                '—'
+              )}
+            </Fact>
+          </div>
+          {selected.is_manager ? (
+            <div>
+              <div className={`${EYEBROW} mb-0.5`}>Manager</div>
+              <TeamList team={team} />
+            </div>
+          ) : null}
+          <div>
+            <div className={`${EYEBROW} mb-1.5`}>Recent claims</div>
+            {recentClaims === null ? (
+              <Skeleton variant="table" rows={2} columns={1} />
+            ) : recentClaims.length ? (
+              recentClaims.map((c, i) => (
+                <div key={c.id} className={`flex items-center justify-between gap-2.5 py-2 ${i ? 'border-t border-slate-100' : ''}`}>
+                  <div className="min-w-0">
+                    <b className="block text-[12.5px] text-ink">{c.claim_reference || `Draft #${c.id}`}</b>
+                    <span className="text-[11.5px] text-slate-500">
+                      {CLAIM_KIND[c.reimbursement_category] || 'Claim'}
+                      {c.submitted_at ? ` · ${day(c.submitted_at)}` : ''}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-end gap-2.5">
+                    <Pill tone={CLAIM_TONE[c.status] || 'slate'}>{CLAIM_STAGE[c.status]?.[0] || formatRole(c.status)}</Pill>
+                    <span className="font-mono text-xs text-ink">{money(c.compliance_report?.total_claimed)}</span>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <p className="py-1.5 text-[12.5px] text-slate-500">No claims yet.</p>
+            )}
+          </div>
+        </div>
+        <PanelFoot>
+          {selected.is_active ? (
+            <button
+              type="button"
+              className={BTN_NO}
+              onClick={() => (team.length ? setMoveBeforeDeactivate(selected) : setConfirmDeactivate(selected))}
+            >
+              Deactivate
+            </button>
+          ) : null}
+          <button type="button" className={BTN_MAIN} onClick={startEdit}>
+            Edit
+          </button>
+        </PanelFoot>
+      </>
+    );
+  }
+
+  const enterAnim = panelAnim === 'swap' ? 'animate-sheet-swap' : 'animate-sheet-up lg:animate-sheet-in';
+  const anim = leaving ? 'animate-sheet-down lg:animate-sheet-out pointer-events-none' : enterAnim;
 
   return (
-    <>
-      <PageHeader
-        title=""
-        actions={
-          <>
-            <button type="button" className="btn-secondary" onClick={() => setImportOpen(true)}>
-              Import from CSV
-            </button>
-            <button type="button" className="btn-primary" onClick={() => setCreateOpen(true)}>
-              <Plus size={17} aria-hidden="true" />
-              Create User
-            </button>
-          </>
-        }
-      />
-
-      <section className="panel mb-6 flex flex-wrap items-center justify-between gap-4 p-5">
+    <section className="flex flex-col gap-3.5">
+      <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h3 className="text-[15px] font-bold text-ink">Delegation</h3>
-          <p className="mt-1 max-w-xl text-xs text-slate-500">
-            When enabled, any user can temporarily hand off their current approval queue to a delegate
-            (Profile → Delegation). When disabled, every existing delegation stops taking effect immediately
-            — records aren&apos;t deleted, they just grant nothing while this is off.
-          </p>
+          <h1 className="text-xl font-extrabold text-ink">Users</h1>
+          <p className="mt-0.5 text-[13px] text-slate-500">Add people and set their role, manager setting, impact level and reporting manager.</p>
         </div>
-        <div className="flex items-center gap-3">
-          <span className="text-xs font-semibold text-slate-500">{delegationEnabled ? 'Enabled' : 'Disabled'}</span>
-          <ToggleSwitch
-            checked={delegationEnabled}
-            onChange={delegationToggleAction.run}
-            disabled={delegationToggleAction.loading}
-          />
-        </div>
-      </section>
-
-      <section className="panel mb-6 p-4">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="relative min-w-[200px] flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-            <input
-              className="field w-full !pl-9"
-              placeholder="Search by department..."
-              value={filters.department}
-              onChange={(event) => setFilters({ ...filters, department: event.target.value })}
-              onKeyDown={(e) => e.key === 'Enter' && searchAction.run()}
-            />
-          </div>
-          <div className="min-w-[150px] flex-1">
-            <input
-              className="field w-full"
-              placeholder="Impact Level ID"
-              value={filters.impact_level_id}
-              onChange={(event) => setFilters({ ...filters, impact_level_id: event.target.value })}
-              onKeyDown={(e) => e.key === 'Enter' && searchAction.run()}
-            />
-          </div>
-          <div className="min-w-[180px] flex-1">
-            <select
-              className="field w-full"
-              value={filters.role}
-              onChange={(event) => setFilters({ ...filters, role: event.target.value })}
-            >
-              <option value="">Any role</option>
-              {roles.map((role) => <option key={role} value={role}>{formatRole(role)}</option>)}
-            </select>
-          </div>
-          <button className="btn-primary shrink-0" onClick={searchAction.run} disabled={searchAction.loading}>
-            Search
+        <div className="flex flex-wrap items-stretch gap-2">
+          {[
+            ['People', all.length],
+            ['Managers', all.filter((u) => u.is_active && u.is_manager).length],
+            ['Active', all.filter((u) => u.is_active).length],
+            ['No level set', noLevel, noLevel ? 'text-amber-700' : ''],
+          ].map(([label, value, tone]) => (
+            <div key={label} className="min-w-[96px] rounded-xl border border-slate-200 bg-white px-3 py-[7px]">
+              <b className={`block text-[17px] ${tone || 'text-ink'}`}>{users ? value : '—'}</b>
+              <span className="text-[11.5px] font-semibold text-slate-500">{label}</span>
+            </div>
+          ))}
+          <button type="button" className={`${BTN_GHOST} h-auto min-h-[52px] rounded-xl px-4`} onClick={() => setImportOpen(true)}>
+            <Upload size={14} />
+            Import from CSV
+          </button>
+          <button type="button" className={`${BTN_MAIN} h-auto min-h-[52px] rounded-xl px-4`} onClick={startAdd}>
+            <Plus size={15} />
+            Add user
           </button>
         </div>
-        {status ? <div className="mt-3 text-sm font-medium text-emerald-600">{status}</div> : null}
-        {error ? <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error.response?.data?.detail || error.message}</div> : null}
-      </section>
-      <section className="panel table-contain overflow-hidden">
-        <table className="w-full min-w-[900px] text-left text-sm">
-          <thead className="bg-slate-50 text-center text-[11px] font-bold uppercase tracking-wider text-slate-500">
-            <tr>
-              <th className="px-4 py-3 whitespace-nowrap">S. No</th>
-              <th className="px-4 py-3">User</th>
-              <th className="px-4 py-3">Email</th>
-              <th className="px-4 py-3">Department</th>
-              <th className="px-4 py-3">Role</th>
-              <th className="px-4 py-3">Impact Level</th>
-              <th className="px-4 py-3">Office</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {pagedUsers.map((user, index) => {
-              const currentRole = selectedRole(user);
-              const isRoleChanged = currentRole !== (user.role || 'EMPLOYEE');
-              return (
-                <tr key={user.user_id} className="border-t border-line text-slate-900 hover:bg-slate-50/50 transition-colors">
-                  <td className="px-4 py-3 text-center text-slate-500">
-                    {(currentPage - 1) * USERS_PAGE_SIZE + index + 1}
-                  </td>
-                  <td className="px-4 py-3 text-center">
-                    <div className="flex items-center justify-center gap-3">
-                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand/10 text-[11px] font-bold text-brand">
-                        {getInitials(user.full_name, user.email)}
-                      </div>
-                      <div className="text-left">
-                        <button className="font-bold text-left text-ink hover:text-brand hover:underline" onClick={() => openProfile(user)}>
-                          {user.full_name || user.email}
-                        </button>
-                        <div className="text-[11px] text-slate-500 mt-0.5">{user.employee_id || 'Standalone'}</div>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 text-center">{user.email}</td>
-                  <td className="px-4 py-3 text-center">
-                    {user.department ? (
-                      <span className="badge badge-draft">
-                        {user.department}
-                      </span>
-                    ) : (
-                      <span className="text-slate-400">—</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-center">
-                    <div className="relative inline-block w-full max-w-[160px]">
-                      <select 
-                        className={`w-full appearance-none rounded-lg border px-3 py-1.5 text-xs font-semibold outline-none transition-colors cursor-pointer pr-8 ${
-                          isRoleChanged
-                            ? 'border-amber-300 bg-amber-50 text-amber-800 shadow-sm'
-                            : 'border-transparent bg-slate-100 text-slate-700 hover:bg-slate-200 hover:border-slate-300 focus:border-brand focus:bg-white focus:ring-1 focus:ring-brand'
-                        }`} 
-                        value={currentRole} 
-                        onChange={(event) => setSelectedRole(user, event.target.value)}
-                      >
-                        {roles.map((role) => <option key={role} value={role}>{formatRole(role)}</option>)}
-                      </select>
-                      <ChevronDown size={14} className={`pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 transition-colors ${isRoleChanged ? 'text-amber-500' : 'text-slate-400'}`} />
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 text-center">
-                    {(() => {
-                      const level = impactLevelById(user.impact_level_id);
-                      if (!level) return <span className="text-slate-400">—</span>;
-                      return (
-                        <span
-                          className="badge badge-draft font-semibold"
-                          title={`${level.level_name}${level.policy_version_id !== activePolicyId ? ' (Legacy policy version)' : ''}`}
-                        >
-                          {level.level_code}
-                        </span>
-                      );
-                    })()}
-                  </td>
-                  <td className="px-4 py-3 text-center">{user.office_location || <span className="text-slate-400">—</span>}</td>
-                  <td className="px-4 py-3 text-center">
-                    {user.is_active ? (
-                      <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700 ring-1 ring-inset ring-emerald-600/20">
-                        Active
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center rounded-full bg-slate-50 px-2 py-0.5 text-[11px] font-bold text-slate-600 ring-1 ring-inset ring-slate-500/20">
-                        Inactive
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-center">
-                    <div className="flex items-center justify-center gap-1.5">
-                      <button 
-                        className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-sm ring-1 ring-inset ring-slate-300 hover:bg-slate-50 disabled:opacity-50 disabled:shadow-none transition-all"
-                        onClick={() => roleAction.run(user, currentRole)} 
-                        disabled={roleAction.loading || !isRoleChanged}
-                      >
-                        <Check size={14} className={isRoleChanged ? 'text-emerald-600' : 'text-slate-400'} />
-                        Save
-                      </button>
-                      <button 
-                        className="inline-flex items-center justify-center rounded-lg bg-white p-1.5 text-slate-400 shadow-sm ring-1 ring-inset ring-slate-300 hover:bg-red-50 hover:text-red-600 disabled:opacity-50 transition-all" 
-                        onClick={() => setConfirmDeactivate(user)} 
-                        disabled={deactivateAction.loading}
-                        title="Deactivate User"
-                      >
-                        <UserX size={15} />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
+      </div>
 
-          </tbody>
-        </table>
-        {users.length === 0 ? null : (
-          <div className="flex items-center justify-between border-t border-line px-4 py-3 text-xs font-medium text-slate-500">
-            <span>
-              Showing {(currentPage - 1) * USERS_PAGE_SIZE + 1}
-              –{Math.min(currentPage * USERS_PAGE_SIZE, users.length)} of {users.length} users
-            </span>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                className="btn-secondary px-3 py-1.5 text-xs disabled:opacity-50"
-                onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
-                disabled={currentPage <= 1}
-              >
-                Previous
-              </button>
-              <span className="text-slate-600">Page {currentPage} of {totalUserPages}</span>
-              <button
-                type="button"
-                className="btn-secondary px-3 py-1.5 text-xs disabled:opacity-50"
-                onClick={() => setCurrentPage((page) => Math.min(totalUserPages, page + 1))}
-                disabled={currentPage >= totalUserPages}
-              >
-                Next
+      <div className="flex flex-wrap items-center justify-between gap-3.5 rounded-[14px] border border-slate-200 bg-white px-4 py-[11px]">
+        <div>
+          <b className="text-[13.5px] text-ink">Delegation</b>
+          <p className="mt-0.5 max-w-[80ch] text-xs text-slate-500">
+            Lets people hand their approvals to someone while they&apos;re away (Profile → Out of office). Turning it off pauses every handover straight away;
+            nothing is deleted.
+          </p>
+        </div>
+        <span className="inline-flex items-center gap-2 text-xs font-bold text-slate-500">
+          {delegationEnabled ? 'On' : 'Off'}
+          <Switch checked={delegationEnabled} onChange={toggleDelegation} disabled={delegationBusy} label="Delegation" />
+        </span>
+      </div>
+
+      {loadError ? (
+        <div role="alert" className="rounded-[10px] border border-rose-200 bg-rose-50 px-3 py-2.5 text-[13px] text-rose-700">
+          {loadError}
+        </div>
+      ) : null}
+
+      <div className="flex flex-wrap items-end justify-between gap-2.5 border-b border-slate-200">
+        <div className="-mb-px min-w-0 [&>div]:border-b-0">
+          <Tabs
+            label="Status"
+            value={tab}
+            onChange={setTab}
+            tabs={[
+              { key: 'active', label: 'Active', count: matching.filter((u) => u.is_active).length },
+              { key: 'inactive', label: 'Inactive', count: matching.filter((u) => !u.is_active).length },
+              { key: 'all', label: 'All', count: matching.length },
+            ]}
+          />
+        </div>
+        <div className="mb-1.5 flex w-full flex-wrap gap-2 lg:w-auto">
+          <label className="relative w-full sm:w-[240px]">
+            <span className="sr-only">Search users</span>
+            <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input className={`${FILTER} w-full pl-8`} placeholder="Search name, email or employee ID" value={query} onChange={(e) => setQuery(e.target.value)} />
+          </label>
+          <select aria-label="Role" className={`${FILTER} min-w-0 flex-1 sm:w-auto sm:flex-none`} value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)}>
+            <option value="">Any role</option>
+            {ROLES.map((r) => (
+              <option key={r} value={r}>
+                {formatRole(r)}
+              </option>
+            ))}
+          </select>
+          <select aria-label="Manager" className={`${FILTER} min-w-0 flex-1 sm:w-auto sm:flex-none`} value={managerFilter} onChange={(e) => setManagerFilter(e.target.value)}>
+            <option value="">Managers and others</option>
+            <option value="yes">Managers only</option>
+            <option value="no">Not managers</option>
+          </select>
+          <select aria-label="Department" className={`${FILTER} min-w-0 flex-1 sm:w-auto sm:flex-none`} value={deptFilter} onChange={(e) => setDeptFilter(e.target.value)}>
+            <option value="">Any department</option>
+            {departments.map((d) => (
+              <option key={d} value={d}>
+                {d}
+              </option>
+            ))}
+          </select>
+          <select aria-label="Impact level" className={`${FILTER} w-full sm:w-auto`} value={levelFilter} onChange={(e) => setLevelFilter(e.target.value)}>
+            <option value="">Any level</option>
+            {levelsInForce.map((l) => (
+              <option key={l.id} value={String(l.id)}>
+                {l.level_code} · {l.level_name}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div className={`grid items-start gap-3.5 ${panelOpen ? 'lg:grid-cols-[minmax(0,1fr)_400px]' : ''}`}>
+        <section aria-label="Users" className={CARD}>
+          {users === null ? (
+            <div className="p-4">
+              <Skeleton variant="table" rows={6} columns={1} />
+            </div>
+          ) : pageItems.length ? (
+            pageItems.map((u, i) => {
+              const level = levelById(u.impact_level_id);
+              const manager = managerName(u);
+              const on = selected?.user_id === u.user_id;
+              const wide = panelOpen ? 'hidden' : 'hidden lg:block';
+              return (
+                <button
+                  key={u.user_id}
+                  type="button"
+                  onClick={() => openUser(u)}
+                  aria-current={on || undefined}
+                  className={`grid w-full items-center gap-3 border-l-[3px] py-[11px] pl-2.5 pr-4 text-left ${i ? 'border-t border-t-slate-100' : ''} ${
+                    on ? 'border-l-brand bg-brand/[0.07]' : 'border-l-transparent hover:bg-slate-50'
+                  } ${
+                    panelOpen
+                      ? 'grid-cols-[18px_minmax(0,1fr)_auto] lg:grid-cols-[18px_minmax(0,1fr)_auto_14px]'
+                      : 'grid-cols-[18px_minmax(0,1fr)_auto] lg:grid-cols-[18px_minmax(0,1.5fr)_190px_170px_minmax(0,1fr)_70px_14px]'
+                  }`}
+                >
+                  <span className="text-right font-mono text-[11.5px] font-semibold text-slate-400">{startIndex + i + 1}</span>
+                  <span className="flex min-w-0 items-center gap-[11px]">
+                    <Avatar user={u} />
+                    <span className="min-w-0">
+                      <span className="block truncate text-[13.5px] font-bold text-ink">{u.full_name || u.email}</span>
+                      <span className="block truncate text-xs text-slate-500">
+                        {u.email}
+                        {u.employee_id ? (
+                          <>
+                            {' · '}
+                            <span className="font-mono">{u.employee_id}</span>
+                          </>
+                        ) : null}
+                        {u.department ? ` · ${u.department}` : ''}
+                        {u.office_location ? ` · ${u.office_location}` : ''}
+                      </span>
+                    </span>
+                  </span>
+                  <span className="flex flex-wrap justify-end gap-[5px] lg:justify-start">
+                    <RolePill role={u.role} />
+                    {u.is_manager ? <ManagerPill count={teamOf(u).length} /> : null}
+                  </span>
+                  <span className={`${wide} truncate`}>
+                    {level ? (
+                      <span title={level.level_name}>
+                        <span className="rounded-md bg-slate-100 px-1.5 py-0.5 font-mono text-[11.5px] font-semibold text-ink">{level.level_code}</span>{' '}
+                        <span className="text-[11.5px] text-slate-500">{level.level_name}</span>
+                      </span>
+                    ) : (
+                      <Pill tone="amber">No level</Pill>
+                    )}
+                  </span>
+                  <span className={`${wide} truncate text-[12.5px] text-slate-700`}>
+                    {manager ? (
+                      <>
+                        <span className="text-slate-400">Reports to</span> {manager}
+                      </>
+                    ) : (
+                      <span className="text-slate-400">No manager</span>
+                    )}
+                  </span>
+                  <span className={`${wide} text-right`}>
+                    <Pill tone={u.is_active ? 'ok' : 'slate'}>{u.is_active ? 'Active' : 'Inactive'}</Pill>
+                  </span>
+                  <ChevronRight size={14} className="hidden text-slate-400 lg:block" />
+                </button>
+              );
+            })
+          ) : (
+            <div className="px-4 py-9 text-center text-[13px] text-slate-500">
+              <b className="mb-1 block text-sm text-ink">{all.length ? 'Nobody here' : 'No users yet'}</b>
+              {all.length ? 'Try another tab, search or filter.' : 'Add someone, or import a CSV file.'}
+            </div>
+          )}
+          <Pagination page={page} totalPages={totalPages} onPageChange={setPage} total={total} pageSize={pageSize} startIndex={startIndex} />
+        </section>
+
+        {panelOpen ? (
+          <aside
+            key={panelKey}
+            ref={panelRef}
+            aria-label={panel.mode === 'add' ? 'Add user' : 'User profile'}
+            className={`${CARD} scroll-mt-20 origin-top motion-reduce:animate-none lg:sticky lg:top-[calc(var(--app-nav-h,56px)+12px)] lg:origin-right ${anim}`}
+          >
+            {panelBody}
+          </aside>
+        ) : null}
+      </div>
+
+      <ConfirmDialog
+        open={Boolean(confirmDeactivate)}
+        title="Deactivate this user?"
+        description={confirmDeactivate ? `${confirmDeactivate.full_name || confirmDeactivate.email} won't be able to sign in. There's no way to reactivate an account in the app yet.` : ''}
+        confirmLabel="Deactivate"
+        confirmVariant="danger"
+        onCancel={() => setConfirmDeactivate(null)}
+        onConfirm={() => confirmDeactivate && deactivate(confirmDeactivate)}
+      />
+      {moveBeforeDeactivate ? (
+        <div className="fixed inset-0 z-[95] grid grid-cols-[minmax(0,1fr)] place-items-center bg-slate-900/40 p-4" onMouseDown={() => setMoveBeforeDeactivate(null)}>
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Move their people first"
+            onMouseDown={(e) => e.stopPropagation()}
+            className="flex w-[min(460px,100%)] min-w-0 flex-col gap-3 rounded-[14px] border border-slate-200 bg-white p-4 shadow-[0_30px_60px_-24px_rgba(15,23,42,0.35)]"
+          >
+            <div>
+              <b className="text-sm text-ink">Before deactivating {moveBeforeDeactivate.full_name || moveBeforeDeactivate.email}</b>
+              <p className="mt-0.5 text-xs text-slate-500">The people who report to them need a new manager first.</p>
+            </div>
+            <MoveTeam
+              user={moveBeforeDeactivate}
+              team={teamOf(moveBeforeDeactivate)}
+              managers={reportingManagers}
+              errorText={errorText}
+              onMoved={async (result) => {
+                const user = moveBeforeDeactivate;
+                await afterTeamMoved(user, result);
+                setMoveBeforeDeactivate(null);
+                setConfirmDeactivate(user);
+              }}
+            />
+            <div className="flex justify-end">
+              <button type="button" className={BTN_GHOST} onClick={() => setMoveBeforeDeactivate(null)}>
+                Cancel
               </button>
             </div>
           </div>
-        )}
-      </section>
-      {createOpen ? (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/40 p-4">
-          <form
-            className="panel w-full max-w-2xl p-6 max-h-[90vh] overflow-y-auto"
-            onSubmit={(event) => {
-              event.preventDefault();
-              createUserAction.run();
-            }}
-          >
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-ink">Create User</h2>
-              <button
-                type="button"
-                className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
-                onClick={() => {
-                  setCreateOpen(false);
-                  setCreateForm(emptyCreateForm);
-                }}
-                aria-label="Close"
-              >
-                <X size={18} />
-              </button>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700" htmlFor="create-email">
-                  Email
-                </label>
-                <input
-                  id="create-email"
-                  type="email"
-                  required
-                  className="field w-full"
-                  value={createForm.email}
-                  onChange={(event) => setCreateForm({ ...createForm, email: event.target.value })}
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700" htmlFor="create-fullname">
-                  Full name
-                </label>
-                <input
-                  id="create-fullname"
-                  type="text"
-                  className="field w-full"
-                  value={createForm.full_name}
-                  onChange={(event) => setCreateForm({ ...createForm, full_name: event.target.value })}
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700" htmlFor="create-password">
-                  Password
-                </label>
-                <input
-                  id="create-password"
-                  type="password"
-                  required
-                  minLength={8}
-                  className="field w-full"
-                  value={createForm.password}
-                  onChange={(event) => setCreateForm({ ...createForm, password: event.target.value })}
-                />
-                <p className="mt-1 text-xs text-slate-500">Minimum 8 characters.</p>
-              </div>
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700" htmlFor="create-role">
-                  Role
-                </label>
-                <select
-                  id="create-role"
-                  className="field w-full"
-                  value={createForm.role}
-                  onChange={(event) => {
-                    const newRole = event.target.value;
-                    let nextForm = { ...createForm, role: newRole };
-                    if (newRole === 'CEO') {
-                      const l1 = [...impactLevels].reverse().find(l => l.level_code === 'L1');
-                      if (l1) nextForm.impact_level_id = l1.id;
-                    }
-                    setCreateForm(nextForm);
-                  }}
-                >
-                  {roles.map((role) => (
-                    <option key={role} value={role}>
-                      {formatRole(role)}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700" htmlFor="create-employee-id">
-                  Employee ID (optional)
-                </label>
-                <input
-                  id="create-employee-id"
-                  type="text"
-                  className="field w-full"
-                  value={createForm.employee_id}
-                  onChange={(event) => setCreateForm({ ...createForm, employee_id: event.target.value })}
-                />
-                <p className="mt-1 text-xs text-slate-500">
-                  Optional. A matching employee profile will be created if needed.
-                </p>
-              </div>
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700" htmlFor="create-impact-level">
-                  Impact Level (optional)
-                </label>
-                <select
-                  id="create-impact-level"
-                  className="field w-full"
-                  value={createForm.impact_level_id}
-                  onChange={(event) => setCreateForm({ ...createForm, impact_level_id: event.target.value })}
-                >
-                  <option value="">Select Impact Level</option>
-                  {impactLevels
-                    .filter(l => l.policy_version_id === activePolicyId && !l.is_deprecated)
-                    .map((level) => (
-                    <option key={level.id} value={level.id}>
-                      {level.level_code} - {level.level_name} (ID: {level.id})
-                    </option>
-                  ))}
-                </select>
-                <p className="mt-1 text-xs text-slate-500">
-                  Optional. Select the impact level for this user.
-                </p>
-              </div>
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700" htmlFor="create-reporting-manager">
-                  Reporting Manager (optional)
-                </label>
-                <select
-                  id="create-reporting-manager"
-                  className="field w-full"
-                  value={createForm.reporting_manager_id}
-                  onChange={(event) => setCreateForm({ ...createForm, reporting_manager_id: event.target.value })}
-                >
-                  <option value="">Select Manager</option>
-                  {reportingManagers.map((mgr) => (
-                    <option key={mgr.employee_id} value={mgr.employee_id}>
-                      {mgr.full_name} ({mgr.employee_id})
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700" htmlFor="create-department">
-                  Department (optional)
-                </label>
-                <select
-                  id="create-department"
-                  className="field w-full"
-                  value={createForm.department}
-                  onChange={(event) => setCreateForm({ ...createForm, department: event.target.value })}
-                >
-                  <option value="">Select Department</option>
-                  {departmentsList.map((dept) => (
-                    <option key={dept} value={dept}>
-                      {dept}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-            {createUserAction.error ? (
-              <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-                {createUserAction.error.response?.data?.detail || createUserAction.error.message}
-              </div>
-            ) : null}
-            <div className="mt-5 flex justify-end gap-2">
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={() => {
-                  setCreateOpen(false);
-                  setCreateForm(emptyCreateForm);
-                }}
-              >
-                Cancel
-              </button>
-              <button className="btn-primary" type="submit" disabled={createUserAction.loading}>
-                <Plus size={16} aria-hidden="true" />
-                {createUserAction.loading ? 'Creating...' : 'Create'}
-              </button>
-            </div>
-          </form>
         </div>
       ) : null}
       {importOpen ? (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/40 p-4">
-          <div className="panel w-full max-w-3xl p-5">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-ink">Import Users from CSV</h2>
-              <button className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700" onClick={() => setImportOpen(false)}>
-                <X size={16} />
-              </button>
-            </div>
-            <div className="mb-3 text-sm text-slate-600">
-              Template headers: employee_id, full_name, email, role, department, office_location, impact_level_id
-            </div>
-            <div className="mb-3">
-              <button
-                className="btn-secondary"
-                onClick={() => {
-                  const csv =
-                    'employee_id,full_name,email,role,department,office_location,impact_level_id\nEMP001,Sample User,sample@company.com,EMPLOYEE,Engineering,Bengaluru,9\n';
-                  const blob = new Blob([csv], { type: 'text/csv' });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = 'users_import_template.csv';
-                  a.click();
-                  URL.revokeObjectURL(url);
-                }}
-              >
-                Download Template
-              </button>
-            </div>
-            <input
-              className="field"
-              type="file"
-              accept=".csv"
-              onChange={async (e) => {
-                const file = e.target.files?.[0];
-                setImportFile(file || null);
-                if (!file) return;
-                const text = await file.text();
-                const lines = text.split('\n').filter(Boolean);
-                const [header, ...body] = lines;
-                const columns = header.split(',').map((x) => x.trim());
-                setImportRows(
-                  body.map((line, idx) => {
-                    const vals = line.split(',');
-                    const row = {};
-                    columns.forEach((col, cIdx) => {
-                      row[col] = (vals[cIdx] || '').trim();
-                    });
-                    const missing = ['employee_id', 'full_name', 'email', 'role', 'department', 'office_location'].filter((col) => !row[col]);
-                    return { ...row, __row: idx + 2, __error: missing.length ? `Missing: ${missing.join(', ')}` : '' };
-                  }),
-                );
-              }}
-            />
-            <div className="mt-3 max-h-64 overflow-auto rounded-lg border border-line">
-              <table className="w-full text-sm">
-                <thead className="bg-slate-50 text-center">
-                  <tr>
-                    <th className="px-3 py-2">Row</th>
-                    <th className="px-3 py-2">Employee ID</th>
-                    <th className="px-3 py-2">Name</th>
-                    <th className="px-3 py-2">Email</th>
-                    <th className="px-3 py-2">Role</th>
-                    <th className="px-3 py-2">Validation</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {importRows.map((row) => (
-                    <tr key={row.__row} className={`border-t border-line text-center ${row.__error ? 'bg-red-50' : ''}`}>
-                      <td className="px-3 py-2">{row.__row}</td>
-                      <td className="px-3 py-2">{row.employee_id}</td>
-                      <td className="px-3 py-2">{row.full_name}</td>
-                      <td className="px-3 py-2">{row.email}</td>
-                      <td className="px-3 py-2">{row.role}</td>
-                      <td className="px-3 py-2 text-xs">{row.__error || 'OK'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="mt-4 flex justify-end gap-2">
-              <button className="btn-secondary" onClick={() => setImportOpen(false)}>
-                Cancel
-              </button>
-              <button className="btn-primary" onClick={importAction.run} disabled={importAction.loading || !importFile}>
-                {importAction.loading ? 'Importing...' : 'Confirm Import'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <UserImportDialog
+          users={all}
+          roles={IMPORT_ROLES}
+          managerIds={reportingManagers.map((m) => m.employee_id)}
+          levels={impactLevels}
+          levelsInForce={levelsInForce}
+          departments={departmentList}
+          onClose={() => setImportOpen(false)}
+          onImported={() => {
+            loadUsers();
+            loadManagers();
+            // The import may have added departments.
+            adminApi
+              .companyProfile()
+              .then((res) => setDepartmentList(res.data?.departments || []))
+              .catch(() => {});
+          }}
+        />
       ) : null}
-      {selectedUser ? (
-        <div className="fixed inset-0 z-50 bg-slate-900/40" onClick={() => setSelectedUser(null)}>
-          <div className="absolute right-0 top-0 h-full w-full max-w-xl overflow-auto bg-white p-5" onClick={(e) => e.stopPropagation()}>
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-ink">User Profile</h2>
-              <button className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700" onClick={() => setSelectedUser(null)}>
-                <X size={16} />
-              </button>
-            </div>
-            <div className="space-y-3 text-sm">
-              {isEditing ? (
-                <div className="space-y-4 text-sm">
-                  <div>
-                    <label className="mb-1.5 block font-medium text-slate-700">Name</label>
-                    <input className="field w-full text-slate-900" value={editForm.full_name} onChange={(e) => setEditForm({ ...editForm, full_name: e.target.value })} />
-                  </div>
-                  <div>
-                    <label className="mb-1.5 block font-medium text-slate-700">Role</label>
-                    <select className="field w-full text-slate-900" value={editForm.role} onChange={(e) => {
-                      const newRole = e.target.value;
-                      let nextForm = { ...editForm, role: newRole };
-                      if (newRole === 'CEO') {
-                        const l1 = [...impactLevels].reverse().find(l => l.level_code === 'L1');
-                        if (l1) nextForm.impact_level_id = l1.id;
-                      }
-                      setEditForm(nextForm);
-                    }}>
-                      {roles.map((role) => <option key={role} value={role}>{formatRole(role)}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="mb-1.5 block font-medium text-slate-700">Impact Level</label>
-                    <select className="field w-full text-slate-900" value={editForm.impact_level_id} onChange={(e) => setEditForm({ ...editForm, impact_level_id: e.target.value })}>
-                      <option value="">Select Impact Level</option>
-                      {impactLevels
-                        .filter(l => (l.policy_version_id === activePolicyId && !l.is_deprecated) || l.id === editForm.impact_level_id)
-                        .map((level) => (
-                        <option key={level.id} value={level.id}>
-                          {level.level_code} - {level.level_name} {level.policy_version_id !== activePolicyId ? '(Legacy)' : ''}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="mb-1.5 block font-medium text-slate-700">Department</label>
-                    <select className="field w-full text-slate-900" value={editForm.department} onChange={(e) => setEditForm({ ...editForm, department: e.target.value })}>
-                      <option value="">Select Department</option>
-                      {departmentsList.map(dept => <option key={dept} value={dept}>{dept}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="mb-1.5 block font-medium text-slate-700">Office Location</label>
-                    <select className="field w-full text-slate-900" value={editForm.office_location} onChange={(e) => setEditForm({ ...editForm, office_location: e.target.value })}>
-                      <option value="">Select Office</option>
-                      {officeLocations.map(office => <option key={office} value={office}>{office}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="mb-1.5 block font-medium text-slate-700">Reporting Manager</label>
-                    <select className="field w-full text-slate-900" value={editForm.reporting_manager_id} onChange={(e) => setEditForm({ ...editForm, reporting_manager_id: e.target.value })}>
-                      <option value="">Select Manager</option>
-                      {reportingManagers.map((mgr) => (
-                        <option key={mgr.employee_id} value={mgr.employee_id}>
-                          {mgr.full_name} ({mgr.employee_id})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-8">
-                  <div className="flex items-center gap-4 rounded-xl bg-slate-50 p-5 border border-slate-100">
-                    <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-brand/10 text-xl font-bold text-brand ring-4 ring-white shadow-sm">
-                      {getInitials(selectedUser.full_name, selectedUser.email)}
-                    </div>
-                    <div>
-                      <h3 className="text-xl font-bold text-slate-900">{selectedUser.full_name || 'No Name Provided'}</h3>
-                      <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-slate-500">
-                        <span className="font-semibold text-slate-700">{formatRole(selectedUser.role)}</span>
-                        <span className="text-slate-300">•</span>
-                        <span>{selectedUser.email}</span>
-                      </div>
-                    </div>
-                  </div>
-                  
-                  <div className="grid grid-cols-2 gap-x-6 gap-y-6 text-sm px-1">
-                    <div>
-                      <span className="block text-[11px] font-bold uppercase tracking-wider text-slate-400">Employee ID</span>
-                      <span className="mt-1 block font-medium text-slate-900">{selectedUser.employee_id || '-'}</span>
-                    </div>
-                    <div>
-                      <span className="block text-[11px] font-bold uppercase tracking-wider text-slate-400">Status</span>
-                      <span className="mt-1 block">
-                        {selectedUser.is_active ? (
-                          <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700 ring-1 ring-inset ring-emerald-600/20">Active</span>
-                        ) : (
-                          <span className="inline-flex items-center rounded-full bg-slate-50 px-2 py-0.5 text-[11px] font-bold text-slate-600 ring-1 ring-inset ring-slate-500/20">Inactive</span>
-                        )}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="block text-[11px] font-bold uppercase tracking-wider text-slate-400">Department</span>
-                      <span className="mt-1 block font-medium text-slate-900">{selectedUser.department || '-'}</span>
-                    </div>
-                    <div>
-                      <span className="block text-[11px] font-bold uppercase tracking-wider text-slate-400">Office Location</span>
-                      <span className="mt-1 block font-medium text-slate-900">{selectedUser.office_location || '-'}</span>
-                    </div>
-                    <div>
-                      <span className="block text-[11px] font-bold uppercase tracking-wider text-slate-400">Impact Level</span>
-                      <span className="mt-1 block font-medium text-slate-900">
-                        {(() => {
-                          const level = impactLevelById(selectedUser.impact_level_id);
-                          return level ? `${level.level_code} — ${level.level_name}` : '-';
-                        })()}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="block text-[11px] font-bold uppercase tracking-wider text-slate-400">Reporting Manager</span>
-                      <span className="mt-1 block font-medium text-slate-900">{selectedUser.reporting_manager_id || '-'}</span>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-            <div className="mt-8 border-t border-line pt-6">
-              <h3 className="mb-4 text-[11px] font-bold uppercase tracking-wider text-slate-500 px-1">Recent Claims</h3>
-              <div className="space-y-2">
-                {selectedUser && recentClaims.length === 0 ? <Skeleton variant="table" rows={3} columns={1} /> : null}
-                {recentClaims.map((claim) => (
-                  <div key={claim.id} className="flex items-center justify-between rounded-lg border border-slate-200 bg-white p-3 text-sm shadow-sm transition-colors hover:border-brand/30">
-                    <div className="flex items-center gap-3">
-                      <span className="font-semibold text-slate-900">#{claim.id}</span>
-                      <span className="text-slate-400">|</span>
-                      <span className="text-slate-600 font-medium">{claim.claim_reference || 'Draft'}</span>
-                    </div>
-                    <div>
-                      <span className="inline-flex items-center rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] font-bold text-indigo-700 ring-1 ring-inset ring-indigo-600/20">
-                        {claim.status}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-                {recentClaims.length === 0 ? (
-                  <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-500">
-                    No recent claims found.
-                  </div>
-                ) : null}
-              </div>
-            </div>
-            <div className="mt-8 flex gap-3 border-t border-line pt-6">
-              {isEditing ? (
-                <>
-                  <button className="btn-primary" onClick={updateUserAction.run} disabled={updateUserAction.loading}>
-                    {updateUserAction.loading ? 'Saving...' : 'Save Changes'}
-                  </button>
-                  <button className="btn-secondary" onClick={() => setIsEditing(false)}>
-                    Cancel
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button className="btn-primary" onClick={() => setIsEditing(true)}>
-                    Edit Profile
-                  </button>
-                  <button
-                    className="btn-secondary text-red-600 hover:border-red-200 hover:bg-red-50 hover:text-red-700"
-                    onClick={() => setConfirmDeactivate(selectedUser)}
-                    disabled={deactivateAction.loading}
-                  >
-                    Deactivate Account
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-      ) : null}
-      <ConfirmDialog
-        open={Boolean(confirmDeactivate)}
-        title="Deactivate User"
-        description="Are you sure you want to deactivate this user account?"
-        confirmLabel="Yes, Deactivate"
-        confirmVariant="danger"
-        onCancel={() => setConfirmDeactivate(null)}
-        onConfirm={() => {
-          if (confirmDeactivate) deactivateAction.run(confirmDeactivate);
-          setConfirmDeactivate(null);
-        }}
-      />
-    </>
+    </section>
   );
 }
 
+function PanelHead({ title, sub, onClose }) {
+  return (
+    <div className="flex items-center justify-between gap-2.5 border-b border-slate-100 px-4 py-3">
+      <div className="min-w-0">
+        <b className="block truncate text-sm text-ink">{title}</b>
+        {sub ? <span className="block truncate text-xs text-slate-500">{sub}</span> : null}
+      </div>
+      <button type="button" aria-label="Close" className={BTN_SM} onClick={onClose}>
+        <X size={13} />
+      </button>
+    </div>
+  );
+}
+
+function PanelFoot({ children }) {
+  return <div className="flex flex-wrap justify-end gap-2 border-t border-slate-100 bg-slate-50 px-4 py-[11px]">{children}</div>;
+}
+
+function PanelError({ children }) {
+  return (
+    <div role="alert" className="col-span-full rounded-[10px] border border-rose-200 bg-rose-50 px-3 py-2 text-[12.5px] text-rose-700">
+      {children}
+    </div>
+  );
+}

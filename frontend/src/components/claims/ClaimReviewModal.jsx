@@ -69,6 +69,7 @@ function PolicyPill({ status }) {
 const ROLE_LABELS = {
   REPORTING_MANAGER: 'Reporting Manager',
   FUNCTION_HEAD: 'Function Head',
+  DEPARTMENT_HEAD: 'Department Head',
   HRBP_HR: 'HRBP / HR',
   PAYROLL: 'Payroll',
   FINANCE: 'Finance',

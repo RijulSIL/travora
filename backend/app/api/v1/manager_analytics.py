@@ -60,13 +60,16 @@ async def get_team_spend(
     six_months_ago = today - relativedelta(months=5)
     start_date = date(six_months_ago.year, six_months_ago.month, 1)
 
+    # Same rule as the Team Spend page: only approved claims (ready for payment or paid), by the
+    # month they were submitted — so Home's chart and that page always agree.
     expenses_result = await db.execute(
-        select(ClaimDraft.created_at, ClaimExpense.amount, ClaimExpense.category_name)
+        select(ClaimDraft.submitted_at, ClaimExpense.amount, ClaimExpense.category_name)
         .join(ClaimExpense, ClaimExpense.claim_id == ClaimDraft.id)
         .where(
             ClaimDraft.employee_user_id.in_(team_user_ids),
-            ClaimDraft.status.notin_(["DRAFT", "REJECTED"]),
-            func.date(ClaimDraft.created_at) >= start_date,
+            ClaimDraft.status.in_(["READY_FOR_PAYMENT", "PAID"]),
+            ClaimDraft.submitted_at.is_not(None),
+            func.date(ClaimDraft.submitted_at) >= start_date,
         )
     )
     expenses = expenses_result.all()
@@ -80,8 +83,8 @@ async def get_team_spend(
 
     category_totals = {}
 
-    for created_at, amount, cat_name in expenses:
-        month_label = created_at.strftime("%b")
+    for submitted_at, amount, cat_name in expenses:
+        month_label = submitted_at.strftime("%b")
         if month_label in monthly_totals:
             monthly_totals[month_label]["spend"] += float(amount)
         

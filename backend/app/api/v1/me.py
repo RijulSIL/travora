@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.rbac import get_current_claims
+from app.core.rbac import get_current_claims, is_manager
 from app.models.auth import Delegation, Role, User
 from app.schemas.me import AutoApproveThresholdIn, DelegationIn, DelegationOut, MeOut, MyPolicyLimitsOut
 from app.services.claim_submission_rules import parse_auto_approve_threshold
@@ -45,10 +45,10 @@ async def update_auto_approve_threshold(
     user = await db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
-    if user.role != Role.REPORTING_MANAGER:
+    if not is_manager(user):
         raise HTTPException(
             status_code=403,
-            detail="Only reporting managers can set a personal auto-approve threshold",
+            detail="Only managers can set a personal auto-approve threshold",
         )
 
     if payload.threshold is not None:
@@ -121,7 +121,9 @@ async def create_delegation(
     if delegator is None:
         raise HTTPException(status_code=404, detail="User not found")
     delegatable = await get_effective_delegatable_permissions(db)
-    if not delegatable.get(delegator.role, set()):
+    # A manager (whatever the role) has a manager queue worth handing over too.
+    manager_queue = is_manager(delegator) and bool(delegatable.get(Role.REPORTING_MANAGER, set()))
+    if not delegatable.get(delegator.role, set()) and not manager_queue:
         raise HTTPException(status_code=403, detail="Delegation is not available for your role")
 
     if user_id == payload.delegatee_id:

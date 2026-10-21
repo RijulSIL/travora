@@ -873,10 +873,11 @@ async def viewer_can_download_ticket(
 
     matrix = await get_effective_permission_matrix(db)
     allowed = matrix.get(viewer_role, set())
-    if {"view_reports", "process_payments"} & allowed:
-        return await _ticket_linked_to_viewable_claim(ticket, viewer_user_id, db)
-    if viewer_role != Role.REPORTING_MANAGER:
-        return False
+    if {"view_reports", "process_payments"} & allowed and await _ticket_linked_to_viewable_claim(
+        ticket, viewer_user_id, db
+    ):
+        return True
+    # The traveller's manager, whatever their role.
     return await _actor_is_reporting_manager_for(
         manager_user_id=viewer_user_id, subordinate_user_id=req.employee_user_id, db=db
     )
@@ -1227,10 +1228,27 @@ async def get_travel_request_for_viewer(
         return req, _latest_ticket(req)
     if viewer_role == Role.HRBP_HR:
         return req, _latest_ticket(req)
-    if viewer_role == Role.REPORTING_MANAGER and await _actor_is_reporting_manager_for(
+    # The traveller's manager, whatever their role.
+    if await _actor_is_reporting_manager_for(
         manager_user_id=viewer_user_id, subordinate_user_id=req.employee_user_id, db=db
     ):
         return req, _latest_ticket(req)
+    # The department head asked to approve this request may open it too.
+    from app.models.travel_request import TravelRequestApprovalStage
+    from app.services.workflow_service import DEPARTMENT_HEAD, is_department_head_for
+
+    has_head_step = (
+        await db.execute(
+            select(TravelRequestApprovalStage.id).where(
+                TravelRequestApprovalStage.travel_request_id == req.id,
+                TravelRequestApprovalStage.required_role == DEPARTMENT_HEAD,
+            )
+        )
+    ).scalars().first()
+    if has_head_step:
+        owner = await db.get(User, req.employee_user_id)
+        if await is_department_head_for(viewer_user_id, owner.employee_id if owner else None, db):
+            return req, _latest_ticket(req)
     raise HTTPException(status_code=403, detail="Not allowed to view this travel request")
 
 
@@ -1576,7 +1594,8 @@ async def assert_can_download_supporting_document(
         matrix = await get_effective_permission_matrix(db)
         if "view_travel_desk" in matrix.get(viewer_role, set()):
             return
-        if viewer_role == Role.REPORTING_MANAGER and await _actor_is_reporting_manager_for(
+        # The traveller's manager, whatever their role.
+        if await _actor_is_reporting_manager_for(
             manager_user_id=viewer_user_id, subordinate_user_id=req.employee_user_id, db=db
         ):
             return

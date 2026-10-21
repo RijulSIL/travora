@@ -32,6 +32,8 @@ export const ROLE_LABELS = {
   CEO: 'CEO',
   GROUP_HEAD_HR: 'Group Head HR',
   RECRUITER: 'Recruiter',
+  // Not a user role: an approval step that goes to the head of the person's department.
+  DEPARTMENT_HEAD: 'Department Head',
 };
 
 export const formatRole = (role) => ROLE_LABELS[role] || (role || '').replace(/_/g, ' ');

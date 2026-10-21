@@ -92,6 +92,8 @@ class AdminUserOut(BaseModel):
     impact_level_id: int | None = None
     office_location: str | None = None
     reporting_manager_id: str | None = None
+    # The Manager setting (always on for the CEO) — people can report to them.
+    is_manager: bool = False
 
 
 class AdminUserCreateIn(BaseModel):
@@ -104,6 +106,7 @@ class AdminUserCreateIn(BaseModel):
     impact_level_id: int | None = None
     reporting_manager_id: str | None = None
     department: str | None = None
+    is_manager: bool = False
 
 
 class AdminUserUpdateIn(BaseModel):
@@ -113,6 +116,28 @@ class AdminUserUpdateIn(BaseModel):
     department: str | None = None
     office_location: str | None = None
     reporting_manager_id: str | None = None
+    is_manager: bool | None = None
+
+
+class AdminTeamMoveIn(BaseModel):
+    """Move everyone reporting to a manager to another manager (before turning Manager off or
+    deactivating them). Their waiting manager-step approvals follow."""
+
+    new_manager_employee_id: str
+
+
+class AdminTeamAddIn(BaseModel):
+    """Turn someone's Manager setting on and put these people under them (the CSV import's
+    one-click fix for people whose named manager wasn't a manager yet)."""
+
+    employee_ids: list[str]
+
+
+class AdminTeamSummaryOut(BaseModel):
+    reports: list[dict] = Field(default_factory=list)
+    waiting_claims: int = 0
+    waiting_travel_requests: int = 0
+    waiting_exceptions: int = 0
 
 
 class AdminBulkImportErrorOut(BaseModel):
@@ -126,6 +151,14 @@ class AdminBulkImportSummaryOut(BaseModel):
     created: int
     failed: int
     errors: list[AdminBulkImportErrorOut] = Field(default_factory=list)
+    # People who were added, but without something they asked for (e.g. a manager ID that didn't match).
+    warnings: list[AdminBulkImportErrorOut] = Field(default_factory=list)
+    # People left without a manager only because the manager named for them isn't one yet, grouped
+    # by that person: {manager_user_id, manager_employee_id, manager_name, people: [{employee_id,
+    # full_name, row}]}. The result screen offers "make them a manager and link these people".
+    unlinked_managers: list[dict] = Field(default_factory=list)
+    # Departments the import added to the company's list (chosen on the check screen).
+    added_departments: list[str] = Field(default_factory=list)
 
 
 class PolicyVersionIn(BaseModel):
@@ -269,10 +302,22 @@ class CompanyProfileIn(BaseModel):
     gstins: list[str] = []
     office_locations: list[str] = []
     bank_details: dict | None = None
+    # The company's department list; None leaves it as it is.
+    departments: list[str] | None = None
+    # {old name: new name} for departments renamed in this save — moves the people in them, their
+    # department head and team budget to the new name.
+    department_renames: dict[str, str] = Field(default_factory=dict)
 
 
-class CompanyProfileOut(CompanyProfileIn):
+class CompanyProfileOut(BaseModel):
     id: int
+    company_name: str
+    gstins: list[str] = []
+    office_locations: list[str] = []
+    bank_details: dict | None = None
+    departments: list[str] = Field(default_factory=list)
+    # Active people per department (as stored on their records), for "N people" on each.
+    department_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class DelegationConfigOut(BaseModel):

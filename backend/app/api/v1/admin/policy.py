@@ -1,6 +1,6 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import and_, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -349,6 +349,21 @@ async def list_expense_limits(
     if policy_version_id is not None:
         query = query.where(ExpenseLimit.policy_version_id == policy_version_id)
     return (await db.execute(query)).scalars().all()
+
+
+@router.get("/expense-limits/export", dependencies=_READ_ADMIN_POLICY)
+async def export_expense_limits(
+    policy_version_id: int = Query(...), db: AsyncSession = Depends(get_db)
+) -> Response:
+    """Every level × city group limit for one policy version, as one Excel file."""
+    from app.services.expense_limits_export import build_expense_limits_workbook
+
+    content, filename = await build_expense_limits_workbook(policy_version_id, db)
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.post("/expense-limits", response_model=ExpenseLimitOut, dependencies=_WRITE_ADMIN_POLICY)

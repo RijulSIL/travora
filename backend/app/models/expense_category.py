@@ -27,4 +27,6 @@ class CompanyProfile(Base):
     company_name: Mapped[str] = mapped_column(String(255), nullable=False)
     gstins: Mapped[list | None] = mapped_column(JSON)
     office_locations: Mapped[list | None] = mapped_column(JSON)
+    # The company's departments (see department_service); NULL means the built-in default list.
+    departments: Mapped[list | None] = mapped_column(JSON)
     bank_details: Mapped[str | None] = mapped_column(Text)

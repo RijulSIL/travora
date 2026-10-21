@@ -116,47 +116,122 @@ DELEGATABLE_PERMISSIONS: dict[Role, set[str]] = {
 }
 
 
-async def _active_delegator_roles(user_id: int, db: AsyncSession) -> set[Role]:
-    """Roles of everyone currently delegating to `user_id` (an active, in-window Delegation
-    row with them as delegatee). Used to compute both delegated permissions and delegated
-    role-gated access — never to grant broader access than the delegator actually has."""
+async def _active_delegator_user_ids(user_id: int, db: AsyncSession) -> list[int]:
+    """Everyone currently delegating to `user_id` (an active, in-window Delegation row with
+    them as delegatee)."""
     if not user_id:
-        return set()
+        return []
 
     from app.services.delegation_service import is_delegation_enabled
 
     if not await is_delegation_enabled(db):
-        return set()
+        return []
 
     now = now_ist()
-    delegator_ids = (
-        await db.execute(
-            select(Delegation.delegator_id).where(
-                Delegation.delegatee_id == user_id,
-                Delegation.is_active,
-                Delegation.start_date <= now,
-                Delegation.end_date >= now,
+    return list(
+        (
+            await db.execute(
+                select(Delegation.delegator_id).where(
+                    Delegation.delegatee_id == user_id,
+                    Delegation.is_active,
+                    Delegation.start_date <= now,
+                    Delegation.end_date >= now,
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
+
+
+async def _active_delegator_roles(user_id: int, db: AsyncSession) -> set[Role]:
+    """Roles of everyone currently delegating to `user_id`. Used to compute both delegated
+    permissions and delegated role-gated access — never to grant broader access than the
+    delegator actually has."""
+    delegator_ids = await _active_delegator_user_ids(user_id, db)
     if not delegator_ids:
         return set()
     roles = (await db.execute(select(User.role).where(User.id.in_(delegator_ids)))).scalars().all()
     return set(roles)
 
 
+# Being a manager is the Manager setting (User.is_manager), on top of any role: a role is the
+# person's job, the setting says people can report to them. A manager gets the Manager row of
+# Role permissions (stored under the REPORTING_MANAGER key) added to their role's own. The CEO is
+# always a manager, and a legacy Reporting Manager user/token still counts as one. Approvals for
+# each person go to whoever they report to (Employee.reporting_manager_id), and team pages are
+# scoped to their own reports where they're used (is_direct_report, /claims/team, ...).
+MANAGER_ROLES = {Role.CEO, Role.REPORTING_MANAGER}
+
+
+def is_manager(user: User | None) -> bool:
+    return bool(user is not None and (user.is_manager or user.role in MANAGER_ROLES))
+
+
+async def user_is_manager(user_id: int, db: AsyncSession) -> bool:
+    return is_manager(await db.get(User, user_id) if user_id else None)
+
+
+async def has_direct_reports(user_id: int, db: AsyncSession) -> bool:
+    """True when at least one active employee reports to this user."""
+    from app.models.employee import Employee
+
+    user = await db.get(User, user_id) if user_id else None
+    if user is None or not user.employee_id:
+        return False
+    found = (
+        await db.execute(
+            select(Employee.employee_id)
+            .where(Employee.reporting_manager_id == user.employee_id, Employee.is_active.is_(True))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return found is not None
+
+
+async def acts_as_manager(user_id: int, db: AsyncSession) -> bool:
+    """A manager, or covering (delegation) for one."""
+    if await user_is_manager(user_id, db):
+        return True
+    for delegator_id in await _active_delegator_user_ids(user_id, db):
+        if await user_is_manager(delegator_id, db):
+            return True
+    return False
+
+
+async def get_manager_permissions(user_id: int, db: AsyncSession) -> set[str]:
+    """The Manager row of Role permissions, for anyone with the Manager setting."""
+    if not await user_is_manager(user_id, db):
+        return set()
+    from app.services.permission_config_service import get_effective_permission_matrix
+
+    matrix = await get_effective_permission_matrix(db)
+    return set(matrix.get(Role.REPORTING_MANAGER, set()))
+
+
 async def get_delegated_permissions(user_id: int, db: AsyncSession) -> set[str]:
-    delegator_roles = await _active_delegator_roles(user_id, db)
-    if not delegator_roles:
+    delegator_ids = await _active_delegator_user_ids(user_id, db)
+    if not delegator_ids:
         return set()
 
     from app.services.permission_config_service import get_effective_delegatable_permissions
 
     delegatable = await get_effective_delegatable_permissions(db)
+    delegator_roles = set((await db.execute(select(User.role).where(User.id.in_(delegator_ids)))).scalars().all())
     allowed: set[str] = set()
     for role in delegator_roles:
         allowed |= delegatable.get(role, set())
+    # Covering for a manager (whatever their role) covers their manager queue too.
+    for delegator_id in delegator_ids:
+        if await user_is_manager(delegator_id, db):
+            allowed |= delegatable.get(Role.REPORTING_MANAGER, set())
+            break
     return allowed
+
+
+async def get_extra_permissions(user_id: int, db: AsyncSession) -> set[str]:
+    """Permissions on top of the user's own role: from managing people, and from delegation."""
+    return await get_manager_permissions(user_id, db) | await get_delegated_permissions(user_id, db)
 
 
 async def is_direct_report(*, manager_user_id: int, target_user_id: int, db: AsyncSession) -> bool:
@@ -237,7 +312,7 @@ def require_permission(action: str) -> Callable:
         allowed = matrix.get(role, set())
         if action not in allowed:
             user_id = int(claims.get("sub", 0))
-            if action not in await get_delegated_permissions(user_id, db):
+            if action not in await get_extra_permissions(user_id, db):
                 _log_admin_users_access_denied(request, claims, f"missing_permission:{action}")
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
         return claims
@@ -258,7 +333,7 @@ def require_any_permission(*actions: str) -> Callable:
         allowed = matrix.get(role, set())
         if not any(action in allowed for action in actions):
             user_id = int(claims.get("sub", 0))
-            allowed = allowed | await get_delegated_permissions(user_id, db)
+            allowed = allowed | await get_extra_permissions(user_id, db)
             if not any(action in allowed for action in actions):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
         return claims
@@ -266,9 +341,11 @@ def require_any_permission(*actions: str) -> Callable:
     return dependency
 
 
-def require_role(*allowed_roles: Role, allow_delegate: bool = True) -> Callable:
+def require_role(*allowed_roles: Role, allow_delegate: bool = True, allow_managers: bool = False) -> Callable:
     """`allow_delegate=False` is for role checks that are NOT "clear the current queue"
-    actions — delegation should never extend to those."""
+    actions — delegation should never extend to those. `allow_managers=True` also lets in
+    anyone with the Manager setting (see is_manager), for the manager-step queue and actions;
+    what they can act on is still decided per item."""
 
     async def dependency(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)) -> dict:
         try:
@@ -282,6 +359,8 @@ def require_role(*allowed_roles: Role, allow_delegate: bool = True) -> Callable:
                 delegator_roles = await _active_delegator_roles(user_id, db)
                 if delegator_roles & set(allowed_roles):
                     return claims
+            if allow_managers and await acts_as_manager(int(claims.get("sub", 0)), db):
+                return claims
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
         return claims
 

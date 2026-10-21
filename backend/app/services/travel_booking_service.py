@@ -113,7 +113,12 @@ async def _get_configured_train_classes(user_id: int, db: AsyncSession) -> set[s
 async def _has_completed_exception_chain(user_id: int, exception_type: str, db: AsyncSession) -> bool:
     import json
 
-    from app.services.workflow_service import _resolve_exception_chain, get_workflow_config, is_exception_enabled
+    from app.services.workflow_service import (
+        DEPARTMENT_HEAD,
+        _resolve_exception_chain,
+        get_workflow_config,
+        is_exception_enabled,
+    )
 
     cfg = await get_workflow_config(db)
     if not is_exception_enabled(cfg, exception_type):
@@ -147,7 +152,12 @@ async def _has_completed_exception_chain(user_id: int, exception_type: str, db: 
         approved_roles = {
             a.required_role for a in approvals if a.status == ExceptionRequestStatus.APPROVED.value
         }
-        if required_roles.issubset(approved_roles):
+        # A Department head step only exists on requests from a department that needs it; one
+        # left out of this request's chain was never going to approve it.
+        needed = required_roles
+        if DEPARTMENT_HEAD in needed and DEPARTMENT_HEAD not in {a.required_role for a in approvals}:
+            needed = needed - {DEPARTMENT_HEAD}
+        if needed.issubset(approved_roles):
             return True
     return False
 

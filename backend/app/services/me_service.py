@@ -16,7 +16,12 @@ from app.schemas.me import ApproverScopeOut, CityTierLimitsOut, MeOut, MyPolicyL
 from app.services.advance_service import get_outstanding_advance
 from app.services.claim_submission_rules import parse_auto_approve_threshold
 from app.services.policy_engine import get_active_policy_version, get_expense_limits
-from app.services.workflow_service import get_approver_scope, get_workflow_config, list_pending_approvals
+from app.services.workflow_service import (
+    department_head_scope,
+    get_approver_scope,
+    get_workflow_config,
+    list_pending_approvals,
+)
 
 
 def _fmt_inr(value: Decimal) -> str:
@@ -135,7 +140,7 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
         if limit_row and limit_row.hotel_cap is not None:
             hotel_cap_group_a = _fmt_inr(limit_row.hotel_cap)
 
-    from app.core.rbac import _active_delegator_roles, get_delegated_permissions
+    from app.core.rbac import _active_delegator_roles, acts_as_manager, get_extra_permissions, is_manager
     from app.services.delegation_service import is_delegation_enabled
     from app.services.permission_config_service import (
         get_effective_delegatable_permissions,
@@ -201,9 +206,12 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
     deadline_mode = submission_cfg.get("deadline_mode", "hard_block")
     max_days = int(submission_cfg.get("max_working_days_after_return", 5))
 
+    # The Manager setting, on top of whatever role they have (always on for the CEO).
+    user_is_a_manager = is_manager(user)
+
     auto_approve_threshold_str: str | None = None
     org_auto_approve_ceiling_str: str | None = None
-    if user.role == Role.REPORTING_MANAGER:
+    if user_is_a_manager:
         org_auto_approve_ceiling_str = _fmt_inr(parse_auto_approve_threshold(workflow_cfg))
         if user.auto_approve_threshold is not None:
             auto_approve_threshold_str = _fmt_inr(user.auto_approve_threshold)
@@ -224,6 +232,17 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
         scope_travel_request = scope_travel_request or d_scope["travel_request"]
         scope_exceptions |= set(d_scope["exceptions"])
         scope_relocation = scope_relocation or d_scope["relocation"]
+    # Being a manager (or covering for one) adds the manager step's routes.
+    if user.role != Role.REPORTING_MANAGER and await acts_as_manager(user_id, db):
+        m_scope = await get_approver_scope(Role.REPORTING_MANAGER, db)
+        scope_categories |= set(m_scope["claim_categories"])
+        scope_travel_request = scope_travel_request or m_scope["travel_request"]
+        scope_exceptions |= set(m_scope["exceptions"])
+    # A department head approves their department's items whatever their own role's routes are.
+    head_scope = await department_head_scope(user, db)
+    scope_categories |= set(head_scope["claim_categories"])
+    scope_travel_request = scope_travel_request or head_scope["travel_request"]
+    scope_exceptions |= set(head_scope["exceptions"])
     approver_scope = ApproverScopeOut(
         claims=bool(scope_categories),
         claim_categories=sorted(scope_categories),
@@ -237,8 +256,7 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
     # permission_config_service.py). Already delegation-merged, same as approver_scope above.
     effective_matrix = await get_effective_permission_matrix(db)
     own_permissions = set(effective_matrix.get(user.role, set()))
-    delegated_permissions = await get_delegated_permissions(user_id, db)
-    permissions = sorted(own_permissions | delegated_permissions)
+    permissions = sorted(own_permissions | await get_extra_permissions(user_id, db))
 
     return MeOut(
         user_id=user.id,
@@ -266,7 +284,9 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
         is_acting_delegate=is_acting_delegate,
         delegated_roles=[r.value for r in delegated_roles],
         delegation_feature_enabled=delegation_feature_enabled,
-        can_create_delegation=can_create_delegation,
+        can_create_delegation=can_create_delegation
+        or (user_is_a_manager and bool(delegatable_matrix.get(Role.REPORTING_MANAGER, set()))),
+        is_manager=user_is_a_manager,
         auto_approve_threshold=auto_approve_threshold_str,
         org_auto_approve_ceiling=org_auto_approve_ceiling_str,
         approver_scope=approver_scope,

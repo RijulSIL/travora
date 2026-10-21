@@ -15,10 +15,22 @@ import { useAuthStore } from '../../store/authStore';
 const IT_ADMIN_RECOVERY_PERMISSIONS = ['manage_users', 'view_permission_matrix', 'edit_permission_matrix'];
 
 function labelize(token) {
+  // Reporting Manager is no longer a role: its row is what the Manager setting (User management)
+  // adds on top of anyone's role.
+  if (token === 'REPORTING_MANAGER') return 'Manager';
   return String(token || '')
     .split('_')
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
     .join(' ');
+}
+
+function RoleCell({ role }) {
+  return (
+    <td className="sticky left-0 z-10 bg-white px-3 py-2 font-semibold text-ink whitespace-nowrap">
+      {labelize(role)}
+      {role === 'REPORTING_MANAGER' ? <small className="block text-[11px] font-medium text-slate-500">Added to anyone with Manager = Yes</small> : null}
+    </td>
+  );
 }
 
 function errorMessage(err) {
@@ -174,9 +186,7 @@ export default function PermissionMatrix() {
             <tbody>
               {roles.map((role) => (
                 <tr key={role} className="border-t border-line hover:bg-slate-50/50">
-                  <td className="sticky left-0 z-10 bg-white px-3 py-2 font-semibold text-ink whitespace-nowrap">
-                    {labelize(role)}
-                  </td>
+                  <RoleCell role={role} />
                   {togglablePerms.map((perm) => (
                     <td key={perm} className="px-2 py-2 text-center">
                       <input
@@ -217,9 +227,7 @@ export default function PermissionMatrix() {
             <tbody>
               {roles.map((role) => (
                 <tr key={role} className="border-t border-line hover:bg-slate-50/50">
-                  <td className="sticky left-0 z-10 bg-white px-3 py-2 font-semibold text-ink whitespace-nowrap">
-                    {labelize(role)}
-                  </td>
+                  <RoleCell role={role} />
                   {delegationEligible.map((perm) => {
                     const held = (permissions[role] || []).includes(perm);
                     return (
