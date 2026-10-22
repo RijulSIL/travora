@@ -38,3 +38,18 @@ class AuditLog(Base):
     previous_event_hash: Mapped[str | None] = mapped_column(String(64), index=True)
     event_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
+
+
+class AuditChainHead(Base):
+    """One row (id 1) holding the newest audit entry's fingerprint. log_event locks it while
+    adding an entry, so entries saved at the same moment still link one after another, and a
+    deleted newest entry shows up because the head no longer matches the log."""
+
+    __tablename__ = "audit_chain_head"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    last_entry_id: Mapped[int | None] = mapped_column(Integer)
+    last_event_hash: Mapped[str | None] = mapped_column(String(64))
+    # Entries from this id on store whole-second times, so their fingerprints can be
+    # recalculated to catch edits. Older entries can only be checked for links.
+    recheck_from_id: Mapped[int] = mapped_column(Integer, nullable=False, default=1)

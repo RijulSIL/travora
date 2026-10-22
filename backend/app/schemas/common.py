@@ -54,6 +54,17 @@ class ResetPasswordRequest(BaseModel):
         return _validate_password_complexity(value)
 
 
+class SetInitialPasswordRequest(BaseModel):
+    """First sign-in: replace the temporary password with their own."""
+
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_password_complexity(cls, value: str) -> str:
+        return _validate_password_complexity(value)
+
+
 class ChangePasswordRequestOTP(BaseModel):
     current_password: str
 
@@ -94,11 +105,17 @@ class AdminUserOut(BaseModel):
     reporting_manager_id: str | None = None
     # The Manager setting (always on for the CEO) — people can report to them.
     is_manager: bool = False
+    # Still on the temporary password (hasn't signed in and set their own yet).
+    must_change_password: bool = False
+    welcome_email_sent_at: datetime | None = None
 
 
 class AdminUserCreateIn(BaseModel):
     email: str
-    password: str
+    # Blank: the temporary password (welcome_service.TEMPORARY_PASSWORD). Either way they must set
+    # their own at their first sign-in.
+    password: str | None = None
+    send_welcome_email: bool = True
     full_name: str | None = None
     role: Role = Role.EMPLOYEE
     employee_id: str | None = None
@@ -159,6 +176,8 @@ class AdminBulkImportSummaryOut(BaseModel):
     unlinked_managers: list[dict] = Field(default_factory=list)
     # Departments the import added to the company's list (chosen on the check screen).
     added_departments: list[str] = Field(default_factory=list)
+    # How many welcome emails are going out (sent in the background after the import finishes).
+    welcome_emails_queued: int = 0
 
 
 class PolicyVersionIn(BaseModel):
@@ -307,6 +326,8 @@ class CompanyProfileIn(BaseModel):
     # {old name: new name} for departments renamed in this save — moves the people in them, their
     # department head and team budget to the new name.
     department_renames: dict[str, str] = Field(default_factory=dict)
+    # {old name: new name} for offices renamed in this save — moves the people in them.
+    office_renames: dict[str, str] = Field(default_factory=dict)
 
 
 class CompanyProfileOut(BaseModel):
@@ -318,6 +339,8 @@ class CompanyProfileOut(BaseModel):
     departments: list[str] = Field(default_factory=list)
     # Active people per department (as stored on their records), for "N people" on each.
     department_counts: dict[str, int] = Field(default_factory=dict)
+    # Active people per office as stored on their records, including offices not on the list.
+    office_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class DelegationConfigOut(BaseModel):

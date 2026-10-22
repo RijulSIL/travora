@@ -19,9 +19,9 @@ def send_email_sync(
     body_text: str,
     body_html: str | None = None,
     attachments: list[dict] | None = None,
-) -> None:
+) -> bool:
     """
-    Synchronous SMTP dispatch block.
+    Synchronous SMTP dispatch block. Returns whether the email went out (the simulator counts).
     If smtp_host is unset/empty or matches placeholder, functions in SIMULATOR mode.
     """
     host = settings.smtp_host
@@ -35,7 +35,7 @@ def send_email_sync(
             names = ", ".join(a["filename"] for a in attachments)
             print(f"Attachments: {names}")
         print("==================================================\n")
-        return
+        return True
 
     # Real SMTP send — "mixed" so attachments and the text/html alternative can coexist.
     msg = MIMEMultipart("mixed")
@@ -99,8 +99,10 @@ def send_email_sync(
 
             server.sendmail(settings.smtp_from_email, to_email, msg.as_string())
             print(f"[SMTP SUCCESS] Email successfully dispatched to {to_email}")
+        return True
     except Exception as e:
         print(f"[SMTP ERROR] Failed to send email to {to_email} via {host}:{port}: {e}")
+        return False
 
 
 async def send_email_async(
@@ -109,11 +111,11 @@ async def send_email_async(
     body_text: str,
     body_html: str | None = None,
     attachments: list[dict] | None = None,
-) -> None:
+) -> bool:
     """
-    Dispatches the email asynchronously via a separate thread worker.
+    Dispatches the email asynchronously via a separate thread worker. Returns whether it went out.
     """
-    await asyncio.to_thread(send_email_sync, to_email, subject, body_text, body_html, attachments)
+    return await asyncio.to_thread(send_email_sync, to_email, subject, body_text, body_html, attachments)
 
 
 async def create_notification(

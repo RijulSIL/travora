@@ -1,6 +1,7 @@
 import { Navigate, Outlet } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 
+import SetInitialPasswordPage from '../pages/auth/SetInitialPasswordPage';
 import api, { refreshSession } from '../services/api';
 import { showToast } from '../store/toastStore';
 import { useAuthStore } from '../store/authStore';
@@ -113,6 +114,11 @@ export default function ProtectedRoute() {
         </a>
       </div>
     );
+  }
+
+  // Still on the temporary password from their welcome email: they set their own before anything else.
+  if (profile?.must_change_password) {
+    return <SetInitialPasswordPage />;
   }
 
   return <Outlet />;

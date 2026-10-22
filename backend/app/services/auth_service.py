@@ -55,6 +55,8 @@ async def confirm_password_reset(email: str, otp_code: str, new_password: str, d
     await verify_otp(user.id, otp_code, db, purpose="password_reset")
 
     user.hashed_password = hash_password(new_password)
+    # Their own password now: no longer on the temporary one from the welcome email.
+    user.must_change_password = False
     await db.commit()
 
 
@@ -259,6 +261,8 @@ async def confirm_password_change(user_id: int, otp_code: str, new_password: str
     await verify_otp(user_id, otp_code, db, purpose="password_change")
 
     user.hashed_password = hash_password(new_password)
+    # Their own password now: no longer on the temporary one from the welcome email.
+    user.must_change_password = False
     await db.commit()
 
 

@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     smtp_user: str | None = None
     smtp_password: str | None = None
     smtp_from_email: str = "noreply@trp.sil.com"
+    # Pause after each email when sending a batch (e.g. a CSV import's welcome emails), so the
+    # mail server doesn't cut the connection. Set EMAIL_SEND_DELAY_SECONDS to change it.
+    email_send_delay_seconds: float = 2.0
+    # Where people open Travora — used for links in emails (e.g. the welcome email's Sign in).
+    # Set APP_URL to the real address in production.
+    app_url: str = "http://localhost:3000"
 
     api_v1_prefix: str = "/api/v1"
 

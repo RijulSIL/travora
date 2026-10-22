@@ -2,6 +2,7 @@ import calendar
 import csv
 import io
 import logging
+import re
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
@@ -29,7 +30,7 @@ from app.models.reimbursement import (
 from app.models.travel_booking import TravelTrip
 from app.models.travel_request import TravelRequest, TravelRequestLeg
 from app.schemas.finance_reporting import FinanceFilterParams, ReportScheduleIn
-from app.services.audit_service import log_event
+from app.services.audit_service import check_audit_chain, log_event
 from app.services.notification_service import send_email_async
 
 logger = logging.getLogger(__name__)
@@ -222,6 +223,82 @@ async def post_ledger_entry_to_erp(
     return entry
 
 
+# TR-0064, REL-7, CLM-59 or CLM-2026-0059 (claims carry their year).
+_AUDIT_REFERENCE = re.compile(r"^(TR|CLM|REL)-?(?:\d{4}-)?(\d+)$", re.IGNORECASE)
+_AUDIT_REFERENCE_TYPES = {"TR": "travel_request", "CLM": "claim_draft", "REL": "relocation_request"}
+
+
+async def _audit_query(
+    *,
+    claim_id: str | None = None,
+    employee_id: str | None = None,
+    action: str | None = None,
+    actor: str | None = None,
+    from_date: date | None = None,
+    to_date: date | None = None,
+    entity_type: str | None = None,
+    search: str | None = None,
+    db: AsyncSession,
+):
+    query = select(AuditLog)
+    conditions = []
+    if claim_id:
+        conditions.append(AuditLog.entity_id == claim_id)
+    if employee_id:
+        conditions.append(AuditLog.entity_id == employee_id)
+    if action:
+        conditions.append(AuditLog.action == action)
+    if entity_type:
+        conditions.append(AuditLog.entity_type == entity_type)
+    if actor or search:
+        query = query.outerjoin(User, User.id == AuditLog.actor_id)
+    person = func.lower(func.coalesce(User.full_name, User.email, ""))
+    if actor:
+        needle = actor.strip()
+        if needle.isdigit():
+            conditions.append(AuditLog.actor_id == int(needle))
+        else:
+            conditions.append(person.contains(needle.lower()))
+    if search and search.strip():
+        needle = search.strip()
+        reference = _AUDIT_REFERENCE.match(needle)
+        if reference:
+            # "TR-0064" / "CLM-59" / "REL-7": that one record.
+            conditions.append(AuditLog.entity_type == _AUDIT_REFERENCE_TYPES[reference.group(1).upper()])
+            conditions.append(AuditLog.entity_id == str(int(reference.group(2))))
+        else:
+            # A name or email, or a number: an entry (#402), a record id or a person's id.
+            number = needle.lstrip("#")
+            # Entries about a matching person too (e.g. "Added a user · Aarav Mehta").
+            about_people = (
+                await db.execute(
+                    select(User.id).where(
+                        func.lower(func.coalesce(User.full_name, User.email, "")).contains(needle.lower())
+                    )
+                )
+            ).scalars().all()
+            either = [person.contains(needle.lower()), AuditLog.entity_id == needle]
+            if about_people:
+                either.append(
+                    and_(AuditLog.entity_type == "user", AuditLog.entity_id.in_([str(i) for i in about_people]))
+                )
+            if number.isdigit():
+                either += [
+                    AuditLog.entity_id == str(int(number)),
+                    AuditLog.actor_id == int(number),
+                    AuditLog.id == int(number),
+                ]
+            conditions.append(or_(*either))
+    start, end = _date_bounds(from_date, to_date)
+    if start:
+        conditions.append(AuditLog.timestamp >= start)
+    if end:
+        conditions.append(AuditLog.timestamp <= end)
+    if conditions:
+        query = query.where(and_(*conditions))
+    return query
+
+
 async def list_audit_logs(
     *,
     claim_id: str | None,
@@ -231,33 +308,115 @@ async def list_audit_logs(
     from_date: date | None,
     to_date: date | None,
     db: AsyncSession,
+    entity_type: str | None = None,
+    search: str | None = None,
+    limit: int | None = 1000,
 ) -> list[AuditLog]:
-    query = select(AuditLog)
-    conditions = []
-    if claim_id:
-        conditions.append(AuditLog.entity_id == claim_id)
-    if employee_id:
-        conditions.append(AuditLog.entity_id == employee_id)
-    if action:
-        conditions.append(AuditLog.action == action)
-    if actor:
-        needle = actor.strip()
-        if needle.isdigit():
-            conditions.append(AuditLog.actor_id == int(needle))
-        else:
-            query = query.outerjoin(User, User.id == AuditLog.actor_id)
-            conditions.append(
-                func.lower(func.coalesce(User.full_name, User.email, "")).contains(needle.lower())
-            )
-    start, end = _date_bounds(from_date, to_date)
-    if start:
-        conditions.append(AuditLog.timestamp >= start)
-    if end:
-        conditions.append(AuditLog.timestamp <= end)
-    if conditions:
-        query = query.where(and_(*conditions))
-    query = query.order_by(AuditLog.timestamp.desc(), AuditLog.id.desc()).limit(1000)
+    query = await _audit_query(
+        claim_id=claim_id,
+        employee_id=employee_id,
+        action=action,
+        actor=actor,
+        from_date=from_date,
+        to_date=to_date,
+        entity_type=entity_type,
+        search=search,
+        db=db,
+    )
+    query = query.order_by(AuditLog.timestamp.desc(), AuditLog.id.desc())
+    if limit:
+        query = query.limit(limit)
     return list((await db.execute(query)).scalars().all())
+
+
+async def audit_actor_names(actor_ids, db: AsyncSession) -> dict[int, str]:
+    ids = {actor_id for actor_id in actor_ids if actor_id}
+    if not ids:
+        return {}
+    rows = (await db.execute(select(User.id, User.full_name, User.email).where(User.id.in_(ids)))).all()
+    return {row.id: row.full_name or row.email for row in rows}
+
+
+async def _audit_entity_labels(rows, db: AsyncSession) -> dict[tuple[str, str], str]:
+    """Readable names for what an entry is about: the person for user entries, the claim's
+    reference for claims. Anything else is labelled by the page from its type and id."""
+
+    def ids(entity_type: str) -> set[int]:
+        return {int(r.entity_id) for r in rows if r.entity_type == entity_type and str(r.entity_id).isdigit()}
+
+    labels: dict[tuple[str, str], str] = {}
+    for user_id, name in (await audit_actor_names(ids("user"), db)).items():
+        labels[("user", str(user_id))] = name
+    claim_ids = ids("claim_draft")
+    if claim_ids:
+        claims = await db.execute(
+            select(ClaimDraft.id, ClaimDraft.claim_reference).where(ClaimDraft.id.in_(claim_ids))
+        )
+        for claim_id, reference in claims.all():
+            if reference:
+                labels[("claim_draft", str(claim_id))] = reference
+    return labels
+
+
+async def page_audit_logs(
+    *,
+    page: int,
+    page_size: int,
+    entity_type: str | None,
+    action: str | None,
+    search: str | None,
+    from_date: date | None,
+    to_date: date | None,
+    db: AsyncSession,
+) -> dict:
+    query = await _audit_query(
+        entity_type=entity_type, action=action, search=search, from_date=from_date, to_date=to_date, db=db
+    )
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
+    newest_first = query.order_by(AuditLog.timestamp.desc(), AuditLog.id.desc())
+    rows = (await db.execute(newest_first.offset((page - 1) * page_size).limit(page_size))).scalars().all()
+    names = await audit_actor_names((row.actor_id for row in rows), db)
+    labels = await _audit_entity_labels(rows, db)
+    items = []
+    for row in rows:
+        items.append(
+            {
+                "id": row.id,
+                "entity_type": row.entity_type,
+                "entity_id": row.entity_id,
+                "entity_label": labels.get((row.entity_type, row.entity_id)),
+                "action": row.action,
+                "actor_id": row.actor_id,
+                "actor_name": names.get(row.actor_id),
+                "old_value": row.old_value,
+                "new_value": row.new_value,
+                "previous_event_hash": row.previous_event_hash,
+                "event_hash": row.event_hash,
+                "timestamp": row.timestamp,
+            }
+        )
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+async def audit_overview(db: AsyncSession) -> dict:
+    by_entity = (
+        await db.execute(
+            select(AuditLog.entity_type, func.count()).group_by(AuditLog.entity_type).order_by(func.count().desc())
+        )
+    ).all()
+    by_action = (
+        await db.execute(select(AuditLog.action, func.count()).group_by(AuditLog.action).order_by(func.count().desc()))
+    ).all()
+    first_at = (await db.execute(select(func.min(AuditLog.timestamp)))).scalar_one_or_none()
+    people = (await db.execute(select(func.count(func.distinct(AuditLog.actor_id))))).scalar_one()
+    return {
+        "total": sum(count for _, count in by_entity),
+        "first_at": first_at,
+        "people": people or 0,
+        "entity_counts": [{"key": key, "count": count} for key, count in by_entity],
+        "action_counts": [{"key": key, "count": count} for key, count in by_action],
+        "integrity": await check_audit_chain(db),
+    }
 
 
 async def schedule_report(payload: ReportScheduleIn, user_id: int, db: AsyncSession) -> ScheduledReport:

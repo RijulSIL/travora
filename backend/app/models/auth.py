@@ -41,6 +41,9 @@ class User(Base):
     # The Manager setting: people can report to them, and they get the Manager permissions on top
     # of their role. Always on for the CEO. See rbac.is_manager.
     is_manager: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    # New people start with the temporary password and must set their own at their first sign-in.
+    must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    welcome_email_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     auto_approve_threshold: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()

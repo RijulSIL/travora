@@ -1,4 +1,4 @@
-import { ChevronRight, Eye, EyeOff, Plus, Search, Upload, X } from 'lucide-react';
+import { ChevronRight, Mail, Plus, Search, Upload, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { Pill, Tabs } from '../../components/approvals/ApprovalQueueParts';
@@ -37,10 +37,13 @@ const CLAIM_TONE = {
   DRAFT: 'slate',
 };
 
+// Everyone added starts with this and sets their own at their first sign-in (backend welcome_service).
+const TEMPORARY_PASSWORD = 'Welcome@123';
+
 const EMPTY_CREATE = {
   email: '',
   full_name: '',
-  password: '',
+  send_welcome_email: true,
   role: 'EMPLOYEE',
   employee_id: '',
   impact_level_id: '',
@@ -157,7 +160,7 @@ export default function UserManagement() {
 
   const [editForm, setEditForm] = useState({});
   const [createForm, setCreateForm] = useState(EMPTY_CREATE);
-  const [showPassword, setShowPassword] = useState(false);
+  const [resending, setResending] = useState(false);
   const [saving, setSaving] = useState(false);
   const [panelError, setPanelError] = useState('');
   const [recentClaims, setRecentClaims] = useState(null);
@@ -179,6 +182,7 @@ export default function UserManagement() {
       setLoadError('');
       const res = await adminApi.users({ limit: 200 });
       setUsers(res.data || []);
+      return res.data || [];
     } catch (err) {
       setUsers((current) => current || []);
       setLoadError(errorText(err, 'Could not load users.'));
@@ -284,7 +288,6 @@ export default function UserManagement() {
 
   const startAdd = () => {
     setCreateForm(EMPTY_CREATE);
-    setShowPassword(false);
     openPanel({ mode: 'add' });
   };
 
@@ -368,7 +371,7 @@ export default function UserManagement() {
     setPanelError('');
     const payload = {
       email: createForm.email.trim(),
-      password: createForm.password,
+      send_welcome_email: createForm.send_welcome_email,
       full_name: createForm.full_name.trim() || null,
       role: createForm.role,
       employee_id: createForm.employee_id.trim() || null,
@@ -379,15 +382,32 @@ export default function UserManagement() {
     };
     try {
       const res = await adminApi.createUser(payload);
-      await loadUsers();
+      const fresh = await loadUsers();
       loadManagers();
-      showToast(`Added ${payload.full_name || payload.email}.`, 'success');
+      const added = (fresh || []).find((u) => u.user_id === res.data?.id);
+      const who = payload.full_name || payload.email;
+      if (!payload.send_welcome_email) showToast(`Added ${who}.`, 'success');
+      else if (added?.welcome_email_sent_at) showToast(`Added ${who} and sent their welcome email.`, 'success');
+      else showToast(`Added ${who}, but the welcome email couldn't be sent — try Resend on their profile.`, 'error');
       if (res.data?.id) openUser({ user_id: res.data.id });
       else closePanel();
     } catch (err) {
       setPanelError(errorText(err, 'Could not add this user.'));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const resendWelcome = async (user) => {
+    setResending(true);
+    try {
+      await adminApi.resendWelcomeEmail(user.user_id);
+      await loadUsers();
+      showToast(`Welcome email sent to ${user.email}.`, 'success');
+    } catch (err) {
+      showToast(errorText(err, 'Could not send the welcome email.'), 'error');
+    } finally {
+      setResending(false);
     }
   };
 
@@ -436,28 +456,9 @@ export default function UserManagement() {
             <span className={LABEL}>Work email *</span>
             <input type="email" required className={FIELD} value={createForm.email} onChange={(e) => setCreateForm({ ...createForm, email: e.target.value })} />
           </label>
-          <label className="col-span-full block">
-            <span className={LABEL}>Password *</span>
-            <span className="relative block">
-              <input
-                type={showPassword ? 'text' : 'password'}
-                required
-                minLength={8}
-                placeholder="At least 8 characters"
-                className={`${FIELD} pr-9`}
-                value={createForm.password}
-                onChange={(e) => setCreateForm({ ...createForm, password: e.target.value })}
-              />
-              <button
-                type="button"
-                aria-label={showPassword ? 'Hide password' : 'Show password'}
-                onClick={() => setShowPassword((v) => !v)}
-                className="absolute right-2 top-1/2 grid h-6 w-6 -translate-y-1/2 place-items-center rounded text-slate-400 hover:text-slate-600"
-              >
-                {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
-              </button>
-            </span>
-          </label>
+          <div className="col-span-full rounded-[10px] border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-relaxed text-slate-700">
+            They start with the password <b className="font-mono text-ink">{TEMPORARY_PASSWORD}</b> and must set their own the first time they sign in.
+          </div>
           <Group>Role &amp; level</Group>
           <label className="block">
             <span className={LABEL}>Role</span>
@@ -506,6 +507,20 @@ export default function UserManagement() {
             <span className={LABEL}>Employee ID</span>
             <input className={FIELD} placeholder="Optional" value={createForm.employee_id} onChange={(e) => setCreateForm({ ...createForm, employee_id: e.target.value })} />
             <span className="mt-1 block text-[11px] text-slate-400">An employee profile is made if needed.</span>
+          </label>
+          <label className="col-span-full flex cursor-pointer items-start gap-2.5 rounded-[10px] border border-slate-200 px-3 py-2.5">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 flex-none accent-brand"
+              checked={createForm.send_welcome_email}
+              onChange={(e) => setCreateForm({ ...createForm, send_welcome_email: e.target.checked })}
+            />
+            <span className="text-[12.5px] font-semibold text-ink">
+              Send welcome email
+              <span className="mt-0.5 block text-[11.5px] font-medium text-slate-500">
+                Emails {createForm.full_name.trim().split(/\s+/)[0] || 'them'} their sign-in details and how to get started.
+              </span>
+            </span>
           </label>
           {panelError ? <PanelError>{panelError}</PanelError> : null}
         </div>
@@ -642,10 +657,27 @@ export default function UserManagement() {
               <div className="mt-1 flex flex-wrap gap-[5px]">
                 <RolePill role={selected.role} />
                 {selected.is_manager ? <ManagerPill /> : null}
+                {selected.must_change_password && selected.is_active ? <Pill tone="amber">Waiting for first sign-in</Pill> : null}
                 <Pill tone={selected.is_active ? 'ok' : 'slate'}>{selected.is_active ? 'Active' : 'Inactive'}</Pill>
               </div>
             </div>
           </div>
+          {selected.must_change_password && selected.is_active ? (
+            <div className="flex flex-col gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-900">
+              <div>
+                <b className="text-ink">Hasn&apos;t signed in yet.</b> Their password is still <span className="font-mono">{TEMPORARY_PASSWORD}</span>.{' '}
+                {selected.welcome_email_sent_at
+                  ? `Welcome email sent ${new Date(selected.welcome_email_sent_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}.`
+                  : 'Their welcome email hasn’t been sent.'}
+              </div>
+              <div>
+                <button type="button" className={BTN_SM} disabled={resending} onClick={() => resendWelcome(selected)}>
+                  <Mail size={13} />
+                  {resending ? 'Sending…' : selected.welcome_email_sent_at ? 'Resend welcome email' : 'Send welcome email'}
+                </button>
+              </div>
+            </div>
+          ) : null}
           <div className="grid grid-cols-1 gap-x-3.5 gap-y-3 sm:grid-cols-2">
             <Fact label="Employee ID">
               <span className="font-mono">{selected.employee_id || '—'}</span>

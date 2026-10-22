@@ -10,7 +10,7 @@ from app.models.claim_workflow import (
     NotificationTemplate,
     WorkflowConfigRow,
 )
-from app.models.employee import AuditLog, Employee
+from app.models.employee import AuditChainHead, AuditLog, Employee
 from app.models.expense_category import CompanyProfile, ExpenseCategory
 from app.models.finance import (
     ERPLedgerEntry,
@@ -68,6 +68,7 @@ __all__ = [
     "AdvanceRequest",
     "AirEligibility",
     "AirClass",
+    "AuditChainHead",
     "AuditLog",
     "BudgetConfig",
     "ClaimApprovalStage",

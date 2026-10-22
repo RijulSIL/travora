@@ -11,6 +11,8 @@ from app.core.database import get_db
 from app.core.rbac import get_current_claims, require_any_permission, require_permission
 from app.schemas.finance_reporting import (
     AuditLogOut,
+    AuditLogPageOut,
+    AuditOverviewOut,
     ERPLedgerEntryOut,
     ERPPostIn,
     ERPPostOut,
@@ -23,6 +25,8 @@ from app.schemas.finance_reporting import (
     SpendByCategoryOut,
 )
 from app.services.finance_reporting_service import (
+    audit_actor_names,
+    audit_overview,
     generate_excel_report,
     generate_pdf_report,
     generate_report,
@@ -34,6 +38,7 @@ from app.services.finance_reporting_service import (
     list_erp_ledger_entries,
     list_exception_requests_log,
     list_scheduled_reports,
+    page_audit_logs,
     post_ledger_entry_to_erp,
     schedule_report,
 )
@@ -183,12 +188,46 @@ async def audit_logs(
     )
 
 
+@router.get("/audit/logs/page", response_model=AuditLogPageOut)
+async def audit_logs_page(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
+    entity_type: str | None = Query(default=None),
+    action: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+    from_date: date | None = Query(default=None),
+    to_date: date | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+    _claims: dict = Depends(require_permission("export_audit")),
+) -> dict:
+    return await page_audit_logs(
+        page=page,
+        page_size=page_size,
+        entity_type=entity_type,
+        action=action,
+        search=search,
+        from_date=from_date,
+        to_date=to_date,
+        db=db,
+    )
+
+
+@router.get("/audit/overview", response_model=AuditOverviewOut)
+async def audit_logs_overview(
+    db: AsyncSession = Depends(get_db),
+    _claims: dict = Depends(require_permission("export_audit")),
+) -> dict:
+    return await audit_overview(db)
+
+
 @router.get("/audit/logs/export")
 async def audit_logs_export(
     claim_id: str | None = Query(default=None),
     employee_id: str | None = Query(default=None),
     action: str | None = Query(default=None),
     actor: str | None = Query(default=None),
+    entity_type: str | None = Query(default=None),
+    search: str | None = Query(default=None),
     from_date: date | None = Query(default=None),
     to_date: date | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
@@ -201,14 +240,29 @@ async def audit_logs_export(
         actor=actor,
         from_date=from_date,
         to_date=to_date,
+        entity_type=entity_type,
+        search=search,
+        limit=None,
         db=db,
     )
+    names = await audit_actor_names((row.actor_id for row in rows), db)
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["id", "timestamp", "entity_type", "entity_id", "action", "actor_id", "event_hash"])
+    writer.writerow(
+        ["id", "timestamp", "entity_type", "entity_id", "action", "actor_id", "actor_name", "event_hash"]
+    )
     for row in rows:
         writer.writerow(
-            [row.id, row.timestamp.isoformat(), row.entity_type, row.entity_id, row.action, row.actor_id, row.event_hash]
+            [
+                row.id,
+                row.timestamp.isoformat(),
+                row.entity_type,
+                row.entity_id,
+                row.action,
+                row.actor_id,
+                names.get(row.actor_id, ""),
+                row.event_hash,
+            ]
         )
     output.seek(0)
     return StreamingResponse(

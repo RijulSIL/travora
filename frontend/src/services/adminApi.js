@@ -12,6 +12,8 @@ export const adminApi = {
   changeUserRole: (userId, role) => api.put(`/admin/users/${userId}/role`, { role }),
   deactivateUser: (userId) => api.delete(`/admin/users/${userId}`),
   updateUser: (userId, payload) => api.put(`/admin/users/${userId}`, payload),
+  // Send the welcome email again (only while they're still on the temporary password).
+  resendWelcomeEmail: (userId) => api.post(`/admin/users/${userId}/welcome-email`),
   // Who reports to a manager, and what's waiting on them at the manager step.
   userTeam: (userId) => api.get(`/admin/users/${userId}/team`),
   // Turn Manager on for someone and put these people under them (CSV import's one-click fix).
@@ -60,6 +62,8 @@ export const adminApi = {
   updateCompanyProfile: (payload) => api.put('/admin/company-profile', payload),
   auditLogs: (params) => api.get('/audit/logs', { params }),
   auditLogsExport: (params) => api.get('/audit/logs/export', { params, responseType: 'blob' }),
+  auditLogsPage: (params) => api.get('/audit/logs/page', { params }),
+  auditOverview: () => api.get('/audit/overview'),
   notificationTemplates: () => api.get('/notifications/templates'),
   updateNotificationTemplate: (id, payload) => api.put(`/notifications/templates/${id}`, payload),
   workflowConfig: () => api.get('/workflow/config'),

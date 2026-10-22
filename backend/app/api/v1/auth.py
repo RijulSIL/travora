@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.rbac import get_current_claims
+from app.models.auth import User
 from app.schemas.common import (
     ChangePasswordConfirm,
     ChangePasswordRequestOTP,
@@ -11,6 +12,7 @@ from app.schemas.common import (
     LoginRequest,
     MFAVerifyRequest,
     ResetPasswordRequest,
+    SetInitialPasswordRequest,
     TokenResponse,
 )
 from app.services.auth_service import (
@@ -22,6 +24,7 @@ from app.services.auth_service import (
     create_refresh_token,
     create_trusted_device_token,
     generate_and_send_login_otp,
+    hash_password,
     is_trusted_device,
     request_password_change_otp,
     request_password_reset_otp,
@@ -29,6 +32,7 @@ from app.services.auth_service import (
     rotate_refresh_token,
     verify_login_otp,
 )
+from app.services.welcome_service import TEMPORARY_PASSWORD
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -69,6 +73,31 @@ async def change_password_confirm(
 ) -> dict[str, str]:
     await confirm_password_change(int(claims["sub"]), payload.otp_code, payload.new_password, db)
     return {"message": "Password successfully changed."}
+
+
+@router.post("/set-initial-password")
+async def set_initial_password(
+    payload: SetInitialPasswordRequest,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    """First sign-in: someone still on the temporary password sets their own (they've just signed
+    in with it and the emailed code, so no further check is needed). Only while they still have to."""
+    user = await db.get(User, int(claims["sub"]))
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if not user.must_change_password:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Your password is already set — change it from your profile"
+        )
+    if payload.new_password == TEMPORARY_PASSWORD:
+        raise HTTPException(
+            status_code=422, detail="Choose a password other than the temporary one"
+        )
+    user.hashed_password = hash_password(payload.new_password)
+    user.must_change_password = False
+    await db.commit()
+    return {"message": "Password set."}
 
 
 def _set_refresh_cookie(response: Response, token: str) -> None:

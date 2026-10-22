@@ -287,6 +287,7 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
         can_create_delegation=can_create_delegation
         or (user_is_a_manager and bool(delegatable_matrix.get(Role.REPORTING_MANAGER, set()))),
         is_manager=user_is_a_manager,
+        must_change_password=bool(user.must_change_password),
         auto_approve_threshold=auto_approve_threshold_str,
         org_auto_approve_ceiling=org_auto_approve_ceiling_str,
         approver_scope=approver_scope,

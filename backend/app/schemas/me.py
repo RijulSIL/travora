@@ -64,6 +64,8 @@ class MeOut(BaseModel):
     can_create_delegation: bool = False
     # The Manager setting (always on for the CEO): people can report to them, on top of their role.
     is_manager: bool = False
+    # Still on the temporary password: the app shows "Set your password" before anything else.
+    must_change_password: bool = False
     # Only populated for managers: their personal claim auto-approve threshold
     # (null = disabled, always require manual review) and the org-wide ceiling it is capped at.
     auto_approve_threshold: str | None = None

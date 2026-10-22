@@ -2,7 +2,7 @@ import csv
 import io
 import json
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,6 +33,7 @@ from app.services.delegation_service import is_delegation_enabled, set_delegatio
 from app.services.department_service import clean_department_name, department_key, get_departments, match_department
 from app.services.notification_service import create_notification
 from app.services.policy_engine import get_active_policy_version
+from app.services.welcome_service import TEMPORARY_PASSWORD, send_welcome_email, send_welcome_emails_later
 
 router = APIRouter(prefix="/admin", tags=["admin-users"])
 
@@ -105,6 +106,8 @@ async def list_users(
                 office_location=employee.office_location if employee else None,
                 reporting_manager_id=employee.reporting_manager_id if employee else None,
                 is_manager=is_manager(user),
+                must_change_password=user.must_change_password,
+                welcome_email_sent_at=user.welcome_email_sent_at,
             )
         )
     return rows
@@ -413,6 +416,59 @@ async def move_team(
 
 
 @router.post(
+    "/users/{user_id}/welcome-email",
+    dependencies=[Depends(require_permission("manage_users")), Depends(require_mfa)],
+    response_model=AdminUserOut,
+)
+async def resend_welcome_email(
+    user_id: int,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> AdminUserOut:
+    """Sends the welcome email again — only while they're still on the temporary password (after
+    that they use Forgot password)."""
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not user.is_active:
+        raise HTTPException(status_code=409, detail="This account is deactivated")
+    if not user.must_change_password:
+        raise HTTPException(
+            status_code=409,
+            detail="They've already set their own password — they can use Forgot password on the sign-in page",
+        )
+    if not await send_welcome_email(user, db):
+        raise HTTPException(status_code=502, detail="The welcome email couldn't be sent. Try again in a moment.")
+    await log_event(
+        entity_type="user",
+        entity_id=str(user.id),
+        action="welcome_email_resent",
+        actor_id=int(claims["sub"]),
+        old=None,
+        new={"email": user.email},
+        db=db,
+    )
+    await db.commit()
+    employee = await db.get(Employee, user.employee_id) if user.employee_id else None
+    return AdminUserOut(
+        user_id=user.id,
+        email=user.email,
+        full_name=user.full_name or (employee.full_name if employee else None),
+        role=user.role,
+        mfa_verified=user.mfa_verified,
+        is_active=user.is_active,
+        employee_id=user.employee_id,
+        department=employee.department if employee else None,
+        impact_level_id=employee.impact_level_id if employee else None,
+        office_location=employee.office_location if employee else None,
+        reporting_manager_id=employee.reporting_manager_id if employee else None,
+        is_manager=is_manager(user),
+        must_change_password=user.must_change_password,
+        welcome_email_sent_at=user.welcome_email_sent_at,
+    )
+
+
+@router.post(
     "/users/create",
     dependencies=[Depends(require_permission("manage_users")), Depends(require_mfa)],
     response_model=UserOut,
@@ -426,7 +482,10 @@ async def admin_create_user(
     normalized_email = payload.email.strip().lower()
     if not normalized_email:
         raise HTTPException(status_code=422, detail="Email is required")
-    if not payload.password or len(payload.password) < 8:
+    # Everyone starts with the temporary password unless one is given, and sets their own at their
+    # first sign-in either way.
+    password = payload.password or TEMPORARY_PASSWORD
+    if len(password) < 8:
         raise HTTPException(
             status_code=422, detail="Password must be at least 8 characters long"
         )
@@ -476,9 +535,10 @@ async def admin_create_user(
     user = User(
         email=normalized_email,
         full_name=payload.full_name,
-        hashed_password=hash_password(payload.password),
+        hashed_password=hash_password(password),
         role=role,
         is_manager=manager,
+        must_change_password=True,
         mfa_verified=payload.mfa_verified,
         is_active=True,
         employee_id=employee_id,
@@ -501,6 +561,9 @@ async def admin_create_user(
         db=db,
     )
     await db.commit()
+    # Sent after the person is saved: a failed email never undoes adding them (Resend from their profile).
+    if payload.send_welcome_email and await send_welcome_email(user, db):
+        await db.commit()
     await db.refresh(user)
     return user
 
@@ -625,6 +688,9 @@ async def bulk_import_users(
     # name ignoring capitals/spaces: {"mode": "add", "name": ...} adds it to the list,
     # {"mode": "use", "department": ...} puts those people in a listed one, {"mode": "blank"}.
     department_choices: str | None = Form(default=None),
+    # Email each person added their sign-in details (welcome_service).
+    send_welcome_emails: bool = Form(default=True),
+    background_tasks: BackgroundTasks = None,
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -654,6 +720,9 @@ async def bulk_import_users(
     pending_managers: list[tuple[int, Employee | None, str | None, str, str]] = []
     # employee_id -> its row in this file, to point at the row when a manager there isn't one.
     row_of_employee: dict[str, int] = {}
+    created_user_ids: list[int] = []
+    # Everyone starts with the same temporary password; hashing it once keeps big files quick.
+    temporary_hash = hash_password(TEMPORARY_PASSWORD)
     # People not linked only because the manager named for them isn't one (yet), by that manager.
     unlinked: dict[str, dict] = {}
     # A detail that doesn't work never blocks the person: they're added with it left blank, and
@@ -678,7 +747,7 @@ async def bulk_import_users(
     # check screen apply (add to the list / use a listed one / leave blank).
     departments = await get_departments(db)
     try:
-        choices = json.loads(department_choices) if department_choices else {}
+        choices = json.loads(department_choices) if isinstance(department_choices, str) and department_choices else {}
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="department_choices must be JSON") from exc
     if not isinstance(choices, dict):
@@ -774,10 +843,13 @@ async def bulk_import_users(
             mfa_verified=False,
             is_active=True,
             employee_id=employee_id,
-            hashed_password=hash_password("Welcome@123"),
+            hashed_password=temporary_hash,
+            # They start with the temporary password and set their own at their first sign-in.
+            must_change_password=True,
         )
         db.add(user)
         await db.flush()
+        created_user_ids.append(user.id)
         await log_event(
             entity_type="user",
             entity_id=str(user.id),
@@ -855,6 +927,11 @@ async def bulk_import_users(
                 employee.reporting_manager_id = manager_id
 
     await db.commit()
+    # Welcome emails go out after the import has finished (a big file would take minutes to email
+    # one by one). Anyone whose email fails shows "Welcome email not sent" on their profile.
+    queue_emails = send_welcome_emails is True and isinstance(background_tasks, BackgroundTasks)
+    if queue_emails and created_user_ids:
+        background_tasks.add_task(send_welcome_emails_later, list(created_user_ids))
     return {
         "created": created,
         "failed": len(errors),
@@ -862,4 +939,5 @@ async def bulk_import_users(
         "warnings": warnings,
         "unlinked_managers": list(unlinked.values()),
         "added_departments": added_departments,
+        "welcome_emails_queued": len(created_user_ids) if queue_emails else 0,
     }

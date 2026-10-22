@@ -61,6 +61,48 @@ class AuditLogOut(BaseModel):
     previous_event_hash: str | None = None
     event_hash: str
     timestamp: datetime
+    actor_name: str | None = None
+    entity_label: str | None = None
+
+
+class AuditLogPageOut(BaseModel):
+    items: list[AuditLogOut]
+    total: int
+    page: int
+    page_size: int
+
+
+class AuditCountOut(BaseModel):
+    key: str
+    count: int
+
+
+class AuditGapOut(BaseModel):
+    id: int | None = None
+    kind: str
+    timestamp: datetime | None = None
+    action: str | None = None
+    entity_type: str | None = None
+    entity_id: str | None = None
+    linked_to_id: int | None = None
+    is_old: bool
+
+
+class AuditIntegrityOut(BaseModel):
+    status: str
+    total: int
+    recheck_from_id: int | None = None
+    rechecked: int
+    gaps: list[AuditGapOut]
+
+
+class AuditOverviewOut(BaseModel):
+    total: int
+    first_at: datetime | None = None
+    people: int
+    entity_counts: list[AuditCountOut]
+    action_counts: list[AuditCountOut]
+    integrity: AuditIntegrityOut
 
 
 class ReportScheduleIn(BaseModel):

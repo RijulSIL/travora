@@ -130,6 +130,7 @@ export default function UserImportDialog({ users, roles, managerIds = [], levels
   // What to do with each department in the file that isn't on the list, by its key:
   // { mode: 'add' | 'use' | 'blank', name, use }.
   const [deptChoices, setDeptChoices] = useState({});
+  const [sendWelcome, setSendWelcome] = useState(true);
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -225,6 +226,7 @@ export default function UserImportDialog({ users, roles, managerIds = [], levels
     try {
       const formData = new FormData();
       formData.append('file', file);
+      formData.append('send_welcome_emails', sendWelcome ? 'true' : 'false');
       // The decisions about departments that aren't on the list (undecided ones are left blank).
       const choices = {};
       unknownDepts.forEach((g) => {
@@ -285,7 +287,13 @@ export default function UserImportDialog({ users, roles, managerIds = [], levels
           </b>
           {result.created ? (
             <p className="text-xs text-slate-500">
-              They can sign in now with the temporary password <b className="font-mono text-ink">Welcome@123</b> and should change it.
+              They sign in with <b className="font-mono text-ink">Welcome@123</b> and set their own password the first time.
+            </p>
+          ) : null}
+          {result.welcome_emails_queued ? (
+            <p className="rounded-[10px] border border-emerald-200 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-800">
+              ✓ Welcome emails are on their way to {result.welcome_emails_queued} {result.welcome_emails_queued === 1 ? 'person' : 'people'}
+              <span className="block font-medium text-slate-500">If one can&apos;t be sent, that person&apos;s profile says so, with a Send button.</span>
             </p>
           ) : null}.
           {result.added_departments?.length ? (
@@ -586,6 +594,17 @@ export default function UserImportDialog({ users, roles, managerIds = [], levels
               </table>
             </div>
             <p className="text-xs text-slate-500">Red rows are skipped. Amber rows are added with that detail left blank; you can fill it in later from their profile.</p>
+            {adding ? (
+              <label className="flex cursor-pointer items-start gap-2.5 rounded-[10px] border border-slate-200 px-3 py-2.5">
+                <input type="checkbox" className="mt-0.5 h-4 w-4 flex-none accent-brand" checked={sendWelcome} onChange={(e) => setSendWelcome(e.target.checked)} />
+                <span className="text-[12.5px] font-semibold text-ink">
+                  Send each person a welcome email
+                  <span className="mt-0.5 block text-[11.5px] font-medium text-slate-500">
+                    {adding} {adding === 1 ? 'person' : 'people'} will get their sign-in details by email.
+                  </span>
+                </span>
+              </label>
+            ) : null}
           </>
         )}
       </>
@@ -691,7 +710,7 @@ export default function UserImportDialog({ users, roles, managerIds = [], levels
                 ? `${adding} of ${check.rows.length} will be added`
                 : (
                   <>
-                    New people get the temporary password - <span className="font-mono">Welcome@123</span>
+                    New people start with <span className="font-mono">Welcome@123</span> and set their own at first sign-in
                   </>
                 )}
           </span>
