@@ -10,7 +10,7 @@ import useToast from '../hooks/useToast';
 import api from '../services/api';
 import { reimbursementApi } from '../services/reimbursementApi';
 import { useAuthStore } from '../store/authStore';
-import { formatRole } from '../utils/formatters';
+import { formatRole, showsManager } from '../utils/formatters';
 
 const SPECIAL = /[!@#$%^&*()_+={}[\]|\\:;"'<>,.?/~`-]/;
 const PASSWORD_RULES = [
@@ -552,7 +552,8 @@ export default function ProfilePage() {
   const name = profile?.full_name || user?.full_name || user?.email || 'User';
   const email = profile?.email || user?.email;
 
-  const canSeeOrgChart = Boolean(profile?.role) && profile.role !== 'EMPLOYEE';
+  // Everyone except plain employees — an Employee with the Manager setting sees their team too.
+  const canSeeOrgChart = Boolean(profile?.role) && (profile.role !== 'EMPLOYEE' || Boolean(profile?.is_manager));
   // Shown only when turned on: delegation by the org-wide admin switch, auto-approve when the
   // organisation's auto-approve limit is above ₹0 (a manager can still have their own amount off).
   const showOutOfOffice = Boolean(profile?.can_create_delegation) && profile?.delegation_feature_enabled !== false;
@@ -596,6 +597,9 @@ export default function ProfilePage() {
             <p className="truncate text-[13px] text-slate-500">{email}</p>
             <div className="mt-2 flex flex-wrap gap-1.5">
               <span className={`inline-flex items-center rounded-full px-[9px] py-0.5 text-[11.5px] font-bold ${roleChip(role)}`}>{roleLabel}</span>
+              {showsManager(role, profile?.is_manager) ? (
+                <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-[9px] py-0.5 text-[11.5px] font-bold text-emerald-700">Manager</span>
+              ) : null}
               {profile?.impact_level_code ? (
                 <Pill tone="brand">
                   {profile.impact_level_code}

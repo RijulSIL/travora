@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
 import { Clock, X } from 'lucide-react';
 
-import { ApprovalChain, ExceptionSubject, Pill, Tabs, ago, inr, shortDay, shortType } from '../components/approvals/ApprovalQueueParts';
+import { ApprovalChain, ChainMark, ExceptionSubject, Pill, Tabs, ago, inr, shortDay, shortType } from '../components/approvals/ApprovalQueueParts';
 import { TipBody, useFloatingTip } from '../components/ui/FloatingTip';
 import Pagination from '../components/ui/Pagination';
 import useBodyScrollLock from '../hooks/useBodyScrollLock';
@@ -36,7 +36,7 @@ const STATUS_TABS = [
 const DECISION = {
   APPROVED: ['bg-emerald-600', '✓', (d) => `Approved${d.acted_by_name ? ` by ${d.acted_by_name}` : ''}`],
   REJECTED: ['bg-rose-600', '✕', (d) => `Rejected${d.acted_by_name ? ` by ${d.acted_by_name}` : ''}`],
-  SLA_SKIPPED: ['bg-orange-600', '↷', () => 'Missed its SLA, passed on'],
+  SLA_SKIPPED: ['bg-orange-600', 'skip', () => 'Missed its SLA, passed on'],
   PENDING: ['bg-amber-500', '●', () => 'Deciding now'],
   AWAITING: ['bg-slate-400', '', () => 'Still to come'],
 };
@@ -110,7 +110,9 @@ function ExceptionDetail({ row }) {
               return (
                 <li key={`${d.required_role}-${i}`} className="relative grid grid-cols-[18px_minmax(0,1fr)] gap-2 pb-2.5 text-[12.5px]">
                   {!last ? <span className="absolute bottom-0 left-2 top-[18px] w-0.5 bg-slate-200" aria-hidden="true" /> : null}
-                  <i className={`z-[1] grid h-[18px] w-[18px] place-items-center rounded-full text-[10px] not-italic text-white ${dot}`}>{mark}</i>
+                  <i className={`z-[1] grid h-[18px] w-[18px] place-items-center rounded-full text-[10px] not-italic leading-none text-white ${dot}`}>
+                    <ChainMark mark={mark} size={8} />
+                  </i>
                   <div className="min-w-0">
                     <b className="block text-ink">{formatRole(d.required_role)}</b>
                     <span className="text-xs text-slate-500">

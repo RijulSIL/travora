@@ -90,8 +90,8 @@ INVOICE_ARCHIVING_CLAIM_STATUSES = {
     ClaimStatus.REJECTED,
 }
 
-# A claim in any of these states blocks further edits to its invoices' extracted fields and
-# payment proof (below), so a receipt that's already been submitted can't quietly change
+# A claim in any of these states blocks further edits to its invoices' extracted fields
+# (below), so a receipt that's already been submitted can't quietly change
 # afterwards. Every post-submit status belongs here. Only DRAFT and SENT_BACK leave them editable.
 INVOICE_LOCKING_CLAIM_STATUSES = {
     ClaimStatus.SUBMITTED,
@@ -1066,44 +1066,6 @@ async def get_invoice_for_view(invoice_id: int, user_id: int, db: AsyncSession) 
     raise HTTPException(status_code=403, detail="Not allowed to access this invoice")
 
 
-async def store_payment_proof(
-    invoice_id: int,
-    user_id: int,
-    filename: str,
-    content_type: str,
-    content: bytes,
-    db: AsyncSession,
-) -> Invoice:
-    """Proof (bank statement, UPI receipt, card transaction screenshot, ...) that the
-    employee actually paid for this invoice — a separate file from the invoice document
-    itself. update_invoice_fields refuses to mark the invoice REVIEWED without one."""
-    invoice = _ensure_invoice_owner(await db.get(Invoice, invoice_id), user_id)
-    _, claim_reference, claim_status = await get_invoice_claim_link(invoice_id, db)
-    if claim_status in INVOICE_LOCKING_CLAIM_STATUSES:
-        label = claim_reference or "its claim"
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"This invoice can no longer be edited — {label} is {claim_status.value.replace('_', ' ').title()}.",
-        )
-    _validate_upload(filename, content_type, content)
-
-    storage_root = Path(settings.invoice_storage_dir) / str(user_id) / "payment_proofs"
-    storage_root.mkdir(parents=True, exist_ok=True)
-    file_hash = hashlib.sha256(content).hexdigest()
-    suffix = Path(filename).suffix.lower()
-    storage_path = storage_root / f"{invoice_id}_{file_hash}{suffix}"
-    storage_path.write_bytes(content)
-
-    invoice.payment_proof_storage_path = str(storage_path)
-    invoice.payment_proof_original_filename = filename
-    invoice.payment_proof_content_type = content_type
-    invoice.payment_proof_file_size_bytes = len(content)
-    invoice.payment_proof_uploaded_at = _now()
-    await db.commit()
-    await db.refresh(invoice)
-    return invoice
-
-
 async def update_invoice_fields(
     invoice_id: int, payload: InvoiceFieldsUpdateRequest, user_id: int, db: AsyncSession
 ) -> Invoice:
@@ -1176,12 +1138,6 @@ async def update_invoice_fields(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Duplicate invoice flag must be acknowledged before review can be completed",
-        )
-
-    if review_complete and not invoice.payment_proof_storage_path:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Attach payment proof (bank statement, UPI receipt, etc.) before completing review",
         )
 
     invoice.status = InvoiceStatus.REVIEWED if review_complete else InvoiceStatus.READY_FOR_REVIEW

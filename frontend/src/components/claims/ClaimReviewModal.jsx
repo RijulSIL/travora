@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   AlertTriangle,
-  CheckCircle2,
   ChevronDown,
   CreditCard,
   FileText,
@@ -509,17 +508,6 @@ export default function ClaimReviewModal({ claimId, onClose }) {
                               <ReceiptIndianRupee size={15} />
                             </div>
                             <span className="truncate font-medium text-slate-700">{invoice.original_filename}</span>
-                            {invoice.payment_proof_original_filename ? (
-                              <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
-                                <CheckCircle2 size={11} />
-                                Payment proof
-                              </span>
-                            ) : (
-                              <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-bold text-rose-700">
-                                <AlertTriangle size={11} />
-                                No payment proof
-                              </span>
-                            )}
                           </div>
                           <div className="flex shrink-0 items-center gap-3">
                             <span

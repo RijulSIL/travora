@@ -231,10 +231,11 @@ async def get_org_chart(
     Employee that's sensitive (bank details, cost centre, office location)."""
     from app.models.employee import Employee
 
-    if Role(claims.get("role")) == Role.EMPLOYEE:
+    user = await db.get(User, int(claims["sub"]))
+    # Employees with the Manager setting count as managers here.
+    if Role(claims.get("role")) == Role.EMPLOYEE and not is_manager(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not available for this role")
 
-    user = await db.get(User, int(claims["sub"]))
     if user is None or not user.employee_id:
         return {"roots": []}
 

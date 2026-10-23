@@ -72,7 +72,7 @@ function normalizeStr(v) {
   return String(v ?? '').trim();
 }
 
-/** The invoice or payment proof, drawn as clean pages (PDF) or shown as is (image), with zoom.
+/** The invoice, drawn as clean pages (PDF) or shown as is (image), with zoom.
  * Returns the zoom/download controls and the body separately so the page can lay them out. */
 function useDocumentView({ blob, contentType, filename, emptyText }) {
   const [zoom, setZoom] = useState(null);
@@ -152,12 +152,8 @@ export default function InvoiceReview() {
   const [actionState, setActionState] = useState({});
   const [duplicateAcknowledged, setDuplicateAcknowledged] = useState(false);
   const [invoiceBlob, setInvoiceBlob] = useState(null);
-  const [proofBlob, setProofBlob] = useState(null);
   const [previewError, setPreviewError] = useState('');
-  const [docTab, setDocTab] = useState('invoice');
   const [onlyNeed, setOnlyNeed] = useState(false);
-  const [uploadingProof, setUploadingProof] = useState(false);
-  const [proofError, setProofError] = useState('');
 
   const resetFromResponse = useCallback((data) => {
     setInvoice(data);
@@ -224,27 +220,6 @@ export default function InvoiceReview() {
     }, 2000);
   });
 
-  const uploadProof = (file) => {
-    if (!file) return;
-    setProofError('');
-    setUploadingProof(true);
-    const formData = new FormData();
-    formData.append('file', file);
-    reimbursementApi
-      .uploadPaymentProof(invoiceId, formData)
-      .then((res) => {
-        showToast('Payment proof uploaded', 'success');
-        // Merge in just the (lightweight) updated invoice fields — no fields/line_items in
-        // this response — rather than calling load(), which re-fetches the full extraction
-        // bundle and resets every in-progress edit/confirmation back to its last-saved state.
-        setInvoice((current) => (current ? { ...current, ...res.data } : current));
-      })
-      .catch((err) => {
-        setProofError(err?.response?.data?.detail || 'Could not upload payment proof.');
-      })
-      .finally(() => setUploadingProof(false));
-  };
-
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -269,34 +244,11 @@ export default function InvoiceReview() {
     };
   }, [invoice?.id, invoice?.content_type]);
 
-  // The payment proof, fetched when its tab is first opened (and again after it's replaced).
-  const proofName = invoice?.payment_proof_original_filename;
-  const proofStamp = invoice?.payment_proof_uploaded_at;
-  useEffect(() => {
-    setProofBlob(null);
-  }, [proofStamp]);
-  useEffect(() => {
-    if (docTab !== 'proof' || !proofName || proofBlob) return undefined;
-    let mounted = true;
-    reimbursementApi
-      .paymentProofFileBlob(invoiceId)
-      .then((res) => {
-        if (mounted) setProofBlob(new Blob([res.data], { type: res.headers['content-type'] || 'application/octet-stream' }));
-      })
-      .catch(() => {
-        if (mounted) showToast('Could not open payment proof', 'error');
-      });
-    return () => {
-      mounted = false;
-    };
-  }, [docTab, proofName, proofBlob, invoiceId, showToast]);
-
   const isLocked = Boolean(invoice?.is_locked);
 
   const canSave = useMemo(() => {
     if (!invoice?.fields) return false;
     if (isLocked) return false;
-    if (!invoice.payment_proof_original_filename) return false;
     if (invoice.duplicate_invoice_id && !duplicateAcknowledged) return false;
     for (const field of invoice.fields) {
       if (OPTIONAL_FIELD_KEYS.has(field.field_key)) continue;
@@ -321,7 +273,6 @@ export default function InvoiceReview() {
   const blockers = useMemo(() => {
     if (!invoice?.fields) return [];
     const out = [];
-    if (!invoice.payment_proof_original_filename) out.push({ key: 'proof', text: 'Attach payment proof' });
     if (invoice.duplicate_invoice_id && !duplicateAcknowledged) out.push({ key: 'duplicate', text: 'Confirm it isn’t a duplicate' });
     for (const field of invoice.fields) {
       if (OPTIONAL_FIELD_KEYS.has(field.field_key)) continue;
@@ -375,12 +326,6 @@ export default function InvoiceReview() {
     contentType: invoice?.content_type,
     filename: invoice?.original_filename,
     emptyText: previewError || 'Loading the invoice…',
-  });
-  const proofDoc = useDocumentView({
-    blob: proofBlob,
-    contentType: proofBlob?.type,
-    filename: proofName,
-    emptyText: proofName ? 'Loading the payment proof…' : 'No payment proof yet. Attach one on the right.',
   });
 
   if (loading && !invoice) {
@@ -486,7 +431,7 @@ export default function InvoiceReview() {
     );
   };
 
-  // "What's left": proof, duplicate, then one line per area that needed checking when the
+  // "What's left": duplicate, then one line per area that needed checking when the
   // invoice was read (amount, tax, other details) — ticked off live as values are confirmed.
   const needed = (keys) =>
     keys.filter((k) => fieldByKey[k] && !OPTIONAL_FIELD_KEYS.has(k) && confidenceTone(fieldByKey[k].confidence) !== 'green');
@@ -496,41 +441,6 @@ export default function InvoiceReview() {
   const left = (keys) => keys.filter((k) => blockingKeys.has(k));
   const label = (k) => (FIELD_LABELS[k] || k).toLowerCase();
   const todos = [
-    {
-      key: 'proof',
-      done: Boolean(proofName),
-      title: proofName ? 'Payment proof attached' : 'Attach payment proof',
-      sub: proofName || 'Bank statement, UPI receipt or card slip showing you paid this invoice',
-      action: proofName ? (
-        <span className="flex items-center gap-2 text-xs font-bold">
-          <button type="button" className="text-brand hover:underline" onClick={() => setDocTab('proof')}>
-            View
-          </button>
-          <span className="text-slate-300">·</span>
-          <label className={`cursor-pointer text-brand hover:underline ${isLocked ? 'pointer-events-none opacity-50' : ''}`}>
-            {uploadingProof ? 'Replacing…' : 'Replace'}
-            <input
-              type="file"
-              accept=".jpg,.jpeg,.png,.heic,.pdf"
-              className="hidden"
-              disabled={isLocked || uploadingProof}
-              onChange={(event) => uploadProof(event.target.files?.[0])}
-            />
-          </label>
-        </span>
-      ) : (
-        <label className={`inline-flex h-7 cursor-pointer items-center rounded-lg bg-brand px-2.5 text-[11.5px] font-bold text-white hover:bg-brand/90 ${isLocked ? 'pointer-events-none opacity-50' : ''}`}>
-          {uploadingProof ? 'Uploading…' : 'Upload proof'}
-          <input
-            type="file"
-            accept=".jpg,.jpeg,.png,.heic,.pdf"
-            className="hidden"
-            disabled={isLocked || uploadingProof}
-            onChange={(event) => uploadProof(event.target.files?.[0])}
-          />
-        </label>
-      ),
-    },
     invoice.duplicate_invoice_id
       ? {
           key: 'duplicate',
@@ -591,7 +501,7 @@ export default function InvoiceReview() {
   const invoiceDate = normalizeStr(values.invoice_date);
   const extractionNote =
     invoice.extraction_error && !/^Non-INR currency detected/.test(invoice.extraction_error) ? invoice.extraction_error : null;
-  const doc = docTab === 'proof' ? proofDoc : invoiceDoc;
+  const doc = invoiceDoc;
 
   return (
     <section className="flex flex-col gap-3.5">
@@ -646,22 +556,7 @@ export default function InvoiceReview() {
           className="flex h-[520px] flex-col overflow-hidden rounded-[14px] border border-slate-200 bg-white lg:sticky lg:top-[72px] lg:h-[calc(100vh-88px)] lg:max-h-[900px]"
         >
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-2.5 py-2">
-            <div className="inline-flex rounded-[9px] bg-slate-100 p-[3px]" role="group" aria-label="Document">
-              {[
-                ['invoice', 'Invoice'],
-                ['proof', 'Payment proof'],
-              ].map(([k, l]) => (
-                <button
-                  key={k}
-                  type="button"
-                  aria-pressed={docTab === k}
-                  onClick={() => setDocTab(k)}
-                  className={`rounded-[7px] px-2.5 py-[5px] text-xs font-bold ${docTab === k ? 'bg-white text-ink shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                >
-                  {l}
-                </button>
-              ))}
-            </div>
+            <span className="px-1.5 text-xs font-bold text-ink">Invoice</span>
             <div className="flex items-center gap-2">
               {doc.isPdf && doc.pageCount ? (
                 <span className="text-[11.5px] font-semibold text-slate-500">
@@ -684,8 +579,19 @@ export default function InvoiceReview() {
               <span className="text-xs text-slate-500">{isLocked ? 'Read only' : doneCount === todos.length ? 'All done' : `${doneCount} of ${todos.length} done`}</span>
             </div>
             <div className="h-1 bg-slate-100">
-              <i className="block h-full bg-emerald-600 transition-all duration-200" style={{ width: `${(doneCount / todos.length) * 100}%` }} />
+              <i className="block h-full bg-emerald-600 transition-all duration-200" style={{ width: `${todos.length ? (doneCount / todos.length) * 100 : 100}%` }} />
             </div>
+            {!todos.length ? (
+              <div className="grid grid-cols-[22px_minmax(0,1fr)] items-center gap-2.5 px-4 py-2.5">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full border-2 border-emerald-600 bg-emerald-600 text-white">
+                  <Check size={12} strokeWidth={3} />
+                </span>
+                <div className="min-w-0">
+                  <b className="block text-[13px] font-semibold text-slate-500">Nothing to check</b>
+                  <span className="block text-xs text-slate-500">Everything on this invoice was read clearly.</span>
+                </div>
+              </div>
+            ) : null}
             {todos.map((t) => (
               <div key={t.key} className="grid grid-cols-[22px_minmax(0,1fr)_auto] items-center gap-2.5 border-t border-slate-100 px-4 py-2.5 first:border-t-0">
                 <span
@@ -704,7 +610,6 @@ export default function InvoiceReview() {
                 <div>{t.action || null}</div>
               </div>
             ))}
-            {proofError ? <p className="border-t border-slate-100 px-4 py-2 text-xs text-rose-600">{proofError}</p> : null}
           </section>
 
           {amountFields.length ? (

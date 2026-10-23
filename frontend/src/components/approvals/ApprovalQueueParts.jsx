@@ -156,11 +156,19 @@ export function travelShape(request) {
 const CHAIN_STEP = {
   APPROVED: ['bg-emerald-50 text-emerald-700', 'bg-emerald-600', '✓'],
   REJECTED: ['bg-rose-50 text-rose-700', 'bg-rose-600', '✕'],
-  SLA_SKIPPED: ['bg-orange-50 text-orange-700 line-through', 'bg-orange-600', '↷'],
+  SLA_SKIPPED: ['bg-orange-50 text-orange-700', 'bg-orange-600', 'skip'],
   PENDING: ['bg-amber-50 text-amber-700', 'bg-amber-600', '●'],
   YOU: ['bg-brand text-white', 'bg-white text-brand', '●'],
   AWAITING: ['bg-slate-100 text-slate-500', 'bg-slate-400', ''],
 };
+
+/** The mark inside a step's circle. "●" and "skip" are drawn (a dot, the skip icon) rather than
+ * typed characters, which sit off-centre on the text baseline at this size. */
+export function ChainMark({ mark, size = 7 }) {
+  if (mark === '●') return <span className="block rounded-full bg-current" style={{ width: size, height: size }} />;
+  if (mark === 'skip') return <SkipForward size={size + 2} strokeWidth={3} aria-hidden="true" />;
+  return mark;
+}
 
 /** An exception's approvers in order: done, skipped on SLA, deciding now (you, when it's your step), still to come. */
 export function ApprovalChain({ decisions, yourTurn = false }) {
@@ -183,8 +191,11 @@ export function ApprovalChain({ decisions, yourTurn = false }) {
           <span key={`${d.required_role}-${i}`} className="inline-flex items-center gap-1">
             {i ? <span className="text-[11px] text-slate-400">›</span> : null}
             <span title={title} className={`inline-flex items-center gap-1 rounded-full py-0.5 pl-1 pr-2 text-[11.5px] font-bold ${pill}`}>
-              <i className={`grid h-[15px] w-[15px] place-items-center rounded-full text-[9px] not-italic ${dot} ${you ? '' : 'text-white'}`}>{mark}</i>
-              {you ? 'You' : formatRole(d.required_role)}
+              <i className={`grid h-[15px] w-[15px] place-items-center rounded-full text-[9px] not-italic leading-none ${dot} ${you ? '' : 'text-white'}`}>
+                <ChainMark mark={mark} />
+              </i>
+              {/* A step passed over on its SLA is crossed out — just the name, not the mark. */}
+              <span className={d.status === 'SLA_SKIPPED' ? 'line-through' : ''}>{you ? 'You' : formatRole(d.required_role)}</span>
             </span>
           </span>
         );

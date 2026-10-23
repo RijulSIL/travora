@@ -85,14 +85,6 @@ class Invoice(Base):
         default=ReimbursementCategory.TRAVEL,
         index=True,
     )
-    # Proof (bank statement / UPI receipt / card transaction screenshot) that the employee
-    # actually paid for this invoice — a separate file from the invoice document itself.
-    # update_invoice_fields refuses to mark the invoice REVIEWED while this is unset.
-    payment_proof_storage_path: Mapped[str | None] = mapped_column(String(512))
-    payment_proof_original_filename: Mapped[str | None] = mapped_column(String(255))
-    payment_proof_content_type: Mapped[str | None] = mapped_column(String(128))
-    payment_proof_file_size_bytes: Mapped[int | None] = mapped_column(Integer)
-    payment_proof_uploaded_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now(), onupdate=func.now()

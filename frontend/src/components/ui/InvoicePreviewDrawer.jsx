@@ -132,7 +132,7 @@ function DocumentView({ url, isPdf, name, zoom }) {
 }
 
 /**
- * Invoice preview: the document on the left (zoom, and a switch to the payment proof), and on
+ * Invoice preview: the document on the left (with zoom), and on
  * the right what an approver checks first — vendor, total, invoice details, GST and line items —
  * with every extracted field (and its confidence) in a collapsible section.
  */
@@ -140,10 +140,7 @@ export default function InvoicePreviewDrawer({ open, onClose, invoice }) {
   const [extraction, setExtraction] = useState(null);
   const [fileUrl, setFileUrl] = useState('');
   const [fileType, setFileType] = useState('');
-  const [proofUrl, setProofUrl] = useState('');
-  const [proofContentType, setProofContentType] = useState('');
   const [loadError, setLoadError] = useState('');
-  const [doc, setDoc] = useState('invoice');
   const [zoom, setZoom] = useState(null);
   useBodyScrollLock(open);
 
@@ -151,12 +148,9 @@ export default function InvoicePreviewDrawer({ open, onClose, invoice }) {
     if (!open || !invoice?.id) return undefined;
     let mounted = true;
     let nextUrl = '';
-    let nextProofUrl = '';
     setExtraction(null);
     setFileUrl('');
-    setProofUrl('');
     setLoadError('');
-    setDoc('invoice');
     setZoom(null);
     (async () => {
       const [exRes, fileRes] = await Promise.all([
@@ -169,19 +163,6 @@ export default function InvoicePreviewDrawer({ open, onClose, invoice }) {
       nextUrl = URL.createObjectURL(new Blob([fileRes.data], { type }));
       setFileType(type);
       setFileUrl(nextUrl);
-
-      if (invoice.payment_proof_original_filename) {
-        try {
-          const proofRes = await reimbursementApi.paymentProofFileBlob(invoice.id);
-          if (!mounted) return;
-          const contentType = proofRes.headers['content-type'] || 'application/octet-stream';
-          nextProofUrl = URL.createObjectURL(new Blob([proofRes.data], { type: contentType }));
-          setProofContentType(contentType);
-          setProofUrl(nextProofUrl);
-        } catch {
-          setProofUrl('');
-        }
-      }
     })().catch(() => {
       if (!mounted) return;
       setExtraction(null);
@@ -191,9 +172,8 @@ export default function InvoicePreviewDrawer({ open, onClose, invoice }) {
     return () => {
       mounted = false;
       if (nextUrl) URL.revokeObjectURL(nextUrl);
-      if (nextProofUrl) URL.revokeObjectURL(nextProofUrl);
     };
-  }, [open, invoice?.id, invoice?.payment_proof_original_filename]);
+  }, [open, invoice?.id]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -208,10 +188,6 @@ export default function InvoicePreviewDrawer({ open, onClose, invoice }) {
     () => fileType.includes('pdf') || (invoice?.content_type || '').includes('pdf') || (invoice?.original_filename || '').toLowerCase().endsWith('.pdf'),
     [fileType, invoice],
   );
-  const isProofPdf = useMemo(
-    () => proofContentType.includes('pdf') || (invoice?.payment_proof_original_filename || '').toLowerCase().endsWith('.pdf'),
-    [proofContentType, invoice],
-  );
 
   const fields = useMemo(() => {
     const map = {};
@@ -221,7 +197,6 @@ export default function InvoicePreviewDrawer({ open, onClose, invoice }) {
 
   if (!open || !invoice) return null;
 
-  const hasProof = Boolean(invoice.payment_proof_original_filename);
   const lineItems = extraction?.line_items || [];
   const currency = String(fieldValue(fields.currency) || 'INR').toUpperCase();
   const isForeign = currency !== 'INR';
@@ -247,7 +222,6 @@ export default function InvoicePreviewDrawer({ open, onClose, invoice }) {
   const gstTotal = taxes.filter((t) => ['cgst', 'sgst', 'igst'].includes(t.key)).reduce((s, t) => s + t.value, 0);
   const toCheck = (extraction?.fields || []).filter(needsCheck).length;
   const fileKind = isPdf ? 'PDF' : (fileType.split('/')[1] || 'Image').toUpperCase();
-  const showingProof = doc === 'proof';
   const zoomIndex = zoom == null ? ZOOM_STEPS.indexOf(100) : ZOOM_STEPS.indexOf(zoom);
 
   return createPortal(
@@ -292,8 +266,8 @@ export default function InvoicePreviewDrawer({ open, onClose, invoice }) {
           <div className="flex shrink-0 items-center gap-2">
             {fileUrl ? (
               <a
-                href={showingProof && proofUrl ? proofUrl : fileUrl}
-                download={showingProof && proofUrl ? invoice.payment_proof_original_filename : invoice.original_filename}
+                href={fileUrl}
+                download={invoice.original_filename}
                 className="inline-flex h-[34px] items-center gap-1.5 rounded-[9px] border border-slate-200 bg-white px-3 text-[12.5px] font-bold text-slate-700 hover:bg-slate-50"
               >
                 <Download size={14} /> Download
@@ -317,32 +291,8 @@ export default function InvoicePreviewDrawer({ open, onClose, invoice }) {
             className="flex min-h-[60vh] flex-col border-b border-slate-200 bg-[#f3f5f6] md:min-h-0 md:border-b-0 md:border-r"
           >
             <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-slate-200 bg-white px-3.5 py-2.5">
-              <div className="inline-flex gap-[3px] rounded-[10px] bg-slate-100 p-[3px]" role="tablist">
-                {[
-                  { key: 'invoice', label: 'Invoice' },
-                  { key: 'proof', label: 'Payment proof' },
-                ].map((t) => (
-                  <button
-                    key={t.key}
-                    type="button"
-                    role="tab"
-                    aria-selected={doc === t.key}
-                    onClick={() => {
-                      setDoc(t.key);
-                      setZoom(null);
-                    }}
-                    className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition-colors ${
-                      doc === t.key ? 'bg-white text-ink shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                    }`}
-                  >
-                    {t.key === 'proof' ? (
-                      <span className={`h-[7px] w-[7px] rounded-full ${hasProof ? 'bg-emerald-500' : 'bg-rose-500'}`} />
-                    ) : null}
-                    {t.label}
-                  </button>
-                ))}
-              </div>
-              {!showingProof || proofUrl ? (
+              <span className="text-xs font-bold text-ink">Invoice</span>
+              {fileUrl ? (
                 <div className="inline-flex items-center gap-1">
                   <button
                     type="button"
@@ -380,17 +330,6 @@ export default function InvoicePreviewDrawer({ open, onClose, invoice }) {
             <div className="min-h-0 flex-1 overflow-auto p-5">
               {loadError ? (
                 <p className="p-6 text-sm text-rose-700">{loadError}</p>
-              ) : showingProof ? (
-                hasProof ? (
-                  <div className="h-full">
-                    <DocumentView url={proofUrl} isPdf={isProofPdf} name="Payment proof" zoom={zoom} />
-                  </div>
-                ) : (
-                  <div className="mx-auto mt-14 max-w-sm text-center text-[13px] leading-relaxed text-slate-500">
-                    <b className="mb-1 block text-[13.5px] text-rose-700">No payment proof</b>
-                    Nothing was attached to show this invoice was paid. The employee can add one from Upload Invoice.
-                  </div>
-                )
               ) : (
                 <div className="h-full">
                   <DocumentView url={fileUrl} isPdf={isPdf} name={invoice.original_filename} zoom={zoom} />
@@ -492,29 +431,6 @@ export default function InvoicePreviewDrawer({ open, onClose, invoice }) {
                     <p className="text-[12px] text-slate-500">No line items were read from this invoice.</p>
                   )}
                 </div>
-
-                {hasProof ? (
-                  <div className="flex items-center justify-between gap-2.5 rounded-[10px] border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-xs text-emerald-700">
-                    <span className="min-w-0">
-                      <b>✓ Payment proof attached</b> · <span className="break-all">{invoice.payment_proof_original_filename}</span>
-                      {invoice.payment_proof_uploaded_at ? ` · uploaded ${formatDate(invoice.payment_proof_uploaded_at)}` : ''}
-                    </span>
-                    <button
-                      type="button"
-                      className="shrink-0 font-bold underline"
-                      onClick={() => {
-                        setDoc('proof');
-                        setZoom(null);
-                      }}
-                    >
-                      View
-                    </button>
-                  </div>
-                ) : (
-                  <div className="rounded-[10px] border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs text-rose-700">
-                    <b>No payment proof</b> was attached to this invoice.
-                  </div>
-                )}
 
                 <details className="group rounded-[10px] border border-slate-200">
                   <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-2.5 text-[12.5px] font-bold text-ink group-open:border-b group-open:border-slate-100 [&::-webkit-details-marker]:hidden">

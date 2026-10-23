@@ -150,6 +150,13 @@ class AdminTeamAddIn(BaseModel):
     employee_ids: list[str]
 
 
+class AdminReactivateIn(BaseModel):
+    """Reactivate a deactivated person. reporting_manager_id is needed only when their recorded
+    manager can't have them any more (deactivated, or no longer a manager)."""
+
+    reporting_manager_id: str | None = None
+
+
 class AdminTeamSummaryOut(BaseModel):
     reports: list[dict] = Field(default_factory=list)
     waiting_claims: int = 0

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { hasAnyPermission } from '../../services/permissions';
 import { selectResolvedRole, useAuthStore } from '../../store/authStore';
-import { formatRole } from '../../utils/formatters';
+import { formatRole, showsManager } from '../../utils/formatters';
 import { getNavConfig } from './navConfig';
 import { NAV_ICON_MAP } from './navIcons';
 import { roleAccent } from './roleAccent';
@@ -306,7 +306,9 @@ function SidebarUser() {
   const name = profile?.full_name || user?.full_name || user?.email || '';
   if (!name) return null;
   const initial = name.trim().charAt(0).toUpperCase();
-  const detail = [formatRole(role), profile?.impact_level_code].filter(Boolean).join(' · ');
+  const detail = [formatRole(role), showsManager(role, profile?.is_manager) ? 'Manager' : null, profile?.impact_level_code]
+    .filter(Boolean)
+    .join(' · ');
   return (
     <NavLink
       to="/profile"

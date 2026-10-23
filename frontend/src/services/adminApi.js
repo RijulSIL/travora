@@ -11,6 +11,7 @@ export const adminApi = {
     }),
   changeUserRole: (userId, role) => api.put(`/admin/users/${userId}/role`, { role }),
   deactivateUser: (userId) => api.delete(`/admin/users/${userId}`),
+  reactivateUser: (userId, payload) => api.post(`/admin/users/${userId}/reactivate`, payload),
   updateUser: (userId, payload) => api.put(`/admin/users/${userId}`, payload),
   // Send the welcome email again (only while they're still on the temporary password).
   resendWelcomeEmail: (userId) => api.post(`/admin/users/${userId}/welcome-email`),

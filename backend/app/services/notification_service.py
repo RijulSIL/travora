@@ -247,7 +247,8 @@ async def create_notification(
             # Call-to-action Button
             link_html = ""
             if link:
-                frontend_url = f"http://localhost:3000{link}"
+                # APP_URL in .env is where people open Travora (same as the welcome email's link).
+                frontend_url = link if link.startswith("http") else f"{settings.app_url.rstrip('/')}/{link.lstrip('/')}"
                 link_html = f"""
                 <div style="margin-top: 30px; text-align: center;">
                     <a href="{frontend_url}" style="background-color: {theme_color}; color: #ffffff; padding: 12px 30px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block; font-size: 15px; box-shadow: 0 4px 6px -1px {theme_color}40; transition: all 0.2s;">

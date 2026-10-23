@@ -354,9 +354,6 @@ export default function ClaimDetail() {
                     <div className="truncate text-[13px] font-bold text-ink" title={invoice.original_filename}>
                       {invoice.original_filename}
                     </div>
-                    <div className={`text-[11px] font-bold ${invoice.payment_proof_original_filename ? 'text-emerald-700' : 'text-rose-700'}`}>
-                      {invoice.payment_proof_original_filename ? 'Payment proof attached' : 'No payment proof'}
-                    </div>
                   </div>
                   <button
                     type="button"

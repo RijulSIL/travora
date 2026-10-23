@@ -28,7 +28,6 @@ from app.services.reimbursement_service import (
     get_invoice_for_view,
     release_invoice_from_draft,
     store_invoice_upload,
-    store_payment_proof,
     update_invoice_fields,
     validate_gstin,
 )
@@ -210,8 +209,6 @@ async def list_invoices(
             "created_at": invoice.created_at,
             "total_amount": total_amount,
             "reimbursement_category": invoice.reimbursement_category,
-            "payment_proof_original_filename": invoice.payment_proof_original_filename,
-            "payment_proof_uploaded_at": invoice.payment_proof_uploaded_at,
             "linked_claim_id": claim_id,
             "linked_claim_reference": claim_reference,
             "linked_claim_status": claim_status.value if claim_status else None,
@@ -305,50 +302,6 @@ async def invoice_file(
     return FileResponse(
         path=Path(invoice.storage_path),
         media_type=invoice.content_type or "application/octet-stream",
-        filename=filename,
-    )
-
-
-@router.post(
-    "/{invoice_id}/payment-proof",
-    response_model=InvoiceOut,
-    dependencies=[Depends(require_permission("submit_claim"))],
-)
-async def upload_payment_proof(
-    invoice_id: int,
-    file: UploadFile = File(...),
-    claims: dict = Depends(get_current_claims),
-    db: AsyncSession = Depends(get_db),
-) -> Invoice:
-    content = await file.read()
-    return await store_payment_proof(
-        invoice_id=invoice_id,
-        user_id=int(claims["sub"]),
-        filename=file.filename or "payment-proof",
-        content_type=file.content_type or "application/octet-stream",
-        content=content,
-        db=db,
-    )
-
-
-@router.get(
-    "/{invoice_id}/payment-proof-file",
-    dependencies=[
-        Depends(require_any_permission("submit_claim", "view_reports", "process_payments"))
-    ],
-)
-async def payment_proof_file(
-    invoice_id: int,
-    claims: dict = Depends(get_current_claims),
-    db: AsyncSession = Depends(get_db),
-) -> FileResponse:
-    invoice = await get_invoice_for_view(invoice_id, int(claims["sub"]), db)
-    if not invoice.payment_proof_storage_path:
-        raise HTTPException(status_code=404, detail="No payment proof uploaded for this invoice")
-    filename = invoice.payment_proof_original_filename or f"payment-proof-{invoice.id}"
-    return FileResponse(
-        path=Path(invoice.payment_proof_storage_path),
-        media_type=invoice.payment_proof_content_type or "application/octet-stream",
         filename=filename,
     )
 

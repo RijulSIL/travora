@@ -37,6 +37,7 @@ const ACTION = {
   user_bulk_imported: 'Added a user by CSV import',
   user_created_by_admin: 'Added a user',
   welcome_email_resent: 'Resent a welcome email',
+  user_reactivated: 'Reactivated a user',
   made_manager_and_linked: 'Made someone a manager and linked their people',
   update_workflow_config: 'Changed the approval matrix',
   update_permission_matrix_config: 'Changed role permissions',

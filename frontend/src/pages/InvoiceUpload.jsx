@@ -6,7 +6,6 @@ import {
   FileImage,
   FileText,
   Lock,
-  Paperclip,
   Plane,
   Plus,
   ReceiptIndianRupee,
@@ -367,11 +366,6 @@ export default function InvoiceUpload() {
           <div className="flex items-center gap-1.5 truncate text-xs text-slate-500">
             {invoice.created_at ? `Uploaded ${formatDate(invoice.created_at).replace(/ \d{4}$/, '')} · ` : ''}
             {fileSize(invoice.file_size_bytes)}
-            {invoice.payment_proof_original_filename ? (
-              <span className="inline-flex items-center gap-0.5" title="Payment proof attached">
-                · <Paperclip size={12} /> proof
-              </span>
-            ) : null}
           </div>
         </div>
         {/* Top-right on narrow screens; its own column after "where it stands" on wide ones. */}

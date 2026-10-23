@@ -50,12 +50,6 @@ export const reimbursementApi = {
     }),
   invoiceExtraction: (invoiceId) => api.get(`invoices/${invoiceId}/extraction`),
   invoiceFileBlob: (invoiceId) => api.get(`invoices/${invoiceId}/file`, { responseType: 'blob' }),
-  uploadPaymentProof: (invoiceId, formData) =>
-    api.post(`invoices/${invoiceId}/payment-proof`, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    }),
-  paymentProofFileBlob: (invoiceId) =>
-    api.get(`invoices/${invoiceId}/payment-proof-file`, { responseType: 'blob' }),
   updateInvoiceFields: (invoiceId, payload) => api.put(`invoices/${invoiceId}/fields`, payload),
   releaseInvoiceFromDraft: (invoiceId) => api.delete(`invoices/${invoiceId}/claim-link`),
   deleteInvoice: (invoiceId) => api.delete(`invoices/${invoiceId}`),

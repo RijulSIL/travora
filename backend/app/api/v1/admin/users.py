@@ -16,6 +16,7 @@ from app.models.expense_category import CompanyProfile
 from app.models.policy import ImpactLevel
 from app.schemas.common import (
     AdminBulkImportSummaryOut,
+    AdminReactivateIn,
     AdminTeamAddIn,
     AdminTeamMoveIn,
     AdminTeamSummaryOut,
@@ -89,28 +90,27 @@ async def list_users(
     all_rows = result.all()
     rows: list[AdminUserOut] = []
     for user, employee in all_rows:
-
-
-
-        rows.append(
-            AdminUserOut(
-                user_id=user.id,
-                email=user.email,
-                full_name=user.full_name or (employee.full_name if employee else None),
-                role=user.role,
-                mfa_verified=user.mfa_verified,
-                is_active=user.is_active,
-                employee_id=user.employee_id,
-                department=employee.department if employee else None,
-                impact_level_id=employee.impact_level_id if employee else None,
-                office_location=employee.office_location if employee else None,
-                reporting_manager_id=employee.reporting_manager_id if employee else None,
-                is_manager=is_manager(user),
-                must_change_password=user.must_change_password,
-                welcome_email_sent_at=user.welcome_email_sent_at,
-            )
-        )
+        rows.append(_admin_user_out(user, employee))
     return rows
+
+
+def _admin_user_out(user: User, employee: Employee | None) -> AdminUserOut:
+    return AdminUserOut(
+        user_id=user.id,
+        email=user.email,
+        full_name=user.full_name or (employee.full_name if employee else None),
+        role=user.role,
+        mfa_verified=user.mfa_verified,
+        is_active=user.is_active,
+        employee_id=user.employee_id,
+        department=employee.department if employee else None,
+        impact_level_id=employee.impact_level_id if employee else None,
+        office_location=employee.office_location if employee else None,
+        reporting_manager_id=employee.reporting_manager_id if employee else None,
+        is_manager=is_manager(user),
+        must_change_password=user.must_change_password,
+        welcome_email_sent_at=user.welcome_email_sent_at,
+    )
 
 
 @router.get(
@@ -674,6 +674,62 @@ async def deactivate_user(user_id: int, db: AsyncSession = Depends(get_db)) -> d
             employee.is_active = False
     await db.commit()
     return {"status": "inactive"}
+
+
+async def _manager_problem(manager_employee_id: str | None, own_employee_id: str | None, db) -> str | None:
+    """Why this person can't report to their recorded manager any more, or None if they can."""
+    try:
+        await _assert_can_report_to(manager_employee_id, own_employee_id, db)
+    except HTTPException as exc:
+        return str(exc.detail)
+    return None
+
+
+@router.post(
+    "/users/{user_id}/reactivate",
+    dependencies=[Depends(require_permission("manage_users")), Depends(require_mfa)],
+    response_model=AdminUserOut,
+)
+async def reactivate_user(
+    user_id: int,
+    payload: AdminReactivateIn,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> AdminUserOut:
+    """Lets a deactivated person sign in again with their old password. If their manager can't
+    have them any more (deactivated, or no longer a manager), a new manager has to be picked."""
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.is_active:
+        raise HTTPException(status_code=409, detail="This account is already active")
+    employee = await db.get(Employee, user.employee_id) if user.employee_id else None
+    old_manager = employee.reporting_manager_id if employee else None
+
+    new_manager = (payload.reporting_manager_id or "").strip() or None
+    if new_manager:
+        await _assert_can_report_to(new_manager, user.employee_id, db)
+    elif old_manager:
+        problem = await _manager_problem(old_manager, user.employee_id, db)
+        if problem:
+            raise HTTPException(status_code=409, detail=f"Pick a new manager for them first — {problem}")
+
+    user.is_active = True
+    if employee:
+        employee.is_active = True
+        if new_manager:
+            employee.reporting_manager_id = new_manager
+    await log_event(
+        entity_type="user",
+        entity_id=str(user.id),
+        action="user_reactivated",
+        actor_id=int(claims["sub"]) if isinstance(claims, dict) and claims.get("sub") else None,
+        old={"is_active": False, "reporting_manager_id": old_manager},
+        new={"is_active": True, "reporting_manager_id": new_manager or old_manager},
+        db=db,
+    )
+    await db.commit()
+    return _admin_user_out(user, employee)
 
 
 @router.post(

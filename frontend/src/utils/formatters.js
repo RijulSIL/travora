@@ -38,6 +38,10 @@ export const ROLE_LABELS = {
 
 export const formatRole = (role) => ROLE_LABELS[role] || (role || '').replace(/_/g, ' ');
 
+// Being a manager is a separate setting on top of the role (profile.is_manager), so it's shown
+// next to the role — except where the role already says so (CEO, the old Reporting Manager role).
+export const showsManager = (role, isManager) => Boolean(isManager) && role !== 'CEO' && role !== 'REPORTING_MANAGER';
+
 export const EXCEPTION_TYPE_LABELS = {
   // These are the only exception types ever actually raised against a travel request
   // rather than a claim.

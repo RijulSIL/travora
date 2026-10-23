@@ -35,6 +35,7 @@ const roleMatches = (requiredRole, role) => requiredRole === role || (requiredRo
 export default function ExceptionRequestsPage() {
   useSetPageTitle('Exception Requests');
   const role = useAuthStore(selectResolvedRole);
+  const userId = useAuthStore((state) => state.profile?.user_id ?? state.user?.id);
   const approverScopeExceptions = useAuthStore((state) => state.profile?.approver_scope?.exceptions);
   const [filters, setFilters] = useState({ exception_type: '', from_date: '', to_date: '' });
   const [tab, setTab] = useState('mine');
@@ -100,7 +101,7 @@ export default function ExceptionRequestsPage() {
         const decisions = (r.decisions || []).map((d) => {
           if (current && d.status === 'PENDING') {
             current = false;
-            return { ...d, status: approve ? 'APPROVED' : 'REJECTED', acted_at: actedAt, acted_by_name: 'you', comment: comment || null };
+            return { ...d, status: approve ? 'APPROVED' : 'REJECTED', acted_at: actedAt, acted_by_name: 'you', acted_by_user_id: userId, comment: comment || null };
           }
           if (approve && !current && !activatedNext && d.status === 'AWAITING') {
             activatedNext = true;
@@ -235,14 +236,14 @@ export default function ExceptionRequestsPage() {
           const id = row.exception_id;
           const activeDecision = (row.decisions || []).find((d) => d.status === 'PENDING' || d.status === 'AWAITING');
           const isPendingActive = activeDecision && activeDecision.status === 'PENDING';
-          // A Department head step isn't a role: the server already lists it under "Waiting on
-          // you" only for the head of that person's department (and still checks on decide).
-          const canUserDecide = Boolean(
-            isPendingActive &&
-              (roleMatches(activeDecision.required_role, role) || (activeDecision.required_role === 'DEPARTMENT_HEAD' && mineIds.has(id))),
-          );
+          // "Waiting on you" comes from the server, which works out steps that aren't a role —
+          // the person's own manager (an Employee with the Manager setting) or their department
+          // head — and still checks again on decide.
+          const canUserDecide = Boolean(isPendingActive && (mineIds.has(id) || roleMatches(activeDecision.required_role, role)));
           const hasUserAlreadyActed = (row.decisions || []).some(
-            (d) => roleMatches(d.required_role, role) && (d.status === 'APPROVED' || d.status === 'REJECTED'),
+            (d) =>
+              (d.acted_by_user_id != null ? d.acted_by_user_id === userId : roleMatches(d.required_role, role)) &&
+              (d.status === 'APPROVED' || d.status === 'REJECTED'),
           );
           const yourTurn = canUserDecide && mineIds.has(id) && !decided[id];
           const current = (row.decisions || []).find((d) => d.status === 'PENDING');

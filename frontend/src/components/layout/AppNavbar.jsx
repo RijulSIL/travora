@@ -6,7 +6,7 @@ import api, { currentRefreshToken } from '../../services/api';
 import { reimbursementApi } from '../../services/reimbursementApi';
 import { clearSession, selectResolvedRole, useAuthStore } from '../../store/authStore';
 import NotificationPanel from '../ui/NotificationPanel';
-import { ROLE_LABELS } from '../../utils/formatters';
+import { ROLE_LABELS, showsManager } from '../../utils/formatters';
 import { roleAccent } from './roleAccent';
 
 export default function AppNavbar({ onOpenSidebar }) {
@@ -17,7 +17,7 @@ export default function AppNavbar({ onOpenSidebar }) {
 
   const displayName = profile?.full_name ?? user?.full_name ?? user?.email ?? 'User';
   const firstName = displayName.split(' ')[0];
-  const roleLabel = ROLE_LABELS[role] || role?.replace(/_/g, ' ') || '—';
+  const roleLabel = `${ROLE_LABELS[role] || role?.replace(/_/g, ' ') || '—'}${showsManager(role, profile?.is_manager) ? ' · Manager' : ''}`;
   const accent = roleAccent(role);
   const initial = displayName.trim().charAt(0).toUpperCase() || 'U';
 

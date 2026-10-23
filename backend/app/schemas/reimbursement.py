@@ -52,8 +52,6 @@ class InvoiceOut(BaseModel):
     created_at: datetime
     total_amount: Decimal | None = None
     reimbursement_category: ReimbursementCategory = ReimbursementCategory.TRAVEL
-    payment_proof_original_filename: str | None = None
-    payment_proof_uploaded_at: datetime | None = None
     linked_claim_id: int | None = None
     linked_claim_reference: str | None = None
     linked_claim_status: str | None = None

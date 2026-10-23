@@ -165,6 +165,7 @@ export default function UserManagement() {
   const [panelError, setPanelError] = useState('');
   const [recentClaims, setRecentClaims] = useState(null);
   const [confirmDeactivate, setConfirmDeactivate] = useState(null);
+  const [reactivating, setReactivating] = useState(null);
   // A manager being deactivated whose people have to be moved first.
   const [moveBeforeDeactivate, setMoveBeforeDeactivate] = useState(null);
   const [movedNote, setMovedNote] = useState('');
@@ -408,6 +409,36 @@ export default function UserManagement() {
       showToast(errorText(err, 'Could not send the welcome email.'), 'error');
     } finally {
       setResending(false);
+    }
+  };
+
+  // Why this person can't go back to their recorded manager, or null. The server checks again.
+  const managerIssue = (user) => {
+    if (!user?.reporting_manager_id) return null;
+    const manager = all.find((u) => u.employee_id === user.reporting_manager_id);
+    if (!manager) return null;
+    const name = manager.full_name || manager.email;
+    if (!manager.is_active) return `${name} is deactivated`;
+    if (!manager.is_manager) return `${name} isn't a manager any more`;
+    return null;
+  };
+  const openReactivate = (user) => {
+    const issue = managerIssue(user);
+    setReactivating({ user, issue, managerId: '', saving: false, error: '' });
+  };
+  const reactivate = async () => {
+    const { user, issue, managerId } = reactivating;
+    setReactivating((r) => ({ ...r, saving: true, error: '' }));
+    try {
+      await adminApi.reactivateUser(user.user_id, issue ? { reporting_manager_id: managerId } : {});
+      await loadUsers();
+      setReactivating(null);
+      showToast(`${user.full_name || user.email} can sign in again.`, 'success');
+    } catch (err) {
+      const text = errorText(err, 'Could not reactivate this user.');
+      // The server found a manager problem the page didn't know about: ask for a new manager.
+      const needsManager = err?.response?.status === 409 && /Pick a new manager/.test(text);
+      setReactivating((r) => ({ ...r, saving: false, error: text, issue: needsManager ? text.replace(/^Pick a new manager for them first — /, '') : r.issue }));
     }
   };
 
@@ -744,7 +775,11 @@ export default function UserManagement() {
             >
               Deactivate
             </button>
-          ) : null}
+          ) : (
+            <button type="button" className={BTN_GHOST} onClick={() => openReactivate(selected)}>
+              Reactivate
+            </button>
+          )}
           <button type="button" className={BTN_MAIN} onClick={startEdit}>
             Edit
           </button>
@@ -955,12 +990,83 @@ export default function UserManagement() {
       <ConfirmDialog
         open={Boolean(confirmDeactivate)}
         title="Deactivate this user?"
-        description={confirmDeactivate ? `${confirmDeactivate.full_name || confirmDeactivate.email} won't be able to sign in. There's no way to reactivate an account in the app yet.` : ''}
+        description={confirmDeactivate ? `${confirmDeactivate.full_name || confirmDeactivate.email} won't be able to sign in. You can reactivate them later from their details here.` : ''}
         confirmLabel="Deactivate"
         confirmVariant="danger"
         onCancel={() => setConfirmDeactivate(null)}
         onConfirm={() => confirmDeactivate && deactivate(confirmDeactivate)}
       />
+      {reactivating ? (
+        <div className="fixed inset-0 z-[95] grid grid-cols-[minmax(0,1fr)] place-items-center bg-slate-900/40 p-4" onMouseDown={() => !reactivating.saving && setReactivating(null)}>
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Reactivate ${reactivating.user.full_name || reactivating.user.email}`}
+            onMouseDown={(e) => e.stopPropagation()}
+            className="flex w-[min(460px,100%)] min-w-0 animate-sheet-up flex-col gap-3 rounded-[14px] border border-slate-200 bg-white p-4 shadow-[0_30px_60px_-24px_rgba(15,23,42,0.35)] motion-reduce:animate-none"
+          >
+            <div>
+              <b className="text-sm text-ink">Reactivate {reactivating.user.full_name || reactivating.user.email}?</b>
+              <p className="mt-0.5 text-xs text-slate-500">They’ll be able to sign in again with their old password. If they’ve forgotten it, they can use Forgot password.</p>
+            </div>
+            {reactivating.user.reporting_manager_id ? (
+              reactivating.issue ? (
+                <div className="flex flex-col gap-2 rounded-[10px] border border-amber-300 bg-amber-50 px-3 py-2.5">
+                  <p className="text-xs leading-relaxed text-amber-900">
+                    <b>Their manager, {managerName(reactivating.user)}, can’t have them any more</b> — {reactivating.issue}. Pick who they’ll report to now.
+                  </p>
+                  <label className={LABEL} htmlFor="reactivate-manager">
+                    New manager
+                  </label>
+                  <select
+                    id="reactivate-manager"
+                    className={FIELD}
+                    value={reactivating.managerId}
+                    onChange={(e) => setReactivating((r) => ({ ...r, managerId: e.target.value, error: '' }))}
+                  >
+                    <option value="">Choose a manager…</option>
+                    {reportingManagers
+                      .filter((m) => m.employee_id !== reactivating.user.employee_id && m.employee_id !== reactivating.user.reporting_manager_id)
+                      .filter((m) => {
+                        const known = all.find((u) => u.employee_id === m.employee_id);
+                        return !known || known.is_active;
+                      })
+                      .map((m) => (
+                        <option key={m.employee_id} value={m.employee_id}>
+                          {m.full_name} ({m.employee_id})
+                        </option>
+                      ))}
+                  </select>
+                </div>
+              ) : (
+                <p className="flex flex-wrap items-center gap-1.5 rounded-[10px] border border-slate-200 px-3 py-2.5 text-xs text-slate-600">
+                  Manager: <b className="text-ink">{managerName(reactivating.user)}</b> <Pill tone="ok">Still active ✓</Pill>
+                </p>
+              )
+            ) : (
+              <p className="rounded-[10px] border border-slate-200 px-3 py-2.5 text-xs text-slate-600">They don’t report to anyone.</p>
+            )}
+            {reactivating.error && !reactivating.issue ? (
+              <p role="alert" className="rounded-[10px] border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                {reactivating.error}
+              </p>
+            ) : null}
+            <div className="flex justify-end gap-2">
+              <button type="button" className={BTN_GHOST} onClick={() => setReactivating(null)} disabled={reactivating.saving}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className={BTN_MAIN}
+                onClick={reactivate}
+                disabled={reactivating.saving || (Boolean(reactivating.issue) && !reactivating.managerId)}
+              >
+                {reactivating.saving ? 'Reactivating…' : 'Reactivate'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {moveBeforeDeactivate ? (
         <div className="fixed inset-0 z-[95] grid grid-cols-[minmax(0,1fr)] place-items-center bg-slate-900/40 p-4" onMouseDown={() => setMoveBeforeDeactivate(null)}>
           <div
