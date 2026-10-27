@@ -1,4 +1,4 @@
-import { Bus, ConciergeBell, Plane, TrainFront } from 'lucide-react';
+import { Bus, Plane, TrainFront } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import {
@@ -16,6 +16,7 @@ import {
   waitingOnYou,
 } from '../approvals/ApprovalDetail';
 import { reimbursementApi } from '../../services/reimbursementApi';
+import TravelPicksSummary from './TravelPicksSummary';
 import { formatDate, formatDatetime, formatRole } from '../../utils/formatters';
 
 const MODE_ICONS = { FLIGHT: Plane, TRAIN: TrainFront, BUS: Bus };
@@ -139,13 +140,6 @@ export default function TravelApprovalPanel({
   const isMultiCity = request.trip_type === 'MULTI_CITY' && request.legs?.length > 0;
   const firstDate = isMultiCity ? request.legs[0].travel_date : request.travel_date;
   const ModeIcon = MODE_ICONS[request.travel_mode] || Plane;
-  const bookingNeeds = request.needs_additional_booking
-    ? request.booking_items?.length
-      ? request.booking_items.map((item) => ({ key: item.id, text: item.description }))
-      : request.additional_booking_details
-        ? [{ key: 'legacy', text: request.additional_booking_details }]
-        : []
-    : [];
 
   const stages = chain?.stages || [];
   const current = stages.find((s) => s.status === 'PENDING');
@@ -183,18 +177,7 @@ export default function TravelApprovalPanel({
             { label: 'Purpose', value: request.purpose },
           ]}
         />
-        {bookingNeeds.length ? (
-          <div className="rounded-[10px] border border-amber-200/80 bg-amber-50/60 px-3 py-2.5">
-            <div className="mb-1.5 flex items-center gap-1.5 text-[10.5px] font-bold uppercase tracking-[0.07em] text-amber-800">
-              <ConciergeBell size={12} /> Also needs the company to book
-            </div>
-            <ul className="m-0 list-disc space-y-0.5 pl-4 text-[12.5px] text-slate-700">
-              {bookingNeeds.map((need) => (
-                <li key={need.key} className="whitespace-pre-wrap break-words">{need.text}</li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
+        <TravelPicksSummary request={request} name={name} />
         <Quote title={`Notes from ${name}`} text={request.notes} />
       </DetailColumn>
 

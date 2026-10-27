@@ -213,6 +213,8 @@ class ExceptionTravelRequestOut(BaseModel):
     project_code: str | None = None
     purpose: str | None = None
     notes: str | None = None
+    # The traveler's flight/train/bus choice per leg (see TravelRequest.leg_picks).
+    leg_picks: list[dict] = Field(default_factory=list)
     requested_at: datetime
     legs: list[ExceptionTravelRequestLegOut] = Field(default_factory=list)
 

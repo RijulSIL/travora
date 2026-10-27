@@ -54,9 +54,9 @@ from app.models.travel_booking import (
 from app.models.relocation import RelocationApprovalStage, RelocationRequest
 from app.models.travel_request import (
     ProjectNotificationRecipient,
+    TravelOptionSearch,
     TravelRequest,
     TravelRequestApprovalStage,
-    TravelRequestBookingItem,
     TravelRequestOption,
     TravelRequestSupportingDocument,
     TravelRequestTicket,
@@ -113,10 +113,10 @@ __all__ = [
     "LocalConveyanceStatus",
     "TravelMode",
     "TravelRequest",
-    "TravelRequestBookingItem",
     "TravelRequestOption",
     "TravelRequestSupportingDocument",
     "TravelRequestTicket",
+    "TravelOptionSearch",
     "TravelTrip",
     "TripStatus",
     "User",

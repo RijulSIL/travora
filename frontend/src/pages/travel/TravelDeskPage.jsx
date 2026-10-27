@@ -5,6 +5,7 @@ import {
   Clock, AlertCircle, Paperclip, ChevronDown, ChevronUp
 } from 'lucide-react';
 
+import { busTypesText, leaveWindowsText } from '../../components/travel/travelRequestView';
 import TicketPreviewDrawer from '../../components/ui/TicketPreviewDrawer';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import useToast from '../../hooks/useToast';
@@ -24,7 +25,86 @@ const EMPTY_UPLOAD_FIELDS = {
   notes_for_employee: '',
 };
 
-function SegmentUploadForm({ seg, fields, onChange, onSubmit, busy, isOnlySegment }) {
+/** What the traveler chose for this leg when requesting: an option found with Google by Gemini,
+ * or their own description. A suggestion — the desk checks fare and seats before booking. */
+function TravelerPick({ pick }) {
+  if (!pick || (pick.choice !== 'own' && pick.choice !== 'bus' && !pick.option)) return null;
+  const o = pick.option;
+  const found = pick.searched_at ? new Date(pick.searched_at) : null;
+  const foundOn = found && !Number.isNaN(found.getTime()) ? found.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : null;
+  const own = pick.choice === 'own';
+  const when = leaveWindowsText(pick.time_windows);
+  if (pick.choice === 'bus') {
+    // Buses aren't searched: the traveler said what kind of bus and when; the desk finds one.
+    return (
+      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+        <div className="border-b border-slate-100 bg-slate-50 px-3 py-2">
+          <span className="text-[10px] font-bold text-brand uppercase tracking-wide">Traveler’s request</span>
+        </div>
+        <div className="px-3 py-2.5 text-xs leading-relaxed">
+          <span className="font-semibold text-slate-800">{busTypesText(pick.bus_types) || 'Any bus'}</span>
+          {when ? <span className="block text-[11px] text-slate-500">Wanted to leave {when}</span> : null}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+      <div className="flex items-center justify-between gap-2 border-b border-slate-100 bg-slate-50 px-3 py-2">
+        <span className="text-[10px] font-bold text-brand uppercase tracking-wide">{own ? 'Traveler’s request' : 'Traveler’s pick'}</span>
+        {!own ? (
+          <span className="min-w-0 truncate text-xs font-bold text-slate-800">
+            {o.name || o.operator}
+            {o.number ? <> <span className="font-mono font-semibold">{o.number}</span></> : null}
+          </span>
+        ) : null}
+      </div>
+      {own ? (
+        <div className="px-3 py-2.5 text-xs leading-relaxed">
+          <span className="font-semibold text-slate-800">“{pick.note}”</span>
+          <span className="block text-[11px] text-slate-500">None of the suggestions suited them, so they described what they want.</span>
+          {when ? <span className="block text-[11px] text-slate-500">Wanted to leave {when}</span> : null}
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2.5 px-3 py-3">
+            <div className="min-w-0">
+              <div className="text-lg font-extrabold leading-none text-slate-800 tabular-nums">{o.depart_time || '—'}</div>
+              {o.from_station ? <div className="mt-1 max-w-[100px] truncate text-[11px] text-slate-500 sm:max-w-[150px]" title={o.from_station}>{o.from_station}</div> : null}
+            </div>
+            <div className="flex flex-col items-center gap-0.5 whitespace-nowrap text-[10.5px] text-slate-400">
+              {o.duration || ''}
+              <span className="w-full border-t border-dashed border-slate-300" />
+            </div>
+            <div className="min-w-0 text-right">
+              <div className="text-lg font-extrabold leading-none text-slate-800 tabular-nums">{o.arrive_time || '—'}</div>
+              {o.to_station ? <div className="ml-auto mt-1 max-w-[100px] truncate text-[11px] text-slate-500 sm:max-w-[150px]" title={o.to_station}>{o.to_station}</div> : null}
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 px-3 py-2 text-[11px]">
+            <span className="flex items-center gap-1.5">
+              {o.travel_class ? <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10.5px] font-bold text-slate-600">{o.travel_class}</span> : null}
+              {o.fare_inr ? <b className="text-[13px] text-slate-800 tabular-nums">~₹{Number(o.fare_inr).toLocaleString('en-IN')}</b> : null}
+            </span>
+            <span className="text-slate-400">{foundOn ? `Found ${foundOn} · ` : ''}check fare &amp; seats</span>
+          </div>
+          {when ? (
+            <div className="flex items-center gap-1.5 border-t border-slate-100 px-3 py-1.5 text-[11px] text-slate-500">
+              <Clock size={12} className="text-slate-400" /> Wanted to leave {when}
+            </div>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
+
+function SegmentUploadForm({ seg, pick, fields, onChange, onFile, read, onSubmit, busy, isOnlySegment }) {
+  const filled = read?.filled || [];
+  const AutoTag = ({ field }) =>
+    filled.includes(field) ? (
+      <span className="ml-1.5 rounded-full bg-emerald-100 px-1.5 py-px text-[9px] font-bold normal-case tracking-normal text-emerald-700">auto-filled</span>
+    ) : null;
   return (
     <form className="rounded-lg border border-slate-200 bg-slate-50/60 p-3.5 space-y-3" onSubmit={onSubmit}>
       <div className="text-[11px] font-bold text-slate-700 flex items-center gap-1.5">
@@ -32,19 +112,43 @@ function SegmentUploadForm({ seg, fields, onChange, onSubmit, busy, isOnlySegmen
         <span>{seg.label}</span>
       </div>
 
+      <TravelerPick pick={pick} />
+
       <div className="space-y-1">
         <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Ticket File *</span>
-        <input
-          type="file"
-          accept=".pdf,.png,.jpg,.jpeg,.heic"
-          required
-          className="block w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
-          onChange={(e) => onChange({ file: e.target.files?.[0] || null })}
-        />
+        {/* The chosen file lives in the form's state (fields.file), not just in the input — so the
+            name shown and what Save sends always agree, even if the browser resets the input. */}
+        <label className="flex cursor-pointer items-center gap-3 text-xs text-slate-500">
+          <input
+            type="file"
+            accept=".pdf,.png,.jpg,.jpeg,.heic"
+            className="sr-only"
+            onChange={(e) => onFile(e.target.files?.[0] || null)}
+          />
+          <span className="rounded-lg bg-slate-100 px-4 py-2 font-bold text-slate-700 hover:bg-slate-200">
+            {fields.file ? 'Change file' : 'Choose file'}
+          </span>
+          <span className={`min-w-0 truncate ${fields.file ? 'font-semibold text-slate-700' : ''}`}>
+            {fields.file ? fields.file.name : 'No file chosen'}
+          </span>
+        </label>
+        {read?.status === 'reading' ? (
+          <p className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500">
+            <Clock size={12} className="animate-spin" /> Reading the ticket…
+          </p>
+        ) : null}
+        {read?.status === 'failed' ? (
+          <p className="text-[11px] font-semibold text-slate-500">{read.message || 'Couldn’t read this ticket — type it in.'}</p>
+        ) : null}
+        {read?.mismatch ? (
+          <div role="alert" className="rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-2 text-[11px] font-medium text-amber-900">
+            <b>⚠ {read.mismatch}</b> Check you picked the right file. You can still save it.
+          </div>
+        ) : null}
       </div>
 
       <div className="space-y-1">
-        <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">PNR / Booking Reference *</span>
+        <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">PNR / Booking Reference *<AutoTag field="pnr_or_booking_ref" /></span>
         <input
           className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all bg-white"
           placeholder="Enter PNR or airline reference number"
@@ -55,7 +159,7 @@ function SegmentUploadForm({ seg, fields, onChange, onSubmit, busy, isOnlySegmen
       </div>
 
       <div className="space-y-1">
-        <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Provider (Airline / Transporter) *</span>
+        <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Provider (Airline / Transporter) *<AutoTag field="provider" /></span>
         <input
           className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all bg-white"
           placeholder="e.g. IndiGo, Air India, Indian Railways"
@@ -63,6 +167,9 @@ function SegmentUploadForm({ seg, fields, onChange, onSubmit, busy, isOnlySegmen
           onChange={(e) => onChange({ provider: e.target.value })}
           required
         />
+        {filled.length ? (
+          <p className="text-[11px] font-semibold text-emerald-700">✓ Read from the ticket — check them. You can still change them.</p>
+        ) : null}
       </div>
 
       <div className="space-y-1">
@@ -88,10 +195,12 @@ function SegmentUploadForm({ seg, fields, onChange, onSubmit, busy, isOnlySegmen
 
 const SUPPORTING_DOC_STATUSES = ['APPROVED', 'PARTIALLY_BOOKED', 'BOOKED'];
 
-/** One "please also book X" need plus its own isolated proof-upload — each booking item gets
- * its own documents and its own upload form, so a hotel confirmation never lands under cab. */
-function BookingItemCard({ request, item, documents, canUpload, onUploaded, onViewDocument }) {
+/** Optional extra documents the Travel Desk attaches to a request (hotel voucher, itinerary, ...).
+ * The traveler can download them; they don't change the request's status. */
+function AdditionalDocumentsSection({ request, onUploaded, onViewDocument }) {
   const { showToast } = useToast();
+  const documents = request.supporting_documents || [];
+  const canUpload = SUPPORTING_DOC_STATUSES.includes(request.status);
   const [file, setFile] = useState(null);
   const [description, setDescription] = useState('');
   const [busy, setBusy] = useState(false);
@@ -107,14 +216,10 @@ function BookingItemCard({ request, item, documents, canUpload, onUploaded, onVi
     const fd = new FormData();
     fd.append('file', file);
     fd.append('description', description);
-    fd.append('booking_item_id', String(item.id));
     setBusy(true);
     try {
-      const resp = await reimbursementApi.travelUploadSupportingDocument(request.id, fd);
-      showToast(
-        resp.data?.request_status === 'BOOKED' ? 'Everything booked; employee notified' : `"${item.description}" marked as booked`,
-        'success',
-      );
+      await reimbursementApi.travelUploadSupportingDocument(request.id, fd);
+      showToast('Document added; employee notified', 'success');
       setFile(null);
       setDescription('');
       setInputKey((k) => k + 1);
@@ -127,17 +232,16 @@ function BookingItemCard({ request, item, documents, canUpload, onUploaded, onVi
     }
   }
 
+  if (!canUpload && !documents.length) return null;
   return (
-    <div className="space-y-2 rounded-lg border border-amber-200/70 bg-white/70 p-3">
-      <div className="flex items-start justify-between gap-2">
-        <p className="text-xs font-semibold text-slate-700">{item.description}</p>
-        {documents.length ? (
-          <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
-            <CheckCircle2 size={10} /> Booked
-          </span>
-        ) : (
-          <span className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">Pending</span>
-        )}
+    <div className="space-y-2.5 rounded-lg border border-slate-200 bg-white p-3.5">
+      <div>
+        <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">
+          Additional Documents <span className="normal-case tracking-normal font-semibold">(optional)</span>
+        </span>
+        <p className="mt-0.5 text-[11px] text-slate-500">
+          Anything else for this trip — a hotel voucher, an itinerary. The traveler can download these. They don&apos;t change the request&apos;s status.
+        </p>
       </div>
 
       {documents.length ? (
@@ -157,17 +261,18 @@ function BookingItemCard({ request, item, documents, canUpload, onUploaded, onVi
       ) : null}
 
       {canUpload ? (
-        <form className="space-y-2 border-t border-amber-200/50 pt-2" onSubmit={onSubmit}>
+        <form className="space-y-2" onSubmit={onSubmit}>
           <input
             key={inputKey}
             type="file"
             accept=".pdf,.png,.jpg,.jpeg,.heic"
+            aria-label="Additional document"
             className="block w-full text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-[11px] file:font-bold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
             onChange={(e) => setFile(e.target.files?.[0] || null)}
           />
           <input
             className="w-full h-8 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all bg-white"
-            placeholder="Short description (e.g. Hotel confirmation)"
+            placeholder="Short description (e.g. Hotel voucher)"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
           />
@@ -176,138 +281,10 @@ function BookingItemCard({ request, item, documents, canUpload, onUploaded, onVi
             className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white text-[11px] font-bold text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50"
             disabled={busy || !file}
           >
-            <UploadCloud size={12} /> {busy ? 'Uploading…' : 'Upload Proof'}
+            <UploadCloud size={12} /> {busy ? 'Uploading…' : 'Upload Document'}
           </button>
         </form>
       ) : null}
-    </div>
-  );
-}
-
-/** Legacy fallback for requests submitted before per-item booking existed (no booking_items rows
- * — just the old free-text blob) — single description, single undifferentiated upload form. */
-function LegacyAdditionalBookingSection({ request, documents, canUpload, onUploaded, onViewDocument }) {
-  const { showToast } = useToast();
-  const [file, setFile] = useState(null);
-  const [description, setDescription] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [inputKey, setInputKey] = useState(0);
-
-  async function onSubmit(e) {
-    e.preventDefault();
-    if (!file) {
-      showToast('Choose a document to upload', 'error');
-      return;
-    }
-    const fd = new FormData();
-    fd.append('file', file);
-    fd.append('description', description);
-    setBusy(true);
-    try {
-      await reimbursementApi.travelUploadSupportingDocument(request.id, fd);
-      showToast('Document uploaded', 'success');
-      setFile(null);
-      setDescription('');
-      setInputKey((k) => k + 1);
-      await onUploaded();
-    } catch (err) {
-      const d = err.response?.data?.detail;
-      showToast(typeof d === 'string' ? d : 'Upload failed', 'error');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50/50 p-3.5">
-      <div className="space-y-1">
-        <span className="block text-[10px] font-bold text-amber-800 uppercase tracking-wide">Additional Booking Requested</span>
-        <p className="whitespace-pre-wrap text-xs font-medium text-slate-700">{request.additional_booking_details}</p>
-      </div>
-
-      {documents.length ? (
-        <div className="space-y-1">
-          <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Supporting Documents</span>
-          {documents.map((doc) => (
-            <button
-              key={doc.id}
-              type="button"
-              className="flex max-w-full items-center gap-1.5 text-left text-[11px] font-semibold text-brand hover:underline"
-              onClick={() => onViewDocument(doc)}
-            >
-              <Paperclip size={11} className="shrink-0" />
-              <span className="truncate">{doc.description || doc.original_filename}</span>
-            </button>
-          ))}
-        </div>
-      ) : null}
-
-      {canUpload ? (
-        <form className="space-y-2 border-t border-amber-200/70 pt-3" onSubmit={onSubmit}>
-          <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Upload Supporting Document</span>
-          <input
-            key={inputKey}
-            type="file"
-            accept=".pdf,.png,.jpg,.jpeg,.heic"
-            className="block w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
-            onChange={(e) => setFile(e.target.files?.[0] || null)}
-          />
-          <input
-            className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all bg-white"
-            placeholder="Short description (e.g. Hotel confirmation)"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-          />
-          <button
-            type="submit"
-            className="inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white text-xs font-bold text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50"
-            disabled={busy || !file}
-          >
-            <UploadCloud size={13} /> {busy ? 'Uploading…' : 'Upload Document'}
-          </button>
-        </form>
-      ) : null}
-    </div>
-  );
-}
-
-/** What the traveler asked the company to book beyond the itinerary, plus the Travel Desk's own
- * supporting documents for it. Rendered only for requests with needs_additional_booking. Each
- * booking item (hotel, cab, visa, ...) gets its own card with its own linked documents and its
- * own upload form, so proofs never get mixed up between different needs on the same request. */
-function AdditionalBookingSection({ request, onUploaded, onViewDocument }) {
-  const documents = request.supporting_documents || [];
-  const items = request.booking_items || [];
-  const canUpload = SUPPORTING_DOC_STATUSES.includes(request.status);
-
-  if (!items.length) {
-    return (
-      <LegacyAdditionalBookingSection
-        request={request}
-        documents={documents}
-        canUpload={canUpload}
-        onUploaded={onUploaded}
-        onViewDocument={onViewDocument}
-      />
-    );
-  }
-
-  return (
-    <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50/50 p-3.5">
-      <span className="block text-[10px] font-bold text-amber-800 uppercase tracking-wide">Additional Booking Requested</span>
-      <div className="space-y-2">
-        {items.map((item) => (
-          <BookingItemCard
-            key={item.id}
-            request={request}
-            item={item}
-            documents={documents.filter((doc) => doc.booking_item_id === item.id)}
-            canUpload={canUpload}
-            onUploaded={onUploaded}
-            onViewDocument={onViewDocument}
-          />
-        ))}
-      </div>
     </div>
   );
 }
@@ -390,6 +367,8 @@ export default function TravelDeskPage() {
   const [queueSortBy, setQueueSortBy] = useState('');
 
   const [uploadsBySeq, setUploadsBySeq] = useState({});
+  // What reading each leg's chosen ticket found: { status, mismatch, filled, message, token }.
+  const [ticketReads, setTicketReads] = useState({});
   const [activeSegSeq, setActiveSegSeq] = useState(null);
 
   const [allQ, setAllQ] = useState('');
@@ -416,6 +395,7 @@ export default function TravelDeskPage() {
 
   useEffect(() => {
     setUploadsBySeq({});
+    setTicketReads({});
   }, [selectedKey]);
 
   function getUploadFields(seq) {
@@ -424,6 +404,56 @@ export default function TravelDeskPage() {
 
   function patchUploadFields(seq, patch) {
     setUploadsBySeq((prev) => ({ ...prev, [seq]: { ...(prev[seq] || EMPTY_UPLOAD_FIELDS), ...patch } }));
+  }
+
+  // Choosing a ticket reads it: the PNR and provider fill in (unless already typed), and a
+  // warning shows if the ticket looks like it's for another leg.
+  async function onTicketFile(seq, file) {
+    patchUploadFields(seq, { file });
+    if (!file || !selectedRow) {
+      setTicketReads((prev) => ({ ...prev, [seq]: null }));
+      return;
+    }
+    const token = `${seq}-${Date.now()}`;
+    setTicketReads((prev) => ({ ...prev, [seq]: { status: 'reading', token } }));
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('leg_sequence', String(seq));
+    try {
+      const { data } = await reimbursementApi.travelReadTicket(selectedRow.request.id, fd);
+      const filled = [];
+      setUploadsBySeq((prev) => {
+        const current = prev[seq] || EMPTY_UPLOAD_FIELDS;
+        if (current.file !== file) return prev;
+        const next = { ...current };
+        if (data.pnr && !current.pnr_or_booking_ref.trim()) {
+          next.pnr_or_booking_ref = data.pnr;
+          filled.push('pnr_or_booking_ref');
+        }
+        if (data.provider && !current.provider.trim()) {
+          next.provider = data.provider;
+          filled.push('provider');
+        }
+        return { ...prev, [seq]: next };
+      });
+      setTicketReads((prev) =>
+        prev[seq]?.token !== token
+          ? prev
+          : {
+              ...prev,
+              [seq]: data.pnr || data.provider || data.mismatch
+                ? { status: 'done', token, filled, mismatch: data.mismatch }
+                : { status: 'failed', token, message: 'Couldn’t read this ticket — type it in.' },
+            },
+      );
+    } catch (err) {
+      const d = err.response?.data?.detail;
+      setTicketReads((prev) =>
+        prev[seq]?.token !== token
+          ? prev
+          : { ...prev, [seq]: { status: 'failed', token, message: typeof d === 'string' ? d : 'Couldn’t read this ticket — type it in.' } },
+      );
+    }
   }
 
   const filteredQueue = useMemo(() => {
@@ -561,12 +591,12 @@ export default function TravelDeskPage() {
       const bookedFor = selectedRow.employee_display_name;
       const resp = await reimbursementApi.travelUploadTicket(selectedRow.request.id, fd);
       const allDone = resp.data?.request?.status === 'BOOKED';
-      const allLegsTicketed = (resp.data?.request?.segments || []).every((s) => s.ticket);
       setUploadsBySeq((prev) => {
         const next = { ...prev };
         delete next[seq];
         return next;
       });
+      setTicketReads((prev) => ({ ...prev, [seq]: null }));
       await loadQueue();
       if (allDone) {
         showToast('All legs ticketed; employee notified', 'success');
@@ -575,8 +605,6 @@ export default function TravelDeskPage() {
           setBookedSuccess(null);
           setSelectedKey(null);
         }, 1900);
-      } else if (allLegsTicketed) {
-        showToast('All legs ticketed — upload proofs for the additional bookings to finish', 'success');
       } else {
         showToast('Leg ticketed — continue with the remaining leg(s)', 'success');
       }
@@ -597,7 +625,7 @@ export default function TravelDeskPage() {
         <div>
           <h1 className="text-xl font-bold text-slate-800">Travel Desk Agent Dashboard</h1>
           <p className="mt-1 text-xs text-slate-500">
-            Handle pending employee travel ticketing requests and upload booking proofs. Review the{' '}
+            Handle pending employee travel ticketing requests and upload tickets. Review the{' '}
             <a href="https://intranet.example/travel-policies" className="text-brand font-semibold hover:underline" target="_blank" rel="noreferrer">
               Corporate Travel playbook
             </a>.
@@ -755,14 +783,6 @@ export default function TravelDeskPage() {
                           <span className="bg-slate-100 rounded px-1.5 py-0.5">{row.request.travel_date}</span>
                           <span>•</span>
                           <span>Impact: <strong className="text-slate-700">{row.impact_level_code}</strong></span>
-                          {row.request.needs_additional_booking ? (
-                            <>
-                              <span>•</span>
-                              <span className="inline-flex items-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-tight text-amber-800">
-                                Extra booking
-                              </span>
-                            </>
-                          ) : null}
                         </div>
                       </div>
 
@@ -914,14 +934,6 @@ export default function TravelDeskPage() {
                   </div>
                 )}
 
-                {selectedRow.request.needs_additional_booking ? (
-                  <AdditionalBookingSection
-                    request={selectedRow.request}
-                    onUploaded={refreshAfterDocumentUpload}
-                    onViewDocument={viewSupportingDocument}
-                  />
-                ) : null}
-
                 {/* Status APPROVED / PARTIALLY_BOOKED: per-segment ticketing */}
                 {selectedRow.request.status === 'APPROVED' || selectedRow.request.status === 'PARTIALLY_BOOKED' ? (
                   <div className="mt-5 border-t border-slate-150 pt-4 space-y-3">
@@ -969,8 +981,11 @@ export default function TravelDeskPage() {
                         <SegmentUploadForm
                           key={seg.seq}
                           seg={seg}
+                          pick={(selectedRow.request.leg_picks || []).find((p) => p.seq === seg.seq)}
                           fields={getUploadFields(seg.seq)}
                           onChange={(patch) => patchUploadFields(seg.seq, patch)}
+                          onFile={(file) => onTicketFile(seg.seq, file)}
+                          read={ticketReads[seg.seq]}
                           onSubmit={(e) => onUpload(e, seg.seq)}
                           busy={busy}
                           isOnlySegment={(selectedRow.request.segments || []).length === 1}
@@ -986,6 +1001,14 @@ export default function TravelDeskPage() {
                     </div>
                   ) : null
                 )}
+
+                <div className="mt-4">
+                  <AdditionalDocumentsSection
+                    request={selectedRow.request}
+                    onUploaded={refreshAfterDocumentUpload}
+                    onViewDocument={viewSupportingDocument}
+                  />
+                </div>
               </div>
             )}
           </div>
@@ -1181,24 +1204,24 @@ export default function TravelDeskPage() {
                           </span>
                         </td>
                         <td className="px-2 py-3 text-center">
-                          {r.needs_additional_booking ? (
+                          {SUPPORTING_DOC_STATUSES.includes(r.status) || r.supporting_documents?.length ? (
                             <button
                               type="button"
                               className="flex h-6 w-6 items-center justify-center rounded-lg text-amber-600 hover:bg-amber-50 transition-colors"
                               onClick={() => setExpandedAllId(isExpanded ? null : r.id)}
-                              aria-label={isExpanded ? 'Hide additional booking' : 'Show additional booking'}
-                              title="Additional booking requested"
+                              aria-label={isExpanded ? 'Hide additional documents' : 'Show additional documents'}
+                              title="Additional documents"
                             >
                               {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                             </button>
                           ) : null}
                         </td>
                       </tr>
-                      {isExpanded && r.needs_additional_booking ? (
+                      {isExpanded ? (
                         <tr className="bg-slate-50/60">
                           <td colSpan={9} className="px-5 py-4">
                             <div className="max-w-xl">
-                              <AdditionalBookingSection
+                              <AdditionalDocumentsSection
                                 request={r}
                                 onUploaded={refreshAfterDocumentUpload}
                                 onViewDocument={viewSupportingDocument}

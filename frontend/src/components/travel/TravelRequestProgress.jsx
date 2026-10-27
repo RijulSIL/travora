@@ -163,7 +163,7 @@ function buildApprovalSteps(request, chain) {
   let deskLabel = 'Not yet reached';
   if (status === 'BOOKED') {
     deskState = 'done';
-    deskLabel = request.booking_items?.length ? 'Everything booked' : 'Ticket issued';
+    deskLabel = 'Ticket issued';
   } else if (status === 'PARTIALLY_BOOKED') {
     deskState = 'current';
     deskLabel = 'Booking in progress';

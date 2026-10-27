@@ -20,6 +20,8 @@ export const reimbursementApi = {
   travelRequestDelete: (id) => api.delete(`travel-requests/${id}`),
   travelEntitlementNote: () => api.get('travel-requests/entitlement-note'),
   travelOptions: () => api.get('travel-requests/options'),
+  // Real flight/train/bus options for one leg, found with Google by Gemini (in-policy classes only).
+  travelSearchOptions: (payload) => api.post('travel-requests/options/search', payload, { suppressErrorToast: true }),
   travelCityExpenseLimits: (city, travelDate) =>
     api.get('travel-requests/expense-limits', { params: { city, travel_date: travelDate || undefined } }),
   travelCitySuggestions: (q, limit) =>
@@ -36,6 +38,11 @@ export const reimbursementApi = {
   travelTicketDetails: (ticketId) => api.get(`travel-requests/tickets/${ticketId}`),
   travelTicketFileBlob: (ticketId) =>
     api.get(`travel-requests/tickets/${ticketId}/file`, { responseType: 'blob' }),
+  // Reads a ticket before it's uploaded (PNR, provider, route check). Stores nothing.
+  travelReadTicket: (id, formData) =>
+    api.post(`travel-requests/${id}/read-ticket`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }),
   travelUploadSupportingDocument: (id, formData) =>
     api.post(`travel-requests/${id}/supporting-documents`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },

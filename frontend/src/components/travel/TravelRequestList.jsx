@@ -3,7 +3,7 @@ import { AlertTriangle, Bus, Check, ChevronDown, FileText, Paperclip, Plane, Tra
 import { RouteTimeline } from '../approvals/ApprovalDetail';
 import { DateBox, dayOf, shortDate, today, weekdayDate } from '../home/HomeParts';
 import { travelRouteItems } from './TravelApprovalPanel';
-import { MODE_NAME, requestBanner, travelRef } from './travelRequestView';
+import { busTypesText, leaveWindowsText, MODE_NAME, requestBanner, travelRef } from './travelRequestView';
 
 /*
  * The employee's Travel Requests page: one line per request (calendar date, route, where it
@@ -119,15 +119,49 @@ export function TravelRequestRow({ request, view, open, onToggle, actions }) {
   );
 }
 
+/** What the traveler chose for a leg when requesting (TravelRequest.leg_picks). */
+function PickLine({ pick }) {
+  if (!pick) return null;
+  const o = pick.option;
+  const when = leaveWindowsText(pick.time_windows);
+  const wanted = when ? <span className="block text-[11px] text-slate-500">Wanted to leave {when}</span> : null;
+  if (pick.choice === 'bus') {
+    return (
+      <span className="mt-0.5 block text-[11.5px] text-slate-600">
+        You asked for: <b className="text-ink">{busTypesText(pick.bus_types) || 'Any bus'}</b>
+        {wanted}
+      </span>
+    );
+  }
+  if (pick.choice === 'own') {
+    return (
+      <span className="mt-0.5 block text-[11.5px] text-slate-600">
+        You asked for: <span className="font-semibold text-ink">“{pick.note}”</span>
+        {wanted}
+      </span>
+    );
+  }
+  if (!o) return null;
+  return (
+    <span className="mt-0.5 block text-[11.5px] text-slate-600">
+      Your pick: <b className="text-ink">{[o.name || o.operator, o.number].filter(Boolean).join(' ')}</b>
+      {' · '}
+      <span className="tabular-nums">
+        {o.depart_time} → {o.arrive_time}
+      </span>
+      {o.travel_class ? ` · ${o.travel_class}` : ''}
+      {o.fare_inr ? ` · ~₹${Number(o.fare_inr).toLocaleString('en-IN')}` : ''}
+      {wanted}
+    </span>
+  );
+}
+
 /** The opened request: banner, then the trip (left) and the approval route (right). */
 export function TravelRequestDetail({ request, view, chain, onViewTicket, onViewDocument, footer }) {
   const banner = requestBanner(request, view);
   const BannerIcon = banner.tone === 'ok' ? Check : banner.tone === 'rose' ? X : AlertTriangle;
   const segs = request.segments || [];
-  const docsByItem = (id) => (request.supporting_documents || []).filter((d) => d.booking_item_id === id);
-  const looseDocs = (request.supporting_documents || []).filter((d) => !d.booking_item_id);
-  const items = request.booking_items || [];
-  const bookedItems = items.filter((i) => docsByItem(i.id).length).length;
+  const documents = request.supporting_documents || [];
   const facts = [
     ['Purpose', cap(request.purpose)],
     ['Travel type', `${request.travel_type === 'PROJECT' ? 'Project' : 'Non-project'}${request.project_code ? ` · ${request.project_code}` : ''}`],
@@ -164,6 +198,7 @@ export function TravelRequestDetail({ request, view, chain, onViewTicket, onView
                       {MODE_NAME[s.mode || request.travel_mode] || s.mode}
                       {d ? ` · ${weekdayDate(d)}` : ''}
                     </span>
+                    <PickLine pick={(request.leg_picks || []).find((p) => p.seq === s.seq)} />
                   </div>
                   {s.ticket ? (
                     <button
@@ -191,41 +226,11 @@ export function TravelRequestDetail({ request, view, chain, onViewTicket, onView
             ))}
           </div>
 
-          {request.needs_additional_booking ? (
+          {documents.length ? (
             <>
-              <p className={EYEBROW}>
-                Extra bookings{items.length ? ` · ${bookedItems} of ${items.length} booked` : ''}
-              </p>
-              <div className="mb-3.5 flex flex-col gap-1.5">
-                {items.length ? (
-                  items.map((item) => {
-                    const docs = docsByItem(item.id);
-                    return (
-                      <div key={item.id} className="rounded-[10px] border border-slate-200 bg-white px-2.5 py-2 text-[12.5px] text-slate-700">
-                        <div className="flex items-start justify-between gap-2">
-                          <span className="min-w-0 break-words">{item.description}</span>
-                          <span className={`flex-none whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-bold ${docs.length ? PILL.ok : PILL.slate}`}>
-                            {docs.length ? 'Booked' : 'Pending'}
-                          </span>
-                        </div>
-                        {docs.map((doc) => (
-                          <DocButton key={doc.id} doc={doc} onOpen={onViewDocument} />
-                        ))}
-                      </div>
-                    );
-                  })
-                ) : (
-                  <p className="whitespace-pre-wrap rounded-[10px] border border-slate-200 bg-white px-2.5 py-2 text-[12.5px] text-slate-700">{request.additional_booking_details}</p>
-                )}
-              </div>
-            </>
-          ) : null}
-
-          {looseDocs.length ? (
-            <>
-              <p className={EYEBROW}>Documents from the travel desk</p>
+              <p className={EYEBROW}>Additional documents from the travel desk</p>
               <div className="mb-3.5 flex flex-col gap-1">
-                {looseDocs.map((doc) => (
+                {documents.map((doc) => (
                   <DocButton key={doc.id} doc={doc} onOpen={onViewDocument} />
                 ))}
               </div>

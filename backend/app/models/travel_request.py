@@ -2,7 +2,7 @@ import enum
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -106,14 +106,11 @@ class TravelRequest(Base):
     # Legacy: the Preferred Cabin Class input was removed from the form, the column is kept
     # only so already-submitted requests keep their data.
     preferred_class: Mapped[str | None] = mapped_column(String(64))
-    needs_additional_booking: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default="0"
-    )
-    # Legacy free-text version of the same ask — kept only so requests submitted before
-    # TravelRequestBookingItem existed keep their original wording; new submissions always use
-    # booking_items below instead and leave this null.
-    additional_booking_details: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
+    # The traveler's choice for each ticketable leg, as a recommendation for the Travel Desk:
+    # [{"seq": 1, "choice": "option", "option": {...}, "note": None, "searched_at": "..."}, or
+    #  {"seq": 2, "choice": "own", "option": None, "note": "Any evening train after 6 pm"}].
+    leg_picks: Mapped[list | None] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default=TravelRequestStatus.PENDING.value, index=True)
     rejection_reason: Mapped[str | None] = mapped_column(Text)
     # Which TravelRequestApprovalStage.stage_number is currently active — mirrors
@@ -141,12 +138,6 @@ class TravelRequest(Base):
     supporting_documents = relationship(
         "TravelRequestSupportingDocument",
         order_by="TravelRequestSupportingDocument.uploaded_at",
-        lazy="selectin",
-        viewonly=True,
-    )
-    booking_items = relationship(
-        "TravelRequestBookingItem",
-        order_by="TravelRequestBookingItem.id",
         lazy="selectin",
         viewonly=True,
     )
@@ -188,40 +179,16 @@ class TravelRequestTicket(Base):
     uploaded_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
 
 
-class TravelRequestBookingItem(Base):
-    """One "please also book X" need listed when the traveler checks "I need the company to
-    book anything else for this trip" — hotel, cab, visa, etc. Each need is its own row (not one
-    free-text blob, which additional_booking_details used to be — still kept on TravelRequest
-    for already-submitted requests' history, but no longer written to by new submissions) so the
-    Travel Desk can attach a distinct proof document to each specific item via
-    TravelRequestSupportingDocument.booking_item_id, instead of one undifferentiated pile of
-    files for the whole request."""
-
-    __tablename__ = "travel_request_booking_items"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    travel_request_id: Mapped[int] = mapped_column(
-        ForeignKey("travel_requests.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    description: Mapped[str] = mapped_column(String(255), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
-
-
 class TravelRequestSupportingDocument(Base):
-    """Documents the Travel Desk attaches to a request for the "book anything else" part of it
-    (hotel confirmation, visa receipt, ...). Separate from TravelRequestTicket, which is strictly
-    one ticket per itinerary leg."""
+    """Additional documents the Travel Desk can attach to a request (hotel voucher, itinerary,
+    ...). Optional, and they don't change the request's status. Separate from
+    TravelRequestTicket, which is strictly one ticket per itinerary leg."""
 
     __tablename__ = "travel_request_supporting_documents"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     travel_request_id: Mapped[int] = mapped_column(
         ForeignKey("travel_requests.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    # Which specific need (TravelRequestBookingItem) this proof is for — None only for documents
-    # uploaded before this feature existed, which had no item to attach to.
-    booking_item_id: Mapped[int | None] = mapped_column(
-        ForeignKey("travel_request_booking_items.id", ondelete="CASCADE"), nullable=True, index=True
     )
     uploaded_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     file_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -257,3 +224,21 @@ class TravelRequestApprovalStage(Base):
     decided_at: Mapped[datetime | None] = mapped_column(DateTime)
     decided_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     comment: Mapped[str | None] = mapped_column(Text)
+
+
+class TravelOptionSearch(Base):
+    """A saved flight/train/bus search for the travel request form, so the same route, date and
+    classes aren't searched again (and paid for again) within a few hours. `results` is the list
+    of options shown to the traveler."""
+
+    __tablename__ = "travel_option_searches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    cache_key: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    from_city: Mapped[str] = mapped_column(String(128), nullable=False)
+    to_city: Mapped[str] = mapped_column(String(128), nullable=False)
+    travel_date: Mapped[date] = mapped_column(Date, nullable=False)
+    classes: Mapped[str] = mapped_column(String(128), nullable=False)
+    results: Mapped[list] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())

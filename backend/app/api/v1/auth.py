@@ -133,8 +133,9 @@ async def login(
 ) -> dict:
     user = await authenticate_user(payload.email, payload.password, db)
 
-    if await is_trusted_device(user.id, device_token, db):
-        # Already stepped up on this device within the trust window — skip OTP.
+    # Skip the OTP when it's switched off (LOGIN_OTP_ENABLED=false, for testing) or this device has
+    # already stepped up within the trust window.
+    if not settings.login_otp_enabled or await is_trusted_device(user.id, device_token, db):
         refresh_token = await create_refresh_token(user.id, db)
         await db.commit()
         access_token = create_access_token(user.id, user.role, mfa_verified=True)

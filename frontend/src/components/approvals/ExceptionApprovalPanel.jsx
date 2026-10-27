@@ -16,6 +16,7 @@ import {
   slaRemaining,
   waitingOnYou,
 } from './ApprovalDetail';
+import TravelPicksSummary from '../travel/TravelPicksSummary';
 import { describeExceptionType, formatDate, formatDatetime, formatExceptionType, formatRole } from '../../utils/formatters';
 
 const MODE_ICONS = { FLIGHT: Plane, TRAIN: TrainFront, BUS: Bus };
@@ -240,6 +241,7 @@ export default function ExceptionApprovalPanel({
           />
         )}
 
+        {tr ? <TravelPicksSummary request={tr} name={name} /> : null}
         <Quote title={`Reason from ${name}`} text={row.description} empty="No reason given" />
         {tr?.notes ? <Quote title="Trip notes" text={tr.notes} /> : null}
       </DetailColumn>

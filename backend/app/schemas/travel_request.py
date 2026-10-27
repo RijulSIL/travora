@@ -28,9 +28,6 @@ class TravelRequestSupportingDocumentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    # Which TravelRequestBookingItem this proof is for — None only for documents uploaded
-    # before per-item linking existed.
-    booking_item_id: int | None = None
     original_filename: str
     content_type: str
     file_size_bytes: int
@@ -39,15 +36,8 @@ class TravelRequestSupportingDocumentOut(BaseModel):
 
 
 class SupportingDocumentUploadOut(TravelRequestSupportingDocumentOut):
-    # A proof can complete the booking, so the desk needs the request's status after the upload.
+    # The request's status after the upload (additional documents don't change it).
     request_status: str
-
-
-class TravelRequestBookingItemOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    description: str
 
 
 class TravelRequestSegmentOut(BaseModel):
@@ -80,6 +70,25 @@ class TravelRequestLegOut(BaseModel):
     travel_date: date
     preferred_time: str | None = None
 
+class LegPickIn(BaseModel):
+    seq: int
+    choice: str  # "option" (picked from the search) or "own" (described in a note)
+    option: dict | None = None
+    note: str | None = Field(default=None, max_length=500)
+    searched_at: str | None = None
+    time_windows: list[str] = Field(default_factory=list, max_length=4)  # when they wanted to leave
+    bus_types: list[str] = Field(default_factory=list, max_length=5)  # bus legs (choice "bus"): kinds of bus
+
+
+class TravelOptionSearchIn(BaseModel):
+    mode: str
+    from_city: str = Field(..., min_length=1, max_length=128)
+    to_city: str = Field(..., min_length=1, max_length=128)
+    travel_date: date
+    # NIGHT / MORNING / AFTERNOON / EVENING — at least one; only the departure time has to fall in it
+    time_windows: list[str] = Field(..., min_length=1, max_length=4)
+
+
 class TravelRequestCreate(BaseModel):
     trip_type: str = "ONE_WAY"
     travel_mode: TravelRequestMode | str = Field(...)
@@ -90,12 +99,10 @@ class TravelRequestCreate(BaseModel):
     travel_type: TravelRequestTravelType | str = TravelRequestTravelType.NON_PROJECT.value
     project_code: str | None = None
     purpose: str | None = None
-    needs_additional_booking: bool = False
-    # One entry per "please also book X" need (hotel, cab, visa, ...) — replaces the old single
-    # free-text additional_booking_details, which new submissions no longer write to.
-    additional_booking_items: list[str] = Field(default_factory=list)
     notes: str | None = None
     legs: list[TravelRequestLegIn] | None = None
+    # One choice per ticketable leg — see travel_request_service.validate_leg_picks.
+    leg_picks: list[LegPickIn] = Field(default_factory=list)
 
 
 class TravelRequestExceptionCreate(TravelRequestCreate):
@@ -133,11 +140,8 @@ class TravelRequestOut(BaseModel):
     travel_type: str = TravelRequestTravelType.NON_PROJECT.value
     project_code: str | None = None
     purpose: str | None = None
-    needs_additional_booking: bool = False
-    # Legacy free text — only ever populated on requests submitted before booking_items existed.
-    additional_booking_details: str | None = None
-    booking_items: list[TravelRequestBookingItemOut] = Field(default_factory=list)
     notes: str | None = None
+    leg_picks: list[dict] | None = None
     status: str
     rejection_reason: str | None = None
     requested_at: datetime

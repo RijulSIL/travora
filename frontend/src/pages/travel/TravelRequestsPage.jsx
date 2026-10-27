@@ -8,6 +8,7 @@ import { RELOCATION_PURPOSE } from '../../components/claims/ClaimRelocationSteps
 import TicketPreviewDrawer from '../../components/ui/TicketPreviewDrawer';
 import { EntitlementChips, TravelRequestDetail, TravelRequestRow, TripRow } from '../../components/travel/TravelRequestList';
 import { describeRequest } from '../../components/travel/travelRequestView';
+import LegPicker, { pickDone, segmentComplete } from '../../components/travel/LegPicker';
 import {
   CapsPanel,
   EYEBROW,
@@ -43,8 +44,6 @@ function emptyRequestForm() {
     travel_type: 'NON_PROJECT',
     project_code: '',
     purpose: '',
-    needs_additional_booking: false,
-    additional_booking_items: [],
     notes: '',
     legs: [{ travel_mode: 'FLIGHT', from_city: '', to_city: '', travel_date: '', preferred_time: '' }]
   };
@@ -107,24 +106,12 @@ export default function TravelRequestsPage() {
       travel_type: [required()],
       project_code: [(val, values) => values.travel_type === 'PROJECT' ? required()(val) : null],
       purpose: [required()],
-      additional_booking_items: [(val, values) => values.needs_additional_booking ? required()(val) : null],
       notes: [],
     },
   });
   const [cityQ, setCityQ] = useState('');
   const [cityOptions, setCityOptions] = useState([]);
-  const [bookingItemDraft, setBookingItemDraft] = useState('');
 
-  function addBookingItem() {
-    const text = bookingItemDraft.trim();
-    if (!text) return;
-    form.handleChange('additional_booking_items', [...form.values.additional_booking_items, text]);
-    setBookingItemDraft('');
-  }
-
-  function removeBookingItem(index) {
-    form.handleChange('additional_booking_items', form.values.additional_booking_items.filter((_, i) => i !== index));
-  }
   const [preview, setPreview] = useState({ open: false, blob: null, name: '', type: '', title: '' });
   const [confirmCancelId, setConfirmCancelId] = useState(null);
   const [expandedIds, setExpandedIds] = useState(() => new Set());
@@ -234,7 +221,23 @@ export default function TravelRequestsPage() {
       });
   }, [form.values]);
   const limitTargetsKey = JSON.stringify(limitTargets);
-  const showExpenseLimits = modalOpen && !form.values.needs_additional_booking;
+
+  // The legs that each need a flight/train/bus choice: onward (+ return), or each multi-city leg.
+  const [legPicks, setLegPicks] = useState({});
+  const [showPickErrors, setShowPickErrors] = useState(false);
+  const pickerRef = useRef(null);
+  const pickSegments = useMemo(() => {
+    const v = form.values;
+    const raw =
+      v.trip_type === 'MULTI_CITY'
+        ? v.legs.map((l) => ({ mode: l.travel_mode, from: l.from_city, to: l.to_city, date: l.travel_date }))
+        : [
+            { mode: v.travel_mode, from: v.from_city, to: v.to_city, date: v.travel_date },
+            ...(v.trip_type === 'ROUND_TRIP' ? [{ mode: v.travel_mode, from: v.to_city, to: v.from_city, date: v.return_date }] : []),
+          ];
+    return raw.map((seg, i) => ({ ...seg, key: `${i}|${seg.mode}|${(seg.from || '').trim().toLowerCase()}|${(seg.to || '').trim().toLowerCase()}|${seg.date}` }));
+  }, [form.values]);
+  const showExpenseLimits = modalOpen;
 
   useEffect(() => {
     if (!showExpenseLimits || limitTargets.length === 0) {
@@ -414,12 +417,11 @@ export default function TravelRequestsPage() {
       travel_type: form.values.travel_type,
       project_code: form.values.travel_type === 'PROJECT' ? form.values.project_code || null : null,
       purpose: form.values.purpose || null,
-      needs_additional_booking: form.values.needs_additional_booking,
-      additional_booking_items: form.values.needs_additional_booking
-        ? form.values.additional_booking_items
-        : [],
       notes: form.values.notes || null,
       legs,
+      leg_picks: pickSegments
+        .filter(segmentComplete)
+        .map((seg, i) => ({ seq: i + 1, ...(legPicks[seg.key] || {}) })),
     };
   }
 
@@ -428,6 +430,11 @@ export default function TravelRequestsPage() {
     setPolicyError(null);
     try {
       if (!form.validateAll()) return;
+      if (pickSegments.some((seg) => !segmentComplete(seg) || !pickDone(legPicks[seg.key]))) {
+        setShowPickErrors(true);
+        pickerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
 
       const mode = form.values.trip_type === 'MULTI_CITY' ? (form.values.legs[0]?.travel_mode || 'FLIGHT') : form.values.travel_mode;
       setIsSubmitting(true);
@@ -442,7 +449,8 @@ export default function TravelRequestsPage() {
       await loadAll();
 
       form.setValues(emptyRequestForm());
-      setBookingItemDraft('');
+      setLegPicks({});
+      setShowPickErrors(false);
 
     } catch (err) {
       setIsSubmitting(false);
@@ -487,7 +495,8 @@ export default function TravelRequestsPage() {
       await loadAll();
 
       form.setValues(emptyRequestForm());
-      setBookingItemDraft('');
+      setLegPicks({});
+      setShowPickErrors(false);
     } catch (err) {
       setSubmissionState({ active: false, status: 'idle', mode: null });
       showToast(err.response?.data?.detail || err.message || 'Failed to submit exception', 'error');
@@ -1114,6 +1123,10 @@ export default function TravelRequestsPage() {
                   {showExpenseLimits ? <CapsPanel limits={cityLimits} loading={limitsLoading} /> : null}
                 </section>
 
+                <div ref={pickerRef}>
+                  <LegPicker segments={pickSegments} picks={legPicks} onChange={setLegPicks} showErrors={showPickErrors} />
+                </div>
+
                 {/* Why */}
                 <section className="space-y-3">
                   <p className={EYEBROW}>Why you&apos;re travelling</p>
@@ -1172,71 +1185,8 @@ export default function TravelRequestsPage() {
                   ) : null}
                 </section>
 
-                {/* Anything else */}
+                {/* Notes */}
                 <section className="space-y-3">
-                  <p className={EYEBROW}>Anything else</p>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={form.values.needs_additional_booking}
-                    onClick={() => form.handleChange('needs_additional_booking', !form.values.needs_additional_booking)}
-                    className="flex w-full items-center justify-between gap-2.5 rounded-xl border border-slate-200 px-3 py-2.5 text-left hover:bg-slate-50"
-                  >
-                    <span>
-                      <b className="block text-[13px] text-ink">The company should also book something</b>
-                      <span className="text-xs text-slate-500">e.g. a hotel, a cab, a visa</span>
-                    </span>
-                    <span
-                      aria-hidden="true"
-                      className={`relative h-[22px] w-[38px] shrink-0 rounded-full transition-colors ${form.values.needs_additional_booking ? 'bg-brand' : 'bg-slate-200'}`}
-                    >
-                      <span
-                        className={`absolute top-[3px] h-4 w-4 rounded-full bg-white shadow transition-all ${form.values.needs_additional_booking ? 'left-[19px]' : 'left-[3px]'}`}
-                      />
-                    </span>
-                  </button>
-                  {form.values.needs_additional_booking ? (
-                    <div>
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        {form.values.additional_booking_items.map((item, idx) => (
-                          <span key={idx} className="inline-flex max-w-full items-center gap-1.5 rounded-lg bg-slate-100 py-1 pl-2 pr-1 text-xs font-semibold text-slate-700">
-                            <span className="truncate">{item}</span>
-                            <button
-                              type="button"
-                              aria-label={`Remove ${item}`}
-                              className="grid h-5 w-5 shrink-0 place-items-center rounded text-slate-400 hover:text-rose-600"
-                              onClick={() => removeBookingItem(idx)}
-                            >
-                              <X size={12} />
-                            </button>
-                          </span>
-                        ))}
-                        <div className="flex min-w-[220px] flex-1 gap-1.5">
-                          <input
-                            aria-label="Something else to book"
-                            className={`${FIELD} h-8`}
-                            placeholder="Add one, e.g. 2 nights hotel near client office"
-                            value={bookingItemDraft}
-                            onChange={(e) => setBookingItemDraft(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') {
-                                e.preventDefault();
-                                addBookingItem();
-                              }
-                            }}
-                          />
-                          <button
-                            type="button"
-                            className="h-8 shrink-0 rounded-lg bg-slate-100 px-3 text-xs font-bold text-slate-600 hover:bg-slate-200"
-                            onClick={addBookingItem}
-                          >
-                            Add
-                          </button>
-                        </div>
-                      </div>
-                      <FieldError>{form.errors.additional_booking_items}</FieldError>
-                    </div>
-                  ) : null}
                   <div>
                     <label htmlFor="tr-notes" className={LABEL}>
                       Notes for the travel desk <small className="font-medium text-slate-400">(optional)</small>

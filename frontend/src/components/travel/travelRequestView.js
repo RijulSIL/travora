@@ -10,6 +10,33 @@ import { formatRole } from '../../utils/formatters';
 export const MODE_NAME = { FLIGHT: 'Flight', TRAIN: 'Train', BUS: 'Bus' };
 export const travelRef = (id) => `TR-${String(id).padStart(4, '0')}`;
 
+/** When a traveler wants to leave on a leg (same codes as travel_request_service.TIME_WINDOWS). */
+export const TIME_WINDOWS = [
+  { code: 'NIGHT', label: '12 AM–6 AM', name: 'Night' },
+  { code: 'MORNING', label: '6 AM–12 PM', name: 'Morning' },
+  { code: 'AFTERNOON', label: '12 PM–6 PM', name: 'Afternoon' },
+  { code: 'EVENING', label: '6 PM–12 AM', name: 'Evening' },
+];
+/** Kinds of bus a traveler can ask for on a bus leg (same codes as travel_request_service.BUS_TYPES). */
+export const BUS_TYPES = [
+  { code: 'AC_SLEEPER', label: 'AC Sleeper', hint: 'Berths' },
+  { code: 'AC_SEATER', label: 'AC Seater', hint: 'Seats' },
+  { code: 'NON_AC_SLEEPER', label: 'Non-AC Sleeper', hint: 'Berths' },
+  { code: 'NON_AC_SEATER', label: 'Non-AC Seater', hint: 'Seats' },
+  { code: 'VOLVO', label: 'Volvo / Multi-axle', hint: 'Premium coach' },
+];
+/** ['AC_SLEEPER', 'VOLVO'] → 'AC Sleeper or Volvo / Multi-axle' ('' when none). */
+export const busTypesText = (codes) =>
+  BUS_TYPES.filter((t) => (codes || []).includes(t.code))
+    .map((t) => t.label)
+    .join(' or ');
+
+/** ['MORNING', 'EVENING'] → '6 AM–12 PM or 6 PM–12 AM' ('' when none). */
+export const leaveWindowsText = (codes) =>
+  TIME_WINDOWS.filter((w) => (codes || []).includes(w.code))
+    .map((w) => w.label)
+    .join(' or ');
+
 const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
 /** First and last travel dates (multi-city requests keep them on the legs / segments). */
@@ -80,8 +107,7 @@ export function describeRequest(request, chain, { trips = [], unclaimedIds = new
   } else if (status === 'PARTIALLY_BOOKED') {
     pill = 'Partly booked';
     tone = 'sky';
-    const items = (request.booking_items || []).length;
-    note = `${ticketed.length} of ${segs.length} ticket${segs.length === 1 ? '' : 's'}${items ? ` · ${items} extra booking${items === 1 ? '' : 's'}` : ''}`;
+    note = `${ticketed.length} of ${segs.length} ticket${segs.length === 1 ? '' : 's'}`;
   } else if (status === 'BOOKED') {
     pill = 'Booked';
     tone = 'ok';

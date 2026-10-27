@@ -7,8 +7,10 @@ Minimum lead: first travel date >= today + N working days (exclusive of today: w
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
+import re
 from collections.abc import Sequence
 from datetime import date, timedelta
 from decimal import Decimal
@@ -17,6 +19,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy import and_, asc, case, distinct, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -31,7 +34,6 @@ from app.models.travel_request import (
     ProjectNotificationRecipient,
     TravelOptionType,
     TravelRequest,
-    TravelRequestBookingItem,
     TravelRequestLeg,
     TravelRequestMode,
     TravelRequestOption,
@@ -106,6 +108,559 @@ async def entitlement_note_for_user(user_id: int, db: AsyncSession) -> dict[str,
     return {"impact_level": level, "text": "; ".join(parts) + "."}
 
 
+# --- Choosing a flight/train/bus for each leg -------------------------------------------------
+
+_FLIGHT_CLASS_ORDER = ["ECONOMY", "PREMIUM_ECONOMY", "BUSINESS"]
+_FLIGHT_CLASS_LABEL = {"ECONOMY": "Economy", "PREMIUM_ECONOMY": "Premium Economy", "BUSINESS": "Business"}
+_TRAIN_CLASS_LABEL = {
+    "1A": "First AC (1A)", "2A": "AC 2 Tier (2A)", "3A": "AC 3 Tier (3A)", "3E": "AC 3 Economy (3E)",
+    "EC": "Executive Chair Car (EC)", "CC": "AC Chair Car (CC)", "SL": "Sleeper (SL)", "2S": "Second Sitting (2S)",
+}
+# Words a search result may use for a train class, mapped to its code (checked in this order).
+_TRAIN_CLASS_WORDS = [
+    ("EC", ("executive",)), ("1A", ("1a", "first ac", "1ac", "ac first")), ("2A", ("2a", "2ac", "2 tier", "two tier")),
+    ("3E", ("3e", "economy")), ("3A", ("3a", "3ac", "3 tier", "three tier")), ("CC", ("cc", "chair car")),
+    ("SL", ("sl", "sleeper")), ("2S", ("2s", "second sitting")),
+]
+OPTION_SEARCH_KEEP_HOURS = 12
+
+
+async def allowed_travel_classes(user_id: int, mode: str, db: AsyncSession) -> list[str]:
+    """The classes this person may book for a mode, as codes (trains: 3A, CC, …; flights:
+    ECONOMY, …). Empty for buses, which have no class rule."""
+    if mode == TravelRequestMode.BUS.value:
+        return []
+    level = await _get_user_impact_level_code(user_id, db)
+    user = await db.get(User, user_id)
+    employee = await db.get(Employee, user.employee_id) if user and user.employee_id else None
+    impact = await db.get(ImpactLevel, employee.impact_level_id) if employee and employee.impact_level_id else None
+    if mode == TravelRequestMode.TRAIN.value:
+        from app.services.travel_booking_service import _canonical_train_class
+
+        configured = list(impact.train_classes_allowed or []) if impact else []
+        codes = configured or sorted(TRAIN_ALLOWED_CLASSES.get(level, {"3AC", "CC", "SL"}))
+        return sorted({_canonical_train_class(str(c)) for c in codes})
+    if impact is not None and impact.air_class_allowed is not None:
+        top = _FLIGHT_CLASS_ORDER.index(impact.air_class_allowed.value)
+        return _FLIGHT_CLASS_ORDER[: top + 1]
+    return [c for c in _FLIGHT_CLASS_ORDER if c in FLIGHT_ALLOWED_CLASSES.get(level, {"ECONOMY"})]
+
+
+def _class_code(mode: str, text: str) -> str | None:
+    lowered = f" {text.lower()} "
+    if mode == TravelRequestMode.FLIGHT.value:
+        if "business" in lowered:
+            return "BUSINESS"
+        if "premium" in lowered:
+            return "PREMIUM_ECONOMY"
+        if "economy" in lowered:
+            return "ECONOMY"
+        return None
+    for code, words in _TRAIN_CLASS_WORDS:
+        if any(re.search(rf"(^|[^a-z0-9]){re.escape(w)}([^a-z0-9]|$)", lowered) for w in words):
+            return code
+    return None
+
+
+def _class_labels(mode: str, codes: list[str]) -> list[str]:
+    labels = _FLIGHT_CLASS_LABEL if mode == TravelRequestMode.FLIGHT.value else _TRAIN_CLASS_LABEL
+    return [labels.get(c, c) for c in codes]
+
+
+TIME_WINDOWS = {
+    # code: (label, first minute of the day, last minute of the day)
+    "NIGHT": ("12 AM–6 AM", 0, 6 * 60 - 1),
+    "MORNING": ("6 AM–12 PM", 6 * 60, 12 * 60 - 1),
+    "AFTERNOON": ("12 PM–6 PM", 12 * 60, 18 * 60 - 1),
+    "EVENING": ("6 PM–12 AM", 18 * 60, 24 * 60 - 1),
+}
+
+
+def clean_time_windows(windows) -> list[str]:
+    """Known window codes, in the day's order, each once."""
+    wanted = {str(w or "").strip().upper() for w in (windows or [])}
+    return [code for code in TIME_WINDOWS if code in wanted]
+
+
+def _minutes(clock: str) -> int | None:
+    """'06:10' / '6:10 AM' / '18:35' → minutes after midnight, or None if it can't be read."""
+    match = re.match(r"^\s*(\d{1,2})[:.](\d{2})\s*([AaPp][Mm])?\s*$", clock or "")
+    if not match:
+        return None
+    hours, minutes, half = int(match.group(1)), int(match.group(2)), (match.group(3) or "").upper()
+    if half == "PM" and hours < 12:
+        hours += 12
+    if half == "AM" and hours == 12:
+        hours = 0
+    if hours > 23 or minutes > 59:
+        return None
+    return hours * 60 + minutes
+
+
+_VAGUE_NAMES = {"", "bus", "buses", "train", "flight", "unknown", "n/a", "na", "various", "private bus", "other"}
+
+
+def _vague_option(mode: str, option: dict) -> bool:
+    """Too vague to look up or book: no train/flight number, or a bus with no real operator name."""
+    if mode in (TravelRequestMode.TRAIN.value, TravelRequestMode.FLIGHT.value):
+        return not (option.get("number") or "").strip()
+    names = {(option.get(k) or "").strip().lower() for k in ("name", "operator")}
+    return names <= _VAGUE_NAMES
+
+
+def _same_service_key(option: dict) -> str:
+    """Train/flight number, or (buses) operator + departure: the same service listed twice shares it."""
+    number = (option.get("number") or "").replace(" ", "").upper()
+    if number:
+        return number
+    return f"{(option.get('operator') or option.get('name') or '').strip().lower()}|{option.get('depart_time') or ''}"
+
+
+def _in_window(clock: str, window: str) -> bool:
+    minute = _minutes(clock)
+    _, start, end = TIME_WINDOWS[window]
+    return minute is not None and start <= minute <= end
+
+
+_TIMETABLE_LOCKS: dict[str, asyncio.Lock] = {}
+# After the train timetable or flight schedules say the month's requests are used up or the key
+# isn't accepted, that mode goes straight to the Gemini search until this time, instead of asking
+# again on every search.
+TIMETABLE_PAUSE_MINUTES = 60
+_paused_until: dict[str, object] = {TravelRequestMode.TRAIN.value: None, TravelRequestMode.FLIGHT.value: None}
+
+
+class TimetableUnavailable(Exception):
+    """The train timetable / flight schedules can't answer this search (failed, paused, or a city
+    with no station/airport we know): search_travel_options falls back to the Gemini search."""
+
+
+def _provider_paused(mode: str) -> bool:
+    until = _paused_until.get(mode)
+    return until is not None and now_ist() < until
+
+
+def _pause_provider(mode: str) -> None:
+    _paused_until[mode] = now_ist() + timedelta(minutes=TIMETABLE_PAUSE_MINUTES)
+
+
+async def _saved_search(key: str, fetch, *, mode: str, from_label: str, to_label: str, travel_date: date,
+                        note: str, db: AsyncSession) -> tuple[list, object]:
+    """The saved results for `key` if fresh (OPTION_SEARCH_KEEP_HOURS), else `await fetch()` and save
+    them. A lock per key makes searches arriving together (the form asks once per time window) wait
+    for the first one's results instead of each spending a request."""
+    from app.models.travel_request import TravelOptionSearch
+
+    async with _TIMETABLE_LOCKS.setdefault(key, asyncio.Lock()):
+        # End this request's read transaction first: MySQL would otherwise keep showing it the
+        # database as it was before it waited, without the search another request just saved —
+        # and it would spend a request searching again.
+        await db.commit()
+        row = (
+            await db.execute(select(TravelOptionSearch).where(TravelOptionSearch.cache_key == key))
+        ).scalar_one_or_none()
+        if row is not None and row.created_at >= now_ist() - timedelta(hours=OPTION_SEARCH_KEEP_HOURS):
+            return row.results, row.created_at
+        results = await fetch()
+        if row is not None:
+            await db.delete(row)
+            await db.flush()
+        db.add(
+            TravelOptionSearch(
+                cache_key=key, mode=mode, from_city=from_label[:128], to_city=to_label[:128],
+                travel_date=travel_date, classes=note[:128], results=results,
+            )
+        )
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()  # saved meanwhile by another server process: we have the results anyway
+        return results, now_ist()
+
+
+async def _search_trains_in_timetable(
+    *, from_city: str, to_city: str, travel_date: date, windows: list[str], allowed: list[str], labels: list[str],
+    db: AsyncSession,
+) -> dict:
+    """Every train between the two cities that day, from the railway timetable (rail_timetable.py):
+    one request per route and date, saved and filtered here for each time window. No fares: the
+    timetable has none. Raises TimetableUnavailable when the timetable can't answer."""
+    from app.services import rail_timetable
+
+    from_code, to_code = rail_timetable.station_code(from_city), rail_timetable.station_code(to_city)
+    for city, code in ((from_city, from_code), (to_city, to_code)):
+        if not code:
+            raise TimetableUnavailable(f"no station code for {city!r}")
+    if from_code == to_code:
+        raise HTTPException(status_code=422, detail="From and to are the same station")
+
+    async def fetch() -> list:
+        try:
+            payload = await rail_timetable.fetch_trains_between(
+                from_code, to_code, travel_date, api_key=settings.rapidapi_key, host=settings.rapidapi_irctc_host
+            )
+        except rail_timetable.RailSearchError as e:
+            if e.pause:
+                _pause_provider(TravelRequestMode.TRAIN.value)
+            raise TimetableUnavailable(str(e)) from e
+        return rail_timetable.parse_trains(payload, travel_date)
+
+    key = hashlib.sha256(f"TRAIN|timetable|{from_code}|{to_code}|{travel_date}".encode()).hexdigest()
+    trains, searched_at = await _saved_search(
+        key, fetch, mode=TravelRequestMode.TRAIN.value, from_label=from_city, to_label=to_city,
+        travel_date=travel_date, note=f"timetable|{from_code}|{to_code}", db=db,
+    )
+    return {
+        "options": timetable_options(trains, windows=windows, allowed=allowed),
+        "classes": labels,
+        "windows": windows,
+        "failed_windows": [],
+        "searched_at": searched_at,
+        "source": "timetable",
+    }
+
+
+def timetable_options(trains: list[dict], *, windows: list[str], allowed: list[str]) -> list[dict]:
+    """The saved timetable trains leaving in one of `windows` with at least one in-policy class,
+    in departure order, without prices. `travel_class` names the in-policy classes the train has."""
+    options = []
+    for train in trains:
+        codes = train.get("classes") or []
+        usable = [c for c in codes if c in allowed] if allowed else codes
+        if allowed and not usable:
+            continue  # no class they may book
+        window = next((w for w in windows if _in_window(train.get("depart_time", ""), w)), None)
+        if window is None:
+            continue
+        # (A search saved while fares were briefly estimated may still carry "fares": not shown.)
+        option = {k: v for k, v in train.items() if k not in ("classes", "fares")}
+        option["travel_class"] = _class_labels("TRAIN", usable)[0] if len(usable) == 1 else " / ".join(usable)
+        option["fare_inr"] = None
+        option["time_window"] = window
+        options.append(option)
+    options.sort(key=lambda o: _minutes(o.get("depart_time", "")) or 0)
+    return options
+
+
+async def _search_flights_in_schedule(
+    *, from_city: str, to_city: str, travel_date: date, windows: list[str], labels: list[str], db: AsyncSession,
+) -> dict:
+    """Every flight from the origin city's airport to the destination city that day, from airline
+    schedules (flight_schedule.py). Departures are fetched per half-day per airport — every
+    destination at once — and saved, so other routes from that airport and date reuse them. No
+    fares. Raises TimetableUnavailable when the schedules can't answer."""
+    from app.services import flight_schedule
+
+    origin = flight_schedule.origin_airport(from_city)
+    destinations = flight_schedule.destination_airports(to_city)
+    if not origin or not destinations:
+        raise TimetableUnavailable(f"no airport for {from_city!r} or {to_city!r}")
+    if origin in destinations:
+        raise HTTPException(status_code=422, detail="From and to are the same airport")
+
+    flights: list = []
+    searched: list = []
+    for half in sorted({flight_schedule.HALF_OF_WINDOW[w] for w in windows}):
+
+        async def fetch(half: str = half) -> list:
+            try:
+                payload = await flight_schedule.fetch_departures(
+                    origin, travel_date, half, api_key=settings.rapidapi_key, host=settings.rapidapi_aerodatabox_host
+                )
+            except flight_schedule.FlightSearchError as e:
+                if e.pause:
+                    _pause_provider(TravelRequestMode.FLIGHT.value)
+                raise TimetableUnavailable(str(e)) from e
+            return flight_schedule.parse_departures(payload, origin)
+
+        key = hashlib.sha256(f"FLIGHT|schedule|{origin}|{travel_date}|{half}".encode()).hexdigest()
+        found, at = await _saved_search(
+            key, fetch, mode=TravelRequestMode.FLIGHT.value, from_label=origin, to_label="(all departures)",
+            travel_date=travel_date, note=f"schedule|{origin}|{half}", db=db,
+        )
+        flights += found
+        searched.append(at)
+    return {
+        "options": schedule_options(flights, destinations=destinations, windows=windows, labels=labels),
+        "classes": labels,
+        "windows": windows,
+        "failed_windows": [],
+        "searched_at": min(searched),
+        "source": "schedule",
+    }
+
+
+def schedule_options(flights: list[dict], *, destinations, windows: list[str], labels: list[str]) -> list[dict]:
+    """The saved departures going to one of `destinations` and leaving in one of `windows`, in
+    departure order, each flight number once. `travel_class` names the classes their policy allows."""
+    options = []
+    seen: set[str] = set()
+    for flight in sorted(flights, key=lambda f: _minutes(f.get("depart_time", "")) or 0):
+        if flight.get("to_airport") not in destinations or flight.get("number") in seen:
+            continue
+        window = next((w for w in windows if _in_window(flight.get("depart_time", ""), w)), None)
+        if window is None:
+            continue
+        seen.add(flight["number"])
+        option = {k: v for k, v in flight.items() if k != "to_airport"}
+        option["travel_class"] = " / ".join(labels)
+        option["time_window"] = window
+        options.append(option)
+    return options
+
+
+async def search_travel_options(
+    *, user_id: int, mode: str, from_city: str, to_city: str, travel_date: date, time_windows, db: AsyncSession
+) -> dict:
+    """Real options for one leg leaving in the chosen time windows, in this person's allowed
+    classes only. Each window is searched (and saved for OPTION_SEARCH_KEEP_HOURS) on its own,
+    so adding a window only searches that window; results are merged in departure order."""
+    import asyncio
+    import hashlib as _hashlib
+
+    from app.models.travel_request import TravelOptionSearch
+    from app.services.travel_option_finder import check_option_sync, find_options_sync
+
+    mode = str(mode or "").upper()
+    if mode not in {m.value for m in TravelRequestMode}:
+        raise HTTPException(status_code=422, detail="Choose flight, train or bus")
+    from_city, to_city = (from_city or "").strip(), (to_city or "").strip()
+    if not from_city or not to_city:
+        raise HTTPException(status_code=422, detail="Enter where you're travelling from and to")
+    if travel_date < today_ist():
+        raise HTTPException(status_code=422, detail="The travel date is in the past")
+    windows = clean_time_windows(time_windows)
+    if not windows:
+        raise HTTPException(status_code=422, detail="Choose when you want to leave")
+    if mode == TravelRequestMode.BUS.value:
+        # Buses aren't searched (no reliable source): the traveler picks a time and bus type.
+        raise HTTPException(status_code=422, detail="Buses aren't searched — choose a time and bus type instead")
+
+    allowed = await allowed_travel_classes(user_id, mode, db)
+    classes_text = ",".join(allowed)
+    labels = _class_labels(mode, allowed)
+
+    # Trains from the railway timetable and flights from airline schedules when RapidAPI is set up;
+    # Gemini searches the web when they can't answer (and for buses).
+    if settings.rapidapi_key and mode != TravelRequestMode.BUS.value and not _provider_paused(mode):
+        try:
+            if mode == TravelRequestMode.TRAIN.value:
+                return await _search_trains_in_timetable(
+                    from_city=from_city, to_city=to_city, travel_date=travel_date, windows=windows,
+                    allowed=allowed, labels=labels, db=db,
+                )
+            return await _search_flights_in_schedule(
+                from_city=from_city, to_city=to_city, travel_date=travel_date, windows=windows, labels=labels, db=db,
+            )
+        except TimetableUnavailable as e:
+            logger.warning("%s schedules unavailable (%s): searching with Gemini instead", mode.title(), e)
+
+    def key_for(window: str) -> str:
+        # "checked": results saved before every option was looked up again aren't reused.
+        raw = f"{mode}|{from_city.lower()}|{to_city.lower()}|{travel_date}|{classes_text}|{window}|checked"
+        return _hashlib.sha256(raw.encode()).hexdigest()
+
+    keys = {w: key_for(w) for w in windows}
+    rows = (
+        await db.execute(select(TravelOptionSearch).where(TravelOptionSearch.cache_key.in_(list(keys.values()))))
+    ).scalars().all()
+    saved = {row.cache_key: row for row in rows}
+    fresh_after = now_ist() - timedelta(hours=OPTION_SEARCH_KEEP_HOURS)
+    results: dict[str, list] = {}
+    searched_at = []
+    for window, key in keys.items():
+        row = saved.get(key)
+        if row is not None and row.created_at >= fresh_after:
+            results[window] = row.results
+            searched_at.append(row.created_at)
+
+    missing = [w for w in windows if w not in results]
+    failed: list[str] = []
+    if missing:
+        if not settings.gemini_api_key:
+            raise HTTPException(status_code=503, detail="Searching isn't set up yet — describe what you want instead")
+
+        models = [settings.gemini_invoice_model_primary, settings.gemini_invoice_model_fallback]
+
+        async def find(window: str) -> list[dict]:
+            label, start, end = TIME_WINDOWS[window]
+            found = await asyncio.to_thread(
+                find_options_sync,
+                mode=mode,
+                from_city=from_city,
+                to_city=to_city,
+                day=travel_date,
+                classes=labels,
+                window=(label, f"{start // 60:02d}:{start % 60:02d}", f"{end // 60:02d}:{end % 60:02d}"),
+                api_key=settings.gemini_api_key,
+                models=models,
+            )
+            candidates = []
+            seen: set[str] = set()
+            for option in found:
+                if _vague_option(mode, option) or _same_service_key(option) in seen:
+                    continue
+                seen.add(_same_service_key(option))
+                if allowed:
+                    code = _class_code(mode, option["travel_class"])
+                    if code not in allowed:
+                        continue  # out of policy: hidden
+                    option["travel_class"] = _class_labels(mode, [code])[0]
+                candidates.append(option)
+            # Look every candidate up again; keep only what the timetable confirms, with its times.
+            checks = await asyncio.gather(
+                *(
+                    asyncio.to_thread(
+                        check_option_sync, mode=mode, option=option, from_city=from_city, to_city=to_city,
+                        day=travel_date, api_key=settings.gemini_api_key, models=models,
+                    )
+                    for option in candidates
+                ),
+                return_exceptions=True,
+            )
+            options = []
+            for option, checked in zip(candidates, checks, strict=True):
+                if isinstance(checked, Exception) or checked is None:
+                    continue  # doesn't run this route that day, or couldn't be confirmed
+                option.update({k: v for k, v in checked.items() if v})
+                if not _in_window(option["depart_time"], window):
+                    continue  # really leaves outside the chosen time
+                option["time_window"] = window
+                options.append(option)
+            return options
+
+        outcomes = await asyncio.gather(*(find(w) for w in missing), return_exceptions=True)
+        for window, options in zip(missing, outcomes, strict=True):
+            if isinstance(options, Exception):
+                failed.append(window)
+                continue
+            results[window] = options
+            old = saved.get(keys[window])
+            if old is not None:
+                await db.delete(old)
+                await db.flush()
+            db.add(
+                TravelOptionSearch(
+                    cache_key=keys[window], mode=mode, from_city=from_city[:128], to_city=to_city[:128],
+                    travel_date=travel_date, classes=f"{classes_text}|{window}"[:128], results=options,
+                )
+            )
+        await db.commit()
+        searched_at.append(now_ist())
+        if len(failed) == len(windows):
+            raise HTTPException(status_code=502, detail="Couldn't search right now — describe what you want instead")
+
+    merged = [option for window in windows for option in results.get(window, [])]
+    merged.sort(key=lambda o: _minutes(o.get("depart_time", "")) or 0)
+    # Two windows' searches can both return the same service: keep the first.
+    seen_keys: set[str] = set()
+    unique = []
+    for option in merged:
+        if _same_service_key(option) in seen_keys:
+            continue
+        seen_keys.add(_same_service_key(option))
+        unique.append(option)
+    merged = unique
+    if mode == TravelRequestMode.TRAIN.value:
+        # Trains are shown without prices (Gemini's fare guesses aren't reliable enough).
+        merged = [{**option, "fare_inr": None} for option in merged]
+    return {
+        "options": merged,
+        "classes": labels,
+        "windows": windows,
+        "failed_windows": failed,
+        "searched_at": min(searched_at) if searched_at else now_ist(),
+    }
+
+
+def _expected_leg_count(trip_type: str, return_date: date | None, legs: list | None) -> int:
+    if trip_type == TripType.MULTI_CITY.value and legs:
+        return len(legs)
+    if trip_type == TripType.ROUND_TRIP.value and return_date:
+        return 2
+    return 1
+
+
+# Bus types a traveler can ask for on a bus leg (buses aren't searched: the desk books them).
+BUS_TYPES = ("AC_SLEEPER", "AC_SEATER", "NON_AC_SLEEPER", "NON_AC_SEATER", "VOLVO")
+
+
+def clean_bus_types(types) -> list[str]:
+    """Known bus type codes, in BUS_TYPES order, each once."""
+    wanted = {str(t or "").strip().upper() for t in (types or [])}
+    return [code for code in BUS_TYPES if code in wanted]
+
+
+def _leg_mode(seq: int, *, trip_type: str, mode: str | None, legs: list | None) -> str:
+    """The travel mode of ticketable leg `seq` (multi-city legs carry their own)."""
+    mode_text = str(getattr(mode, "value", mode) or "").upper()
+    if trip_type == TripType.MULTI_CITY.value and legs and 1 <= seq <= len(legs):
+        leg = legs[seq - 1]
+        own = leg.get("travel_mode") if isinstance(leg, dict) else getattr(leg, "travel_mode", None)
+        return str(getattr(own, "value", own) or mode_text).upper()
+    return mode_text
+
+
+def validate_leg_picks(
+    picks: list | None, *, trip_type: str, return_date: date | None, legs: list | None, mode: str | None = None
+) -> list[dict]:
+    """One choice per ticketable leg is required: for a train or flight leg a picked option, or a
+    short note saying what they'd like instead; for a bus leg (never searched) when they want to
+    leave and what kind of bus. Returns the cleaned list to store."""
+    from app.services.travel_option_finder import _clean
+
+    count = _expected_leg_count(trip_type, return_date, legs)
+    by_seq: dict[int, dict] = {}
+    for raw in picks or []:
+        pick = raw.model_dump() if hasattr(raw, "model_dump") else dict(raw or {})
+        try:
+            seq = int(pick.get("seq"))
+        except (TypeError, ValueError):
+            continue
+        if 1 <= seq <= count:
+            by_seq[seq] = pick
+    cleaned = []
+    for seq in range(1, count + 1):
+        pick = by_seq.get(seq)
+        leg_name = "the trip" if count == 1 else f"leg {seq}"
+        if pick is None:
+            raise HTTPException(status_code=422, detail=f"Choose a flight, train or bus for {leg_name}")
+        windows = clean_time_windows(pick.get("time_windows"))
+        if _leg_mode(seq, trip_type=trip_type, mode=mode, legs=legs) == TravelRequestMode.BUS.value:
+            bus_types = clean_bus_types(pick.get("bus_types"))
+            if not windows:
+                raise HTTPException(status_code=422, detail=f"Choose when you want to leave for {leg_name}")
+            if not bus_types:
+                raise HTTPException(status_code=422, detail=f"Choose a bus type for {leg_name}")
+            cleaned.append(
+                {"seq": seq, "choice": "bus", "option": None, "note": None, "time_windows": windows,
+                 "bus_types": bus_types}
+            )
+        elif pick.get("choice") == "own":
+            note = str(pick.get("note") or "").strip()
+            if len(note) < 5:
+                raise HTTPException(status_code=422, detail=f"Say what you'd like for {leg_name}")
+            cleaned.append({"seq": seq, "choice": "own", "option": None, "note": note[:500], "time_windows": windows})
+        elif pick.get("choice") == "option" and isinstance(pick.get("option"), dict):
+            option = _clean(pick["option"])
+            if not option["name"] and not option["number"]:
+                raise HTTPException(status_code=422, detail=f"Choose a flight, train or bus for {leg_name}")
+            searched_at = str(pick.get("searched_at") or "")[:32] or None
+            cleaned.append(
+                {
+                    "seq": seq,
+                    "choice": "option",
+                    "option": option,
+                    "note": None,
+                    "searched_at": searched_at,
+                    "time_windows": windows,
+                }
+            )
+        else:
+            raise HTTPException(status_code=422, detail=f"Choose a flight, train or bus for {leg_name}")
+    return cleaned
+
+
 async def list_travel_options(db: AsyncSession, *, include_inactive: bool = False) -> list[TravelRequestOption]:
     stmt = select(TravelRequestOption).order_by(
         TravelRequestOption.option_type.asc(), func.lower(TravelRequestOption.label).asc(), TravelRequestOption.id.asc()
@@ -137,12 +692,10 @@ async def _validate_request_details(
     travel_type: TravelRequestTravelType | str | None,
     project_code: str | None,
     purpose: str | None,
-    needs_additional_booking: bool,
-    additional_booking_items: list[str] | None,
     db: AsyncSession,
 ) -> dict:
-    """Validates the project / purpose / additional-booking part of a request against the
-    admin-managed options and returns the normalized column values to persist."""
+    """Validates the project / purpose part of a request against the admin-managed options and
+    returns the normalized column values to persist."""
     type_val = (
         travel_type.value if isinstance(travel_type, TravelRequestTravelType) else str(travel_type or "").upper()
     ) or TravelRequestTravelType.NON_PROJECT.value
@@ -166,16 +719,10 @@ async def _validate_request_details(
         )
     resolved_purpose = await _require_active_option(TravelOptionType.TRIP_PURPOSE, purpose, "Trip purpose", db)
 
-    items = [item.strip() for item in (additional_booking_items or []) if item and item.strip()]
-    if needs_additional_booking and not items:
-        raise HTTPException(status_code=422, detail="List at least one thing you need the company to book")
-
     return {
         "travel_type": type_val,
         "project_code": resolved_project,
         "purpose": resolved_purpose,
-        "needs_additional_booking": bool(needs_additional_booking),
-        "additional_booking_items": items if needs_additional_booking else [],
     }
 
 
@@ -209,8 +756,8 @@ logger = logging.getLogger(__name__)
 
 
 async def _notify_stakeholders_once_booked(request: TravelRequest, db: AsyncSession) -> None:
-    """Site visit email, sent once the request has just become fully BOOKED (every ticket and
-    additional booking done) — so stakeholders only hear about trips that are definitely
+    """Site visit email, sent once the request has just become fully BOOKED (every leg
+    ticketed) — so stakeholders only hear about trips that are definitely
     happening. Called after the booking is committed; a failure here never undoes the booking."""
     try:
         # Reload with legs eagerly: the email's route/dates come from them, and a lazy load here
@@ -482,10 +1029,9 @@ async def create_travel_request(
     travel_type: TravelRequestTravelType | str | None,
     project_code: str | None,
     purpose: str | None,
-    needs_additional_booking: bool,
-    additional_booking_items: list[str] | None,
     notes: str | None,
     legs: list | None,
+    leg_picks: list | None = None,
     db: AsyncSession,
 ) -> TravelRequest:
     user, mode_val = await _validate_common_travel_request_fields(
@@ -495,10 +1041,9 @@ async def create_travel_request(
         travel_type=travel_type,
         project_code=project_code,
         purpose=purpose,
-        needs_additional_booking=needs_additional_booking,
-        additional_booking_items=additional_booking_items,
         db=db,
     )
+    picks = validate_leg_picks(leg_picks, trip_type=trip_type, return_date=return_date, legs=legs, mode=mode_val)
 
     impact_level = await _get_user_impact_level_code(user_id, db)
     blocking = await _determine_blocking_exceptions(
@@ -528,6 +1073,7 @@ async def create_travel_request(
         notes=notes,
         legs=legs,
         status_value=TravelRequestStatus.PENDING.value,
+        leg_picks=picks,
         db=db,
         **details,
     )
@@ -559,10 +1105,9 @@ async def _insert_travel_request_row(
     travel_type: str,
     project_code: str | None,
     purpose: str | None,
-    needs_additional_booking: bool,
-    additional_booking_items: list[str],
     notes: str | None,
     legs: list | None,
+    leg_picks: list | None = None,
     status_value: str,
     db: AsyncSession,
 ) -> TravelRequest:
@@ -577,8 +1122,8 @@ async def _insert_travel_request_row(
         travel_type=travel_type,
         project_code=project_code,
         purpose=purpose,
-        needs_additional_booking=needs_additional_booking,
         notes=notes,
+        leg_picks=leg_picks or None,
         status=status_value,
     )
     db.add(row)
@@ -596,12 +1141,6 @@ async def _insert_travel_request_row(
                 travel_date=leg.travel_date,
                 preferred_time=leg.preferred_time
             ))
-        await db.commit()
-        await db.refresh(row)
-
-    if additional_booking_items:
-        for item_text in additional_booking_items:
-            db.add(TravelRequestBookingItem(travel_request_id=row.id, description=item_text))
         await db.commit()
         await db.refresh(row)
 
@@ -625,10 +1164,9 @@ async def create_travel_request_with_exception(
     travel_type: TravelRequestTravelType | str | None,
     project_code: str | None,
     purpose: str | None,
-    needs_additional_booking: bool,
-    additional_booking_items: list[str] | None,
     notes: str | None,
     legs: list | None,
+    leg_picks: list | None = None,
     justification: str,
     db: AsyncSession,
 ) -> TravelRequest:
@@ -643,10 +1181,9 @@ async def create_travel_request_with_exception(
         travel_type=travel_type,
         project_code=project_code,
         purpose=purpose,
-        needs_additional_booking=needs_additional_booking,
-        additional_booking_items=additional_booking_items,
         db=db,
     )
+    picks = validate_leg_picks(leg_picks, trip_type=trip_type, return_date=return_date, legs=legs, mode=mode_val)
 
     impact_level = await _get_user_impact_level_code(user_id, db)
     blocking = await _determine_blocking_exceptions(
@@ -666,10 +1203,9 @@ async def create_travel_request_with_exception(
             travel_type=travel_type,
             project_code=project_code,
             purpose=purpose,
-            needs_additional_booking=needs_additional_booking,
-            additional_booking_items=additional_booking_items,
             notes=notes,
             legs=legs,
+            leg_picks=leg_picks,
             db=db,
         )
 
@@ -686,6 +1222,7 @@ async def create_travel_request_with_exception(
         notes=notes,
         legs=legs,
         status_value=TravelRequestStatus.PENDING_EXCEPTION.value,
+        leg_picks=picks,
         db=db,
         **details,
     )
@@ -704,32 +1241,25 @@ async def create_travel_request_with_exception(
 _TICKETED_STATUSES = (TravelRequestStatus.BOOKED.value, TravelRequestStatus.PARTIALLY_BOOKED.value)
 
 
-def _compute_booking_status(
-    req: TravelRequest, *, newly_ticketed_seq: int | None = None, newly_proven_item_id: int | None = None
-) -> tuple[str, int, int]:
-    """BOOKED once every segment has a ticket AND every booking item has at least one proof;
-    PARTIALLY_BOOKED once any of those is done. Returns (status, legs_pending, items_pending).
+def _compute_booking_status(req: TravelRequest, *, newly_ticketed_seq: int | None = None) -> tuple[str, int]:
+    """BOOKED once every segment has a ticket; PARTIALLY_BOOKED once any has. Additional
+    documents don't count. Returns (status, legs_pending).
 
-    The newly_* args cover the row just added in this session, which req's viewonly
+    newly_ticketed_seq covers the ticket just added in this session, which req's viewonly
     relationships don't see until commit."""
     segment_seqs = {s["seq"] for s in _segments_for_request(req)}
     ticketed = {t.leg_sequence for t in (req.tickets or [])}
     if newly_ticketed_seq is not None:
         ticketed.add(newly_ticketed_seq)
-    item_ids = {item.id for item in (req.booking_items or [])}
-    proven = {d.booking_item_id for d in (req.supporting_documents or []) if d.booking_item_id is not None}
-    if newly_proven_item_id is not None:
-        proven.add(newly_proven_item_id)
 
     legs_pending = len(segment_seqs - ticketed)
-    items_pending = len(item_ids - proven)
-    if not legs_pending and not items_pending:
+    if not legs_pending:
         status = TravelRequestStatus.BOOKED.value
-    elif (segment_seqs & ticketed) or (item_ids & proven):
+    elif segment_seqs & ticketed:
         status = TravelRequestStatus.PARTIALLY_BOOKED.value
     else:
         status = TravelRequestStatus.APPROVED.value
-    return status, legs_pending, items_pending
+    return status, legs_pending
 
 
 def _latest_ticket(req: TravelRequest) -> TravelRequestTicket | None:
@@ -1444,7 +1974,7 @@ async def upload_ticket_for_request(
     )
     db.add(ticket_row)
 
-    req.status, legs_pending, items_pending = _compute_booking_status(req, newly_ticketed_seq=leg_sequence)
+    req.status, legs_pending = _compute_booking_status(req, newly_ticketed_seq=leg_sequence)
     fully_booked = req.status == TravelRequestStatus.BOOKED.value
 
     # Create notification for employee
@@ -1456,8 +1986,6 @@ async def upload_ticket_for_request(
                 if len(segments) == 1
                 else "All legs of your trip have been ticketed and uploaded by the Travel Desk."
             )
-        elif legs_pending == 0:
-            body = f"All tickets are booked. {items_pending} additional booking(s) still pending."
         else:
             body = f"{segment['label']} has been ticketed. {legs_pending} leg(s) still pending."
         await create_notification(
@@ -1480,6 +2008,83 @@ async def upload_ticket_for_request(
     return req, ticket_row, trip
 
 
+def _city_words(name: str | None) -> set[str]:
+    """Words in a city/station name, lower-case, for loose matching ("NEW DELHI (NDLS)" ~ "Delhi")."""
+    import re
+
+    return {w for w in re.findall(r"[a-z]+", (name or "").lower()) if len(w) >= 3}
+
+
+def _same_city(a: str | None, b: str | None) -> bool | None:
+    """True/False when both are known, None when either is missing."""
+    wa, wb = _city_words(a), _city_words(b)
+    if not wa or not wb:
+        return None
+    return bool(wa & wb)
+
+
+def ticket_leg_mismatch(read: dict, segment: dict) -> str | None:
+    """A plain-words warning when a ticket's route or date doesn't look like this leg's, else None."""
+    from_ok = _same_city(read.get("from_city"), segment.get("from_city"))
+    to_ok = _same_city(read.get("to_city"), segment.get("to_city"))
+    leg_date = segment.get("travel_date")
+    leg_date_text = leg_date.isoformat() if leg_date else ""
+    date_ok = None if not read.get("travel_date") or not leg_date_text else read["travel_date"] == leg_date_text
+    if from_ok is not False and to_ok is not False and date_ok is not False:
+        return None
+
+    def when(value: str) -> str:
+        try:
+            return date.fromisoformat(value).strftime("%d %b").lstrip("0")
+        except ValueError:
+            return value
+
+    says = " → ".join(x.title() if x.isupper() else x for x in (read.get("from_city"), read.get("to_city")) if x)
+    says = says or "another route"
+    if read.get("travel_date"):
+        says += f" on {when(read['travel_date'])}"
+    leg = f"{segment.get('from_city')} → {segment.get('to_city')}"
+    if leg_date_text:
+        leg += f" on {when(leg_date_text)}"
+    return f"This ticket may be for a different leg. It says {says}, but this leg is {leg}."
+
+
+async def read_ticket_for_leg(*, request_id: int, leg_sequence: int, file: UploadFile, db: AsyncSession) -> dict:
+    """Reads a ticket the Travel Desk is about to upload, so its form can fill in the PNR and
+    provider and warn if the ticket looks like it's for another leg. Stores nothing."""
+    import asyncio
+
+    from app.services.ticket_reader import read_ticket_sync
+
+    req = (
+        await db.execute(
+            select(TravelRequest).options(selectinload(TravelRequest.legs)).where(TravelRequest.id == request_id)
+        )
+    ).scalar_one_or_none()
+    if req is None:
+        raise HTTPException(status_code=404, detail="Travel request not found")
+    segment = next((s for s in _segments_for_request(req) if s["seq"] == leg_sequence), None)
+    if segment is None:
+        raise HTTPException(status_code=422, detail=f"Leg {leg_sequence} isn't part of this request")
+
+    content = await file.read()
+    content_type = file.content_type or "application/octet-stream"
+    _validate_ticket_file(file.filename or "ticket.pdf", content_type, content)
+    if not settings.gemini_api_key:
+        raise HTTPException(status_code=503, detail="Ticket reading isn't set up — type the details in")
+    try:
+        read = await asyncio.to_thread(
+            read_ticket_sync,
+            content,
+            content_type,
+            api_key=settings.gemini_api_key,
+            models=[settings.gemini_invoice_model_primary, settings.gemini_invoice_model_fallback],
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail="Couldn't read this ticket — type it in") from exc
+    return {**read, "mismatch": ticket_leg_mismatch(read, segment)}
+
+
 _SUPPORTING_DOC_STATUSES = (
     TravelRequestStatus.APPROVED.value,
     TravelRequestStatus.PARTIALLY_BOOKED.value,
@@ -1493,13 +2098,10 @@ async def upload_supporting_document(
     uploader_user_id: int,
     file: UploadFile,
     description: str | None,
-    booking_item_id: int | None = None,
     db: AsyncSession,
 ) -> tuple[TravelRequestSupportingDocument, str]:
-    """Travel Desk attaches a supporting document (hotel confirmation, visa receipt, ...) to a
-    request whose traveler asked for the company to book something beyond the itinerary —
-    booking_item_id ties it to the specific need (TravelRequestBookingItem) it's proof for, and
-    a proof marks that item booked. Returns (document, request status after the upload)."""
+    """Travel Desk attaches an optional additional document (hotel voucher, itinerary, ...) to an
+    approved request. It doesn't change the request's status. Returns (document, status)."""
     req = (
         await db.execute(
             select(TravelRequest)
@@ -1509,16 +2111,8 @@ async def upload_supporting_document(
     ).scalar_one_or_none()
     if req is None:
         raise HTTPException(status_code=404, detail="Travel request not found")
-    if not req.needs_additional_booking:
-        raise HTTPException(status_code=409, detail="This request has no additional booking to attach documents to")
     if req.status not in _SUPPORTING_DOC_STATUSES:
         raise HTTPException(status_code=409, detail="Travel request must be APPROVED before documents can be uploaded")
-
-    item = None
-    if booking_item_id is not None:
-        item = await db.get(TravelRequestBookingItem, booking_item_id)
-        if item is None or item.travel_request_id != request_id:
-            raise HTTPException(status_code=404, detail="Booking item not found on this request")
 
     content = await file.read()
     digest, suffix = _validate_ticket_file(
@@ -1533,7 +2127,6 @@ async def upload_supporting_document(
     note = description.strip()[:255] if isinstance(description, str) and description.strip() else None
     doc = TravelRequestSupportingDocument(
         travel_request_id=request_id,
-        booking_item_id=booking_item_id,
         uploaded_by_user_id=uploader_user_id,
         file_sha256=digest,
         original_filename=(file.filename or "document.bin")[:255],
@@ -1544,28 +2137,15 @@ async def upload_supporting_document(
     )
     db.add(doc)
 
-    was_booked = req.status == TravelRequestStatus.BOOKED.value
-    new_status, _, items_pending = _compute_booking_status(req, newly_proven_item_id=booking_item_id)
-    req.status = new_status
-    fully_booked = new_status == TravelRequestStatus.BOOKED.value and not was_booked
-
     try:
         from app.services.notification_service import create_notification
 
-        if fully_booked:
-            title, body = "Travel Booked", "Everything for your trip is now booked — tickets and additional bookings."
-        elif item is not None:
-            title = "Travel Desk Added a Document"
-            body = f"The Travel Desk uploaded proof for \"{item.description}\"."
-            if items_pending:
-                body += f" {items_pending} additional booking(s) still pending."
-        else:
-            title = "Travel Desk Added a Document"
-            body = "The Travel Desk attached a supporting document to your travel request."
         await create_notification(
             user_id=req.employee_user_id,
-            title=title,
-            body=body,
+            title="Travel Desk Added a Document",
+            body=f"The Travel Desk added “{note}” to your travel request."
+            if note
+            else "The Travel Desk added a document to your travel request.",
             link="/travel-requests",
             category="CLAIM_UPDATE",
             db=db,
@@ -1575,9 +2155,7 @@ async def upload_supporting_document(
 
     await db.commit()
     await db.refresh(doc)
-    if fully_booked:
-        await _notify_stakeholders_once_booked(req, db)
-    return doc, new_status
+    return doc, req.status
 
 
 async def assert_can_download_supporting_document(

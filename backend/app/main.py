@@ -106,6 +106,8 @@ async def on_startup() -> None:
     await run_migrations_to_head()
     await run_seed()
     await ensure_admin_user()
+    if not settings.login_otp_enabled:
+        logger.warning("LOGIN_OTP_ENABLED is false: signing in skips the emailed OTP. For testing only.")
     import asyncio
     asyncio.create_task(_run_monitors())
 

@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = 7
     reset_password_token_expire_hours: int = 1
     otp_expire_minutes: int = 10
+    # Emailed sign-in code (OTP). True: asked for at login (unless the device is trusted). False:
+    # signing in needs only email + password — for quick local testing only, never in production.
+    login_otp_enabled: bool = True
     trusted_device_expire_days: int = 30
     refresh_cookie_secure: bool = False
     refresh_cookie_samesite: str = "lax"
@@ -57,6 +60,13 @@ class Settings(BaseSettings):
     )
     gemini_invoice_model_primary: str = "gemini-2.5-flash"
     gemini_invoice_model_fallback: str = "gemini-2.0-flash"
+
+    # Optional: train timetable ("IRCTC1") and flight schedules ("AeroDataBox") for the travel request
+    # form, both on RapidAPI with one key. When set, trains and flights come from them instead of a
+    # Gemini web search (see rail_timetable.py, flight_schedule.py); Gemini is the fallback.
+    rapidapi_key: str | None = Field(default=None, validation_alias=AliasChoices("RAPIDAPI_KEY"))
+    rapidapi_irctc_host: str = "irctc1.p.rapidapi.com"
+    rapidapi_aerodatabox_host: str = "aerodatabox.p.rapidapi.com"
 
     # Transactional Email Notification System (SMTP)
     smtp_host: str | None = None

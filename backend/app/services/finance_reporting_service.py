@@ -1020,6 +1020,7 @@ async def list_exception_requests_log(
                         "project_code": travel_request.project_code,
                         "purpose": travel_request.purpose,
                         "notes": travel_request.notes,
+                        "leg_picks": travel_request.leg_picks or [],
                         "requested_at": travel_request.requested_at,
                         "legs": [
                             {

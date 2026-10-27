@@ -24,6 +24,7 @@ from app.schemas.travel_request import (
     TravelApproveIn,
     TravelExceptionSummaryOut,
     TravelOptionOut,
+    TravelOptionSearchIn,
     TravelOptionsOut,
     TravelRejectIn,
     TravelRequestCreate,
@@ -88,13 +89,34 @@ async def create_request(
         travel_type=body.travel_type,
         project_code=body.project_code,
         purpose=body.purpose,
-        needs_additional_booking=body.needs_additional_booking,
-        additional_booking_items=body.additional_booking_items,
         notes=body.notes,
         legs=body.legs,
+        leg_picks=body.leg_picks,
         db=db,
     )
     return _build_request_out(row)
+
+
+@router.post(
+    "/options/search",
+    dependencies=[Depends(require_permission("submit_claim"))],
+)
+async def search_options(
+    body: TravelOptionSearchIn,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Real flight/train/bus options for one leg, in the traveler's allowed classes only (found
+    with Google by Gemini; saved for a few hours so the same search isn't repeated)."""
+    return await svc.search_travel_options(
+        user_id=int(claims["sub"]),
+        mode=body.mode,
+        from_city=body.from_city,
+        to_city=body.to_city,
+        travel_date=body.travel_date,
+        time_windows=body.time_windows,
+        db=db,
+    )
 
 
 @router.post(
@@ -118,10 +140,9 @@ async def create_request_with_exception(
         travel_type=body.travel_type,
         project_code=body.project_code,
         purpose=body.purpose,
-        needs_additional_booking=body.needs_additional_booking,
-        additional_booking_items=body.additional_booking_items,
         notes=body.notes,
         legs=body.legs,
+        leg_picks=body.leg_picks,
         justification=body.justification,
         db=db,
     )
@@ -532,6 +553,21 @@ async def upload_ticket(
 
 
 @router.post(
+    "/{request_id}/read-ticket",
+    dependencies=[Depends(require_permission("view_travel_desk"))],
+)
+async def read_ticket(
+    request_id: int,
+    file: Annotated[UploadFile, File(...)],
+    leg_sequence: Annotated[int, Form()] = 1,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Reads a ticket before it's uploaded: PNR, provider, route and date, plus a warning if it
+    looks like it's for another leg. Nothing is stored."""
+    return await svc.read_ticket_for_leg(request_id=request_id, leg_sequence=leg_sequence, file=file, db=db)
+
+
+@router.post(
     "/{request_id}/supporting-documents",
     response_model=SupportingDocumentUploadOut,
     dependencies=[Depends(require_permission("view_travel_desk"))],
@@ -540,7 +576,6 @@ async def upload_supporting_document(
     request_id: int,
     file: Annotated[UploadFile, File(...)],
     description: Annotated[str | None, Form()] = None,
-    booking_item_id: Annotated[int | None, Form()] = None,
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ) -> SupportingDocumentUploadOut:
@@ -549,7 +584,6 @@ async def upload_supporting_document(
         uploader_user_id=int(claims["sub"]),
         file=file,
         description=description,
-        booking_item_id=booking_item_id,
         db=db,
     )
     return SupportingDocumentUploadOut(

@@ -412,7 +412,6 @@ export default function PendingApprovals() {
     const decision = travelDecided[request.id];
     const startDay = dayOf(shape.first);
     const inDays = startDay ? daysBetween(today(), startDay) : null;
-    const items = (request.booking_items || []).map((b) => b.description).filter(Boolean);
     return (
       <QueueRow
         key={key}
@@ -443,11 +442,6 @@ export default function PendingApprovals() {
               {request.exception ? (
                 <Pill tone="orange">
                   <AlertTriangle size={11} /> Policy exception on this trip
-                </Pill>
-              ) : null}
-              {items.length ? (
-                <Pill tone="slate" wrap>
-                  Also book: {items.join(', ')}
                 </Pill>
               ) : null}
               <PassedOverNote stages={sla_passed_over} />
