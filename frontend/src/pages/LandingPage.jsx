@@ -282,9 +282,9 @@ export default function LandingPage() {
     <div className="flex min-h-screen flex-col text-ink antialiased bg-slate-50">
       {/* ── HEADER ── */}
       <header className="sticky top-0 z-20 border-b border-line bg-white/85 backdrop-blur-lg">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-5 py-3 md:px-8">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-5 py-2 md:px-8">
           <div className="flex items-center gap-3">
-            <img src="/assets/travoralogo.png" alt="Travora" className="h-16 w-auto object-contain" />
+            <img src="/assets/travora-si-logo.png" alt="Travora" className="h-[72px] w-auto object-contain md:h-20" />
           </div>
           <button
             type="button"

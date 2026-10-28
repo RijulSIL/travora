@@ -105,7 +105,7 @@ export default function ForgotPasswordPage() {
           {step === 'email' ? (
             <>
               <div className="mb-10 text-left">
-                <img src="/assets/travoralogo.png" alt="Travora" className="h-11 w-auto object-contain mb-8" />
+                <img src="/assets/travora-si-logo.png" alt="Travora" className="h-11 w-auto object-contain mb-8" />
                 <h1 className="text-3xl font-extrabold tracking-tight text-slate-900">Reset Password</h1>
                 <p className="mt-2 text-sm text-slate-500 font-medium">Enter your email and we&apos;ll send you a one-time code to reset your password.</p>
               </div>

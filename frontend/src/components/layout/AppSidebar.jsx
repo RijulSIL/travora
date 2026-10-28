@@ -343,7 +343,7 @@ export default function AppSidebar({ mobileOpen, onClose }) {
       <aside className="sticky top-0 hidden h-screen w-64 flex-none flex-col border-r border-slate-200 bg-white md:flex">
         <div className="flex h-[92px] flex-none items-center justify-center px-3">
           <NavLink to="/dashboard" className="flex min-w-0 items-center" aria-label="Travora home">
-            <img src="/assets/travoralogo.png" alt="Travora" className="h-[72px] w-auto max-w-full flex-none object-contain" />
+            <img src="/assets/travora-si-logo.png" alt="Travora" className="h-[72px] w-auto max-w-full flex-none object-contain" />
           </NavLink>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">

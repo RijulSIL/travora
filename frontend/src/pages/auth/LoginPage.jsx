@@ -101,7 +101,7 @@ export default function LoginPage() {
 
         <div className="relative z-10 w-full max-w-[400px]">
           <div className="mb-10 text-left">
-            <img src="/assets/travoralogo.png" alt="Travora" className="mx-auto mb-8 h-16 w-auto object-contain" />
+            <img src="/assets/travora-si-logo.png" alt="Travora" className="mx-auto mb-6 h-28 w-auto object-contain" />
             <h1 className="text-3xl font-extrabold tracking-tight text-slate-900">
               {mfaToken ? 'Verify your identity' : 'Welcome back'}
             </h1>

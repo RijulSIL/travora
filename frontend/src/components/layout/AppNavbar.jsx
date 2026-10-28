@@ -143,7 +143,7 @@ export default function AppNavbar({ onOpenSidebar }) {
 
         {/* Brand — desktop shows it in the sidebar header instead */}
         <NavLink to="/dashboard" className="flex shrink-0 items-center gap-2.5 md:hidden">
-          <img src="/assets/travoralogo.png" alt="Travora" className="h-10 w-auto object-contain" />
+          <img src="/assets/travora-si-logo.png" alt="Travora" className="h-10 w-auto object-contain" />
         </NavLink>
 
         {/* Spacer */}

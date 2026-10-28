@@ -51,7 +51,7 @@ function Shell({ children, wide = false }) {
       {/* Above the app's floating-dots layer (ParticleBackground), so the dots stay behind the cards. */}
       <div className={`relative z-10 w-full ${wide ? 'max-w-6xl' : 'max-w-xl'}`}>
         <div className="mb-8 flex flex-col items-center gap-2">
-          <img src="/assets/travoralogo.png" alt="Travora" className="h-16 w-auto object-contain sm:h-20" />
+          <img src="/assets/travora-si-logo.png" alt="Travora" className="h-16 w-auto object-contain sm:h-20" />
           <span className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">Ticket booking</span>
         </div>
         {children}

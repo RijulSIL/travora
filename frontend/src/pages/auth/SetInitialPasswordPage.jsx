@@ -103,7 +103,7 @@ export default function SetInitialPasswordPage() {
 
         <div className="relative z-10 w-full max-w-[400px]">
           <div className="mb-10 text-left">
-            <img src="/assets/travoralogo.png" alt="Travora" className="h-11 w-auto object-contain mb-8" />
+            <img src="/assets/travora-si-logo.png" alt="Travora" className="h-11 w-auto object-contain mb-8" />
             <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-brand/10 text-brand mb-6 shadow-sm border border-brand/20">
               <KeyRound size={24} />
             </div>
