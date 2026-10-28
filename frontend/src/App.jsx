@@ -226,8 +226,11 @@ export default function App() {
             <Route element={<RoleGuard anyOf={['view_reports', 'process_payments']} />}>
               <Route path="claims/all" element={<AllClaimsPage />} />
             </Route>
-            {/* Same permission its API needs to record a payment (claim_workflow.record_payment). */}
-            <Route element={<RoleGuard permission="process_payments" />}>
+            {/* process_payments is also held by PAYROLL (see the Permission Matrix), but
+                record_claim_payment itself has always been Finance-only — same rule as the
+                GST dashboard and ERP ledger above, so the page isn't shown to someone whose
+                "Pay" button would only ever come back 403. */}
+            <Route element={<RoleGuard permission="process_payments" roles={['FINANCE']} />}>
               <Route path="finance/payment-queue" element={<PaymentQueuePage />} />
             </Route>
             <Route element={<RoleGuard permission="view_reports" />}>

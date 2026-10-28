@@ -39,6 +39,12 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_column("company_profile", "travel_agent_email")
     op.drop_index("ix_travel_requests_agent_token", table_name="travel_requests")
+    # MySQL auto-names the FK this inline sa.ForeignKey() created; drop it by its column
+    # instead of guessing the name (see a6c3e8f2b4d1's downgrade for the same pattern).
+    inspector = sa.inspect(op.get_bind())
+    for fk in inspector.get_foreign_keys("travel_requests"):
+        if fk["constrained_columns"] == ["agent_sent_by_user_id"]:
+            op.drop_constraint(fk["name"], "travel_requests", type_="foreignkey")
     op.drop_column("travel_requests", "agent_sent_by_user_id")
     op.drop_column("travel_requests", "agent_sent_at")
     op.drop_column("travel_requests", "agent_token")
