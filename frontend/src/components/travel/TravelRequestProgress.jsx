@@ -74,6 +74,9 @@ function buildApprovalSteps(request, chain) {
       } else if (a.status === 'SLA_SKIPPED') {
         state = 'skipped';
         stateLabel = 'SLA missed — passed on';
+      } else if (a.status === 'CANCELLED') {
+        state = 'skipped';
+        stateLabel = 'Cancelled — request withdrawn';
       } else if (a.status === 'PENDING') {
         state = 'current';
         stateLabel = named?.pending_approver_names?.length

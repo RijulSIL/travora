@@ -115,7 +115,7 @@ async def _has_completed_exception_chain(user_id: int, exception_type: str, db: 
 
     from app.services.workflow_service import (
         DEPARTMENT_HEAD,
-        _resolve_exception_chain,
+        _legacy_exception_chain,
         get_workflow_config,
         is_exception_enabled,
     )
@@ -142,8 +142,11 @@ async def _has_completed_exception_chain(user_id: int, exception_type: str, db: 
     if not candidates:
         return False
 
-    required_roles = set(_resolve_exception_chain(cfg, exception_type))
+    required_roles = set(_legacy_exception_chain(cfg, exception_type))
     for row in candidates:
+        if getattr(row, "route_key", None):
+            # On a shared exception route, APPROVED means every step of it signed off.
+            return True
         approvals = (
             await db.execute(
                 select(ExceptionApproval).where(ExceptionApproval.exception_request_id == row.id)
@@ -506,6 +509,39 @@ async def cancel_trip(trip_id: int, reason: str, refunded_amount: Decimal, user_
     return trip
 
 
+MAX_BOARDING_PASS_BYTES = 10 * 1024 * 1024
+_BOARDING_PASS_KINDS = {".pdf", ".jpg", ".jpeg", ".png", ".heic"}
+_HEIC_BRANDS = {b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"mif1", b"msf1"}
+
+
+def _file_kind(content: bytes) -> str | None:
+    """What the bytes really are (pdf / jpeg / png / heic), whatever the file is called."""
+    if b"%PDF-" in content[:1024]:
+        return "pdf"
+    if content.startswith(b"\xff\xd8\xff"):
+        return "jpeg"
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if content[4:8] == b"ftyp" and content[8:12] in _HEIC_BRANDS:
+        return "heic"
+    return None
+
+
+def validate_boarding_pass_file(filename: str | None, content: bytes) -> str:
+    """PDF, JPEG, PNG or HEIC (as for invoices) up to 10 MB, checked by its content as well as its
+    name. Returns the file extension to store it under (from what the content really is)."""
+    if not content:
+        raise HTTPException(status_code=422, detail="The boarding pass file is empty")
+    if len(content) > MAX_BOARDING_PASS_BYTES:
+        raise HTTPException(status_code=413, detail="The boarding pass is larger than 10 MB")
+    kind = _file_kind(content)
+    if Path(filename or "").suffix.lower() not in _BOARDING_PASS_KINDS or kind is None:
+        raise HTTPException(
+            status_code=415, detail="Upload the boarding pass as a PDF, JPEG, PNG or HEIC file"
+        )
+    return {"pdf": ".pdf", "jpeg": ".jpg", "png": ".png", "heic": ".heic"}[kind]
+
+
 async def upload_boarding_pass(trip_id: int, file: UploadFile, user_id: int, db: AsyncSession) -> str:
     trip = await db.get(TravelTrip, trip_id)
     if trip is None:
@@ -515,11 +551,11 @@ async def upload_boarding_pass(trip_id: int, file: UploadFile, user_id: int, db:
     if trip.mode != TravelMode.FLIGHT:
         raise HTTPException(status_code=422, detail="Boarding pass is only applicable to flights")
 
-    extension = Path(file.filename or "boarding-pass.pdf").suffix or ".pdf"
+    content = await file.read(MAX_BOARDING_PASS_BYTES + 1)
+    extension = validate_boarding_pass_file(file.filename, content)
     directory = Path("storage") / "boarding_passes" / str(user_id)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{trip_id}-{uuid4().hex}{extension}"
-    content = await file.read()
     path.write_bytes(content)
     trip.boarding_pass_path = str(path).replace("\\", "/")
     await db.commit()

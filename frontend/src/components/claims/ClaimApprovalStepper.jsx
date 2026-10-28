@@ -31,6 +31,8 @@ export default function ClaimApprovalStepper({
           const done = s.status === 'APPROVED';
           // Approver missed the SLA; the claim moved on to the next stage.
           const skipped = s.status === 'SLA_SKIPPED';
+          // Only the claimant could have approved this step, so it was passed over.
+          const ownSkipped = s.status === 'SKIPPED_OWN';
           const active =
             s.status === 'PENDING' &&
             s.stage_number === currentStageNumber &&
@@ -62,6 +64,8 @@ export default function ClaimApprovalStepper({
                 <div className="text-center text-[10px] text-slate-400">
                   {skipped
                     ? 'SLA missed — passed on'
+                    : ownSkipped
+                    ? "Skipped — can't approve own claim"
                     : s.status === 'PENDING' && s.sla_deadline_at
                     ? `SLA ${new Date(s.sla_deadline_at).toLocaleString()}`
                     : s.decided_at

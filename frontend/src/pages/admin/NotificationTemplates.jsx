@@ -166,7 +166,8 @@ export default function NotificationTemplates() {
   };
 
   return (
-    <section className="flex flex-col gap-3.5">
+    // pb: room above the phone bottom nav, so the end of the preview isn't under it.
+    <section className="flex min-w-0 flex-col gap-3.5 pb-6 md:pb-0">
       <PolicyHead title="Notification templates" sub="The wording of the emails Travora sends. Changes apply to the next email sent." />
       <ErrorNote error={loadError} />
 
@@ -177,8 +178,8 @@ export default function NotificationTemplates() {
       ) : !templates.length ? (
         <p className={`${CARD} px-4 py-8 text-center text-[13px] text-slate-500`}>No templates yet.</p>
       ) : (
-        <div className="grid items-start gap-3.5 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
-          <div className="flex flex-col gap-2.5" aria-label="Templates">
+        <div className="grid grid-cols-1 items-start gap-3.5 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
+          <div className="flex min-w-0 flex-col gap-2.5" aria-label="Templates">
             {templates.map((t) => {
               const ti = infoOf(t);
               const on = t.id === selectedId;
@@ -188,17 +189,17 @@ export default function NotificationTemplates() {
                   type="button"
                   aria-current={on || undefined}
                   onClick={() => choose(t)}
-                  className={`flex w-full flex-col gap-2 rounded-[14px] border border-l-[3px] px-4 py-[13px] text-left ${
+                  className={`flex w-full min-w-0 flex-col gap-2 rounded-[14px] border border-l-[3px] px-4 py-[13px] text-left ${
                     on ? 'border-slate-200 border-l-brand bg-[#f4faf7]' : 'border-slate-200 border-l-transparent bg-white hover:bg-slate-50'
                   }`}
                 >
-                  <span>
+                  <span className="[overflow-wrap:anywhere]">
                     <b className="text-sm text-ink">{ti.name}</b>
                     <code className="ml-1.5 font-mono text-[11px] text-slate-400">{t.template_key}</code>
                   </span>
                   {ti.when ? <span className="text-xs leading-relaxed text-slate-500">{ti.when}</span> : null}
-                  <span className="text-[12.5px] font-semibold text-ink">{t.subject || '—'}</span>
-                  <span className="truncate text-xs text-slate-500">{(t.body_text || '').replace(/\s+/g, ' ')}</span>
+                  <span className="text-[12.5px] font-semibold text-ink [overflow-wrap:anywhere]">{t.subject || '—'}</span>
+                  <span className="block max-w-full truncate text-xs text-slate-500">{(t.body_text || '').replace(/\s+/g, ' ')}</span>
                   <span className="text-[11.5px] text-slate-400">
                     {t.channel === 'EMAIL' ? 'Email' : t.channel} · last changed {day(t.updated_at)}
                   </span>
@@ -214,12 +215,12 @@ export default function NotificationTemplates() {
               key={`${selected.id}-${draft ? 'edit' : 'view'}`}
               ref={panelRef}
               aria-label={`${info.name} template`}
-              className={`${CARD} scroll-mt-20 origin-top motion-reduce:animate-none lg:sticky lg:top-[calc(var(--app-nav-h,56px)+12px)] lg:origin-right ${
+              className={`${CARD} min-w-0 scroll-mt-20 origin-top motion-reduce:animate-none lg:sticky lg:top-[calc(var(--app-nav-h,56px)+12px)] lg:origin-right ${
                 panelAnim === 'swap' ? 'animate-sheet-swap' : 'animate-sheet-up lg:animate-sheet-in'
               }`}
             >
               <div className="border-b border-slate-100 px-4 py-3">
-                <b className="block text-sm text-ink">
+                <b className="block text-sm text-ink [overflow-wrap:anywhere]">
                   {draft ? 'Edit ' : ''}
                   {info.name}
                 </b>
@@ -288,11 +289,11 @@ export default function NotificationTemplates() {
                       <span className="text-slate-400">To</span>
                       <b className="truncate font-bold text-ink">{info.to}</b>
                       <span className="text-slate-400">Subject</span>
-                      <b className="font-bold text-ink">
+                      <b className="min-w-0 font-bold text-ink [overflow-wrap:anywhere]">
                         <Filled text={subject} vars={info.vars} />
                       </b>
                     </div>
-                    <div className="whitespace-pre-wrap px-3.5 py-3 font-[Arial,Helvetica,sans-serif] text-[13px] leading-relaxed text-slate-700">
+                    <div className="whitespace-pre-wrap px-3.5 py-3 font-[Arial,Helvetica,sans-serif] [overflow-wrap:anywhere] text-[13px] leading-relaxed text-slate-700">
                       <Filled text={body} vars={info.vars} />
                     </div>
                     {info.extra ? (

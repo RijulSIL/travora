@@ -47,8 +47,9 @@ class TravelRequestOption(Base):
 
     `value` is what a TravelRequest stores (project_code / purpose) as a plain string — same
     pattern as CityGroupTier.code, no hard foreign key — so a historical request keeps reading
-    exactly as submitted even after its option is later renamed or deactivated. `value` is
-    immutable once created for the same reason; `label` is the editable display text. Options
+    exactly as submitted even after its option is later renamed or deactivated. A rename changes
+    only this row (and moves a project code's recipients); it's recorded in the audit log, which
+    travel_request_service.find_travel_option uses to trace an old value to the option. Options
     are deactivated, never deleted."""
 
     __tablename__ = "travel_request_options"
@@ -70,8 +71,8 @@ class TravelRequestOption(Base):
 
 class ProjectNotificationRecipient(Base):
     """Admin-managed "who to email" list for a given project_code (a TravelRequestOption value,
-    stored the same unbound way — no FK, see that model's docstring: the value itself is
-    immutable once created, so this list never gets orphaned by a label rename). These people
+    stored the same unbound way — no FK, see that model's docstring; renaming the code moves
+    this list to the new code, so it never gets orphaned). These people
     don't need an account on the system at all — they're just plain email addresses
     notify_project_stakeholders_if_applicable (travel_request_service.py) sends to."""
 
@@ -121,6 +122,12 @@ class TravelRequest(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
     )
+    # "Send to agent" (Travel Desk -> travel agent): a single-use random link, overwritten on every
+    # resend so an older emailed link stops resolving the moment a new one is sent — see
+    # travel_request_service.send_travel_request_to_agent / resolve_agent_booking_request.
+    agent_token: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
+    agent_sent_at: Mapped[datetime | None] = mapped_column(DateTime)
+    agent_sent_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
 
     legs = relationship(
         "TravelRequestLeg",
@@ -141,6 +148,14 @@ class TravelRequest(Base):
         lazy="selectin",
         viewonly=True,
     )
+
+    @property
+    def sent_to_agent(self) -> bool:
+        """Whether a (possibly since-superseded) agent link has ever been issued for this
+        request — the Travel Desk's "With agent" pill shows while this is true AND the request is
+        still APPROVED/PARTIALLY_BOOKED (see travel_request_service._build_request_out usage)."""
+        return self.agent_token is not None
+
 
 class TravelRequestLeg(Base):
     __tablename__ = "travel_request_legs"

@@ -5,11 +5,10 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.rbac import require_any_permission, require_mfa, require_permission
+from app.core.rbac import get_current_claims, require_any_permission, require_mfa, require_permission
 from app.models.travel_request import (
     ProjectNotificationRecipient,
     TravelOptionType,
-    TravelRequest,
     TravelRequestOption,
 )
 from app.schemas.travel_request import (
@@ -21,11 +20,26 @@ from app.schemas.travel_request import (
     TravelOptionUpdateIn,
 )
 from app.services import travel_request_service as svc
+from app.services.audit_service import log_event, row_snapshot
 
 router = APIRouter(prefix="/admin/travel-options", tags=["admin-travel-options"])
 
 _READ_TRAVEL_OPTIONS = [Depends(require_any_permission("configure_policy", "view_admin_readonly"))]
 _WRITE_TRAVEL_OPTIONS = [Depends(require_permission("configure_policy")), Depends(require_mfa)]
+
+
+async def _audit(entity_type: str, item, action: str, claims: dict, old: dict | None, db: AsyncSession) -> None:
+    """Audit row for a travel option / project recipient change. Call before committing."""
+    await db.flush()
+    await log_event(
+        entity_type=entity_type,
+        entity_id=str(item.id),
+        action=action,
+        actor_id=int(claims["sub"]),
+        old=old,
+        new=None if action.endswith("_deleted") else row_snapshot(item),
+        db=db,
+    )
 
 
 def _parse_option_type(raw: str) -> TravelOptionType:
@@ -52,7 +66,9 @@ async def list_travel_options(
 
 
 @router.post("", response_model=TravelOptionOut, dependencies=_WRITE_TRAVEL_OPTIONS)
-async def create_travel_option(payload: TravelOptionIn, db: AsyncSession = Depends(get_db)) -> TravelRequestOption:
+async def create_travel_option(
+    payload: TravelOptionIn, db: AsyncSession = Depends(get_db), claims: dict = Depends(get_current_claims)
+) -> TravelRequestOption:
     option_type = _parse_option_type(payload.option_type)
     value = payload.value.strip()
     if not value:
@@ -75,6 +91,7 @@ async def create_travel_option(payload: TravelOptionIn, db: AsyncSession = Depen
         is_active=True,
     )
     db.add(item)
+    await _audit("travel_option", item, "travel_option_created", claims, None, db)
     await db.commit()
     await db.refresh(item)
     return item
@@ -82,15 +99,23 @@ async def create_travel_option(payload: TravelOptionIn, db: AsyncSession = Depen
 
 @router.put("/{item_id}", response_model=TravelOptionOut, dependencies=_WRITE_TRAVEL_OPTIONS)
 async def update_travel_option(
-    item_id: int, payload: TravelOptionUpdateIn, db: AsyncSession = Depends(get_db)
+    item_id: int,
+    payload: TravelOptionUpdateIn,
+    db: AsyncSession = Depends(get_db),
+    claims: dict = Depends(get_current_claims),
 ) -> TravelRequestOption:
     """Edit an option's value / label or retire it via `is_active`. Requests store the value as
-    plain text, so renaming the value also rewrites the requests that already use it."""
+    plain text and keep the one they were raised with — a rename only changes what new requests
+    get, and is written to the audit log (old and new value), which is how an old value is traced
+    to the renamed option (travel_request_service.find_travel_option). A renamed project code
+    keeps its notification recipients: they're settings, not history, so they move to the new code."""
     item = await db.get(TravelRequestOption, item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Travel option not found")
+    before = row_snapshot(item)
     new_value = (payload.value or item.value).strip()
-    if new_value != item.value:
+    renamed = new_value != item.value
+    if renamed:
         clash = await db.scalar(
             select(TravelRequestOption.id).where(
                 TravelRequestOption.option_type == item.option_type,
@@ -100,16 +125,18 @@ async def update_travel_option(
         )
         if clash is not None:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"'{new_value}' already exists")
-        column = (
-            TravelRequest.project_code
-            if item.option_type == TravelOptionType.PROJECT_CODE.value
-            else TravelRequest.purpose
-        )
-        await db.execute(update(TravelRequest).where(column == item.value).values({column.key: new_value}))
+        if item.option_type == TravelOptionType.PROJECT_CODE.value:
+            await db.execute(
+                update(ProjectNotificationRecipient)
+                .where(ProjectNotificationRecipient.project_code == item.value)
+                .values(project_code=new_value)
+            )
         item.value = new_value
     item.label = payload.label.strip()
     item.is_active = payload.is_active
     item.notify_project_stakeholders = payload.notify_project_stakeholders
+    action = "travel_option_renamed" if renamed else "travel_option_updated"
+    await _audit("travel_option", item, action, claims, before, db)
     await db.commit()
     await db.refresh(item)
     return item
@@ -139,7 +166,7 @@ async def list_project_recipients(
     dependencies=_WRITE_TRAVEL_OPTIONS,
 )
 async def create_project_recipient(
-    payload: ProjectRecipientIn, db: AsyncSession = Depends(get_db)
+    payload: ProjectRecipientIn, db: AsyncSession = Depends(get_db), claims: dict = Depends(get_current_claims)
 ) -> ProjectNotificationRecipient:
     email = payload.email.strip().lower()
     existing = await db.scalar(
@@ -159,6 +186,7 @@ async def create_project_recipient(
         display_name=(payload.display_name or "").strip() or None,
     )
     db.add(item)
+    await _audit("project_recipient", item, "project_recipient_created", claims, None, db)
     await db.commit()
     await db.refresh(item)
     return item
@@ -170,11 +198,15 @@ async def create_project_recipient(
     dependencies=_WRITE_TRAVEL_OPTIONS,
 )
 async def update_project_recipient(
-    item_id: int, payload: ProjectRecipientUpdateIn, db: AsyncSession = Depends(get_db)
+    item_id: int,
+    payload: ProjectRecipientUpdateIn,
+    db: AsyncSession = Depends(get_db),
+    claims: dict = Depends(get_current_claims),
 ) -> ProjectNotificationRecipient:
     item = await db.get(ProjectNotificationRecipient, item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Recipient not found")
+    before = row_snapshot(item)
     email = payload.email.strip().lower()
     if email != item.email:
         clash = await db.scalar(
@@ -191,16 +223,21 @@ async def update_project_recipient(
             )
     item.email = email
     item.display_name = (payload.display_name or "").strip() or None
+    await _audit("project_recipient", item, "project_recipient_updated", claims, before, db)
     await db.commit()
     await db.refresh(item)
     return item
 
 
 @router.delete("/project-recipients/{item_id}", dependencies=_WRITE_TRAVEL_OPTIONS)
-async def delete_project_recipient(item_id: int, db: AsyncSession = Depends(get_db)) -> dict[str, str]:
+async def delete_project_recipient(
+    item_id: int, db: AsyncSession = Depends(get_db), claims: dict = Depends(get_current_claims)
+) -> dict[str, str]:
     item = await db.get(ProjectNotificationRecipient, item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Recipient not found")
+    before = row_snapshot(item)
     await db.delete(item)
+    await _audit("project_recipient", item, "project_recipient_deleted", claims, before, db)
     await db.commit()
     return {"status": "deleted"}

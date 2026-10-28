@@ -44,6 +44,10 @@ class User(Base):
     # New people start with the temporary password and must set their own at their first sign-in.
     must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
     welcome_email_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # When the password last changed (UTC, whole seconds): access tokens issued before it are
+    # refused, so a reset or change ends sessions signed in with the old password. See
+    # rbac.get_current_claims.
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     auto_approve_threshold: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
@@ -64,6 +68,20 @@ class RefreshToken(Base):
     # When this token was swapped for a new one (auth_service.rotate_refresh_token); NULL if it
     # never was — e.g. cancelled by logging out, which gets no grace period.
     rotated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class LoginFailure(Base):
+    """Wrong passwords in a row for one email, and when it may sign in again (auth_service).
+    Kept per email rather than per user, so an email with no account behaves exactly the same."""
+
+    __tablename__ = "login_failures"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    # UTC, like the other sign-in expiry times.
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_failed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class PasswordResetToken(Base):

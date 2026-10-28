@@ -15,9 +15,18 @@ function StatusPill({ expense }) {
   }
   if (!expense.exception_reason_required) {
     const pending = expense.exception_status && expense.exception_status !== 'APPROVED';
+    // On a claim whose exceptions were sent back: this one an approver already accepted.
+    const acceptedSoFar = pending && (expense.exception_decisions || []).some((d) => d.decision === 'ACCEPTED');
     return (
-      <span className={`${pill} ${pending ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>
-        <CheckCircle2 size={11} /> {pending ? 'Exception requested' : 'Exception approved'}
+      <span className={`${pill} ${pending && !acceptedSoFar ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>
+        <CheckCircle2 size={11} /> {acceptedSoFar ? 'Exception accepted so far' : pending ? 'Exception requested' : 'Exception approved'}
+      </span>
+    );
+  }
+  if (expense.exception_status === 'SENT_BACK' && expense.exception_mode !== 'BLOCK') {
+    return (
+      <span className={`${pill} bg-orange-50 text-orange-700`} title={expense.exception_comment || undefined}>
+        <AlertTriangle size={11} /> Sent back
       </span>
     );
   }
@@ -86,6 +95,11 @@ function ExpenseCard({ expense, cityGroup }) {
           {blocked ? <span className="ml-2 font-bold text-rose-700">Remove this invoice to submit</span> : null}
         </div>
       )}
+      {expense.exception_status === 'SENT_BACK' && expense.exception_comment ? (
+        <div className="rounded-lg border border-orange-200 bg-orange-50 px-2.5 py-1.5 text-xs leading-relaxed text-orange-900">
+          <b>Sent back:</b> &ldquo;{expense.exception_comment}&rdquo; Change the reason when you submit, or replace or remove its bill.
+        </div>
+      ) : null}
       {lineCount || breakdown.length > 1 ? (
         <details>
           <summary className="cursor-pointer text-xs font-bold text-brand">

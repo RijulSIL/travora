@@ -27,8 +27,9 @@ const FIELD_LABELS = {
   other_tax: 'Other tax',
   is_tatkal: 'Tatkal ticket',
   expense_category: 'Expense category',
+  nights: 'Nights (hotel bills)',
 };
-const FIELD_HINTS = { other_tax: 'e.g. foreign VAT or sales tax', expense_category: 'what this is for' };
+const FIELD_HINTS = { other_tax: 'e.g. foreign VAT or sales tax', expense_category: 'what this is for', nights: 'the hotel cap is per night' };
 
 // Not every valid invoice carries a GSTIN (unregistered vendors, cash memos, foreign
 // expenses) — never block review completion on these two being unextracted.
@@ -36,7 +37,7 @@ const FIELD_HINTS = { other_tax: 'e.g. foreign VAT or sales tax', expense_catego
 // non-INR invoice (see backend's _persist_parsed_extraction) and must always be confirmed.
 // Informational/analytics-only fields — never block review completion, since a low-confidence
 // guess here just means "confirm the category if you like," not "this invoice can't be trusted."
-const OPTIONAL_FIELD_KEYS = new Set(['supplier_gstin', 'company_gstin', 'expense_category']);
+const OPTIONAL_FIELD_KEYS = new Set(['supplier_gstin', 'company_gstin', 'expense_category', 'nights']);
 
 const MONEY_FIELD_KEYS = new Set([
   'grand_total',

@@ -1,3 +1,4 @@
+import calendar
 import logging
 from collections.abc import Callable
 
@@ -279,8 +280,54 @@ def decode_bearer_token(request: Request) -> dict:
         ) from exc
 
 
-def get_current_claims(request: Request) -> dict:
-    return decode_bearer_token(request)
+# What someone still on the temporary password may do: read their profile (the app reads it to
+# show the set-password screen) and set their own password. Refreshing and signing out don't take
+# an access token, so they keep working too.
+TEMPORARY_PASSWORD_ALLOWED = {("GET", "/me"), ("POST", "/auth/set-initial-password")}
+
+
+def _api_path(request: Request) -> str:
+    path = request.scope.get("path") or request.url.path
+    if path.startswith(settings.api_v1_prefix):
+        path = path[len(settings.api_v1_prefix):]
+    return path.rstrip("/") or "/"
+
+
+def _issued_before(claims: dict, moment) -> bool:
+    issued = claims.get("iat")
+    if not isinstance(issued, int | float):
+        return True
+    return issued < calendar.timegm(moment.utctimetuple())
+
+
+async def get_current_claims(request: Request, db: AsyncSession = Depends(get_db)) -> dict:
+    """The signed-in person's token, checked against their account as it is now — so a
+    deactivated account, a changed role or a changed password takes effect at once instead of
+    when the token runs out. "role" is replaced with their current role, which every permission
+    and role check below reads. One user lookup per request (FastAPI shares this dependency)."""
+    claims = decode_bearer_token(request)
+    # The sign-in step's short "mfa" token isn't a session.
+    if claims.get("type"):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid bearer token")
+    try:
+        user_id = int(claims.get("sub"))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid bearer token") from exc
+
+    user = await db.get(User, user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="This account is no longer active")
+    # Signed in before the password was reset or changed: that session has ended.
+    if user.password_changed_at is not None and _issued_before(claims, user.password_changed_at):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Your password was changed — please sign in again"
+        )
+    if user.must_change_password and (request.method, _api_path(request)) not in TEMPORARY_PASSWORD_ALLOWED:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Set your own password first — you're still signed in with the temporary one",
+        )
+    return {**claims, "role": user.role.value}
 
 
 def _log_admin_users_access_denied(request: Request, claims: dict, reason: str) -> None:

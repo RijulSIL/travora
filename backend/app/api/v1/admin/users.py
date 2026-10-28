@@ -1,6 +1,7 @@
 import csv
 import io
 import json
+import re
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy import func, or_, select
@@ -33,6 +34,7 @@ from app.services.auth_service import hash_password
 from app.services.delegation_service import is_delegation_enabled, set_delegation_enabled
 from app.services.department_service import clean_department_name, department_key, get_departments, match_department
 from app.services.notification_service import create_notification
+from app.services.office_service import clean_office_name, match_office, office_key
 from app.services.policy_engine import get_active_policy_version
 from app.services.welcome_service import TEMPORARY_PASSWORD, send_welcome_email, send_welcome_emails_later
 
@@ -145,6 +147,99 @@ async def _listed_department(value: str | None, current: str | None, db: AsyncSe
     )
 
 
+async def _company_offices(db: AsyncSession) -> list[str]:
+    profile = (await db.execute(select(CompanyProfile))).scalars().first()
+    return list(profile.office_locations or []) if profile else []
+
+
+async def _listed_office(value: str | None, current: str | None, db: AsyncSession) -> str | None:
+    """An office from the company's list (Company profile), matched like departments. Someone
+    already in an office that has since been taken off the list keeps it. While the company has
+    no offices listed, any office is kept as typed."""
+    if not value or not value.strip():
+        return current
+    offices = await _company_offices(db)
+    if not offices:
+        return clean_office_name(value)
+    listed = match_office(value, offices)
+    if listed:
+        return listed
+    if current and office_key(current) == office_key(value):
+        return current
+    raise HTTPException(
+        status_code=422,
+        detail=f"{clean_office_name(value)} isn't an office — add it on the Company profile page first",
+    )
+
+
+# Something@something.something, no spaces. Deliberately loose: it only catches typos like a
+# missing @ or a space, not every address a mail server would refuse.
+_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _email_problem(email: str) -> str | None:
+    """Why this (already trimmed, lowercased) email can't be used, or None."""
+    if not email:
+        return "Email is required"
+    if len(email) > 255 or not _EMAIL_PATTERN.match(email):
+        return f"{email} isn't a valid email address"
+    return None
+
+
+async def _assert_impact_level(level_id: int | None, db: AsyncSession) -> None:
+    if level_id and await db.get(ImpactLevel, level_id) is None:
+        raise HTTPException(status_code=422, detail=f"Impact level {level_id} doesn't exist — pick one from the list")
+
+
+async def _keeps_an_admin(
+    user: User, actor_id: int, db: AsyncSession, *, new_role: Role | None = None, deactivating: bool = False
+) -> None:
+    """Someone must always be able to manage users: an admin can't change their own role or
+    deactivate themselves, and the last active IT admin can't lose that role."""
+    if not deactivating and (new_role is None or new_role == user.role):
+        return
+    if user.id == actor_id:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "You can't deactivate your own account — ask another admin to do it"
+                if deactivating
+                else "You can't change your own role — ask another admin to do it"
+            ),
+        )
+    if user.role == Role.IT_ADMIN and user.is_active:
+        others = (
+            await db.execute(
+                select(func.count(User.id)).where(
+                    User.role == Role.IT_ADMIN, User.is_active.is_(True), User.id != user.id
+                )
+            )
+        ).scalar_one()
+        if not others:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{user.full_name or user.email} is the only active IT admin — "
+                    "make someone else an IT admin first"
+                ),
+            )
+
+
+async def _reporting_loop(manager_employee_id: str | None, people: set[str], db: AsyncSession) -> str | None:
+    """Which of `people` this manager already reports to, directly or further up (their manager,
+    that manager's manager, ...) — making them that person's report would close a loop. None if
+    there's no loop."""
+    seen: set[str] = set()
+    current = manager_employee_id
+    while current and current not in seen and len(seen) < 1000:
+        if current in people:
+            return current
+        seen.add(current)
+        employee = await db.get(Employee, current)
+        current = employee.reporting_manager_id if employee else None
+    return None
+
+
 def _yes(value: str) -> bool:
     return value.strip().lower() in {"yes", "y", "true", "1"}
 
@@ -174,6 +269,14 @@ async def _assert_can_report_to(manager_employee_id: str | None, own_employee_id
         raise HTTPException(
             status_code=422,
             detail=f"{manager.full_name or manager.email} isn't a manager — turn on Manager for them first",
+        )
+    if own_employee_id and await _reporting_loop(manager_employee_id, {own_employee_id}, db):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{manager.full_name or manager.email} reports to this person (directly or through someone "
+                "else), so they can't also be their manager"
+            ),
         )
 
 
@@ -323,6 +426,13 @@ async def add_to_team(
         if employee is None:
             raise HTTPException(status_code=422, detail=f"Employee {employee_id} not found")
         people.append(employee)
+    # Further up too: none of them can be someone this person reports to.
+    looped = await _reporting_loop(own.reporting_manager_id if own else None, set(ids), db)
+    if looped:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{name} reports to {looped} (directly or through someone else), so {looped} can't report to them",
+        )
 
     was_manager = user.is_manager
     user.is_manager = True
@@ -370,7 +480,13 @@ async def move_team(
             detail="Pick a manager outside this team — someone in it can't be their own manager",
         )
     await _assert_can_report_to(new_id, None, db)
-    new_manager = (await db.execute(select(User).where(User.employee_id == new_id))).scalars().first()
+    looped = await _reporting_loop(new_id, {e.employee_id for e in team}, db)
+    if looped:
+        raise HTTPException(
+            status_code=422,
+            detail=f"The new manager reports to {looped}, who's in this team — pick a manager outside it",
+        )
+    new_manager =(await db.execute(select(User).where(User.employee_id == new_id))).scalars().first()
 
     waiting = await _waiting_on_manager_step([e.employee_id for e in team], db)
     for employee in team:
@@ -480,8 +596,9 @@ async def admin_create_user(
     db: AsyncSession = Depends(get_db),
 ) -> User:
     normalized_email = payload.email.strip().lower()
-    if not normalized_email:
-        raise HTTPException(status_code=422, detail="Email is required")
+    email_problem = _email_problem(normalized_email)
+    if email_problem:
+        raise HTTPException(status_code=422, detail=email_problem)
     # Everyone starts with the temporary password unless one is given, and sets their own at their
     # first sign-in either way.
     password = payload.password or TEMPORARY_PASSWORD
@@ -499,6 +616,7 @@ async def admin_create_user(
     payload.reporting_manager_id = (payload.reporting_manager_id or "").strip() or None
     await _assert_can_report_to(payload.reporting_manager_id, employee_id, db)
     payload.department = await _listed_department(payload.department, None, db)
+    await _assert_impact_level(payload.impact_level_id, db)
     if employee_id:
         existing_employee_user = await db.execute(
             select(User).where(User.employee_id == employee_id)
@@ -587,6 +705,9 @@ async def admin_update_user(
         payload.role if payload.role is not None else user.role,
         payload.is_manager if payload.is_manager is not None else user.is_manager,
     )
+    await _keeps_an_admin(user, int(claims["sub"]), db, new_role=role)
+    if payload.impact_level_id is not None:
+        await _assert_impact_level(payload.impact_level_id, db)
     # Turning Manager off: their people have to be moved to another manager first.
     if was_manager and not manager:
         team = await _team_of(user, db)
@@ -610,7 +731,9 @@ async def admin_update_user(
             if payload.department is not None:
                 employee.department = await _listed_department(payload.department, employee.department, db)
             if payload.office_location is not None:
-                employee.office_location = payload.office_location
+                employee.office_location = await _listed_office(
+                    payload.office_location, employee.office_location, db
+                )
             if payload.reporting_manager_id is not None:
                 # Blank clears it (no manager).
                 employee.reporting_manager_id = payload.reporting_manager_id.strip() or None
@@ -639,6 +762,7 @@ async def change_user_role(
     # Reporting Manager is read as Employee + Manager; the CEO is always a manager. Changing role
     # never turns the Manager setting off (that's its own step, after moving their people).
     role, manager = _role_and_manager(payload.role, user.is_manager)
+    await _keeps_an_admin(user, int(claims["sub"]), db, new_role=role)
     user.role = role
     user.is_manager = manager or old_manager
     await log_event(
@@ -658,10 +782,16 @@ async def change_user_role(
     "/users/{user_id}",
     dependencies=[Depends(require_permission("manage_users")), Depends(require_mfa)],
 )
-async def deactivate_user(user_id: int, db: AsyncSession = Depends(get_db)) -> dict[str, str]:
+async def deactivate_user(
+    user_id: int,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
     user = await db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
+    if user.is_active:
+        await _keeps_an_admin(user, int(claims["sub"]), db, deactivating=True)
     # A manager's people have to be moved to another manager first.
     team = await _team_of(user, db)
     if team:
@@ -802,6 +932,7 @@ async def bulk_import_users(
     # Departments must be on the company's list; for the ones that aren't, the choices made on the
     # check screen apply (add to the list / use a listed one / leave blank).
     departments = await get_departments(db)
+    offices = await _company_offices(db)
     try:
         choices = json.loads(department_choices) if isinstance(department_choices, str) and department_choices else {}
     except ValueError as exc:
@@ -851,6 +982,23 @@ async def bulk_import_users(
         if not email:
             errors.append({"row": idx, "employee_id": employee_id, "email": None, "error": "email is required"})
             continue
+        if _email_problem(email):
+            errors.append({"row": idx, "employee_id": employee_id, "email": email, "error": "invalid email address"})
+            continue
+        # Offices must be on the company's list, when it has one (same rule as editing someone).
+        if office_location and offices:
+            listed_office = match_office(office_location, offices)
+            if listed_office is None:
+                errors.append(
+                    {
+                        "row": idx,
+                        "employee_id": employee_id,
+                        "email": email,
+                        "error": f'office "{clean_office_name(office_location)}" isn\'t on the Company profile list',
+                    }
+                )
+                continue
+            office_location = listed_office
         if role_raw not in {r.value for r in Role}:
             errors.append(
                 {"row": idx, "employee_id": employee_id, "email": email, "error": f"invalid role: {role_raw}"}
@@ -896,7 +1044,9 @@ async def bulk_import_users(
             full_name=full_name,
             role=role,
             is_manager=manager,
-            mfa_verified=False,
+            # Same as a user added one at a time (AdminUserCreateIn.mfa_verified defaults to True):
+            # token refreshes copy this flag, so False locked imported admins out of admin pages.
+            mfa_verified=True,
             is_active=True,
             employee_id=employee_id,
             hashed_password=temporary_hash,
@@ -977,6 +1127,11 @@ async def bulk_import_users(
                     },
                 )
                 group["people"].append({"employee_id": employee_id, "full_name": employee.full_name, "row": idx})
+            elif await _reporting_loop(manager_id, {employee_id}, db):
+                problem = (
+                    f"{manager_user.full_name or manager_id} reports to them (directly or through someone else), "
+                    "so they can't also be their manager"
+                )
             if problem:
                 warnings.append({"row": idx, "employee_id": employee_id, "email": email, "error": problem})
             else:

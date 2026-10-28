@@ -35,7 +35,8 @@ Return JSON with this exact structure:
     "igst": {"value": "decimal string", "confidence": 0-100},
     "other_tax": {"value": "see other_tax rule below", "confidence": 0-100},
     "is_tatkal": {"value": "true or false", "confidence": 0-100},
-    "expense_category": {"value": "see expense_category rule below", "confidence": 0-100}
+    "expense_category": {"value": "see expense_category rule below", "confidence": 0-100},
+    "nights": {"value": "see nights rule below", "confidence": 0-100}
   },
   "line_items": [
     {
@@ -55,6 +56,9 @@ Return JSON with this exact structure:
   ]
 }
 Rules:
+- nights: for a hotel / accommodation bill only, the number of nights stayed as a whole number
+  (check-out date minus check-in date, or the room-nights quantity printed on the bill). Use ""
+  for any other kind of bill, or when the stay dates aren't shown.
 - expense_category: classify what this bill/invoice is actually for — a corporate expense
   reimbursement system uses this to report spend by type. Pick the single best-fitting option
   based on the vendor name and line items (not the filename), from: Hotel/Accommodation, Air

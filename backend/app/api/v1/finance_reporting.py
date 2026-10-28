@@ -3,12 +3,13 @@ import io
 import json
 from datetime import date
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.rbac import get_current_claims, require_any_permission, require_permission
+from app.core.rbac import get_current_claims, get_extra_permissions, require_any_permission, require_permission
+from app.models.auth import Role
 from app.schemas.finance_reporting import (
     AuditLogOut,
     AuditLogPageOut,
@@ -20,6 +21,7 @@ from app.schemas.finance_reporting import (
     FinanceFilterParams,
     GstSummaryOut,
     PolicyViolationsOut,
+    ReportScheduleActiveIn,
     ReportScheduleIn,
     ReportScheduleOut,
     SpendByCategoryOut,
@@ -27,6 +29,7 @@ from app.schemas.finance_reporting import (
 from app.services.finance_reporting_service import (
     audit_actor_names,
     audit_overview,
+    delete_report_schedule,
     generate_excel_report,
     generate_pdf_report,
     generate_report,
@@ -41,6 +44,7 @@ from app.services.finance_reporting_service import (
     page_audit_logs,
     post_ledger_entry_to_erp,
     schedule_report,
+    set_report_schedule_active,
 )
 
 router = APIRouter(tags=["finance-reporting"])
@@ -70,11 +74,19 @@ def _filters(
     )
 
 
+async def _finance_only(claims: dict = Depends(require_permission("view_reports"))) -> dict:
+    """GST figures and the ERP ledger (every paid claim, with names and amounts) are Finance's
+    own tools: Reports access alone isn't enough. claims["role"] is the user's current role."""
+    if claims.get("role") != Role.FINANCE.value:
+        raise HTTPException(status_code=403, detail="Only Finance can open this")
+    return claims
+
+
 @router.get("/finance/gst-summary", response_model=GstSummaryOut)
 async def gst_summary(
     filters: FinanceFilterParams = Depends(_filters),
     db: AsyncSession = Depends(get_db),
-    _claims: dict = Depends(require_permission("view_reports")),
+    _claims: dict = Depends(_finance_only),
 ) -> dict:
     return await get_gst_summary(filters, db)
 
@@ -102,7 +114,7 @@ async def gstr2b_export(
     format: str = Query(default="csv", description="Format: csv, xlsx, pdf"),
     filters: FinanceFilterParams = Depends(_filters),
     db: AsyncSession = Depends(get_db),
-    _claims: dict = Depends(require_permission("view_reports")),
+    _claims: dict = Depends(_finance_only),
 ) -> StreamingResponse:
     summary = await get_gst_summary(filters, db)
     rows = [{"metric": k, "value": str(v)} for k, v in summary.items()]
@@ -154,7 +166,7 @@ async def list_erp_ledger(
     cost_centre: str | None = Query(default=None),
     status: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
-    _claims: dict = Depends(require_permission("view_reports")),
+    _claims: dict = Depends(_finance_only),
 ) -> list[dict]:
     return await list_erp_ledger_entries(
         from_date=from_date,
@@ -317,12 +329,48 @@ async def create_report_schedule(
     return await schedule_report(payload, int(claims["sub"]), db)
 
 
+async def _sees_all_schedules(claims: dict, db: AsyncSession) -> bool:
+    """Schedules (and who they email) are private to whoever set them up; only someone who
+    manages users (IT admin by default) sees and can stop everyone's."""
+    from app.services.permission_config_service import get_effective_permission_matrix
+
+    try:
+        role = Role(claims.get("role"))
+    except ValueError:
+        return False
+    allowed = (await get_effective_permission_matrix(db)).get(role, set())
+    return "manage_users" in allowed or "manage_users" in await get_extra_permissions(int(claims["sub"]), db)
+
+
 @router.get("/reports/schedule", response_model=list[ReportScheduleOut])
 async def get_report_schedules(
     db: AsyncSession = Depends(get_db),
     _claims: dict = Depends(require_permission("view_reports")),
 ) -> list[ReportScheduleOut]:
-    return await list_scheduled_reports(db)
+    sees_all = await _sees_all_schedules(_claims, db)
+    return await list_scheduled_reports(db, None if sees_all else int(_claims["sub"]))
+
+
+@router.put("/reports/schedule/{schedule_id}/active", response_model=ReportScheduleOut)
+async def set_report_schedule_active_endpoint(
+    schedule_id: int,
+    payload: ReportScheduleActiveIn,
+    db: AsyncSession = Depends(get_db),
+    _claims: dict = Depends(require_permission("view_reports")),
+) -> ReportScheduleOut:
+    sees_all = await _sees_all_schedules(_claims, db)
+    return await set_report_schedule_active(schedule_id, payload.is_active, int(_claims["sub"]), sees_all, db)
+
+
+@router.delete("/reports/schedule/{schedule_id}")
+async def delete_report_schedule_endpoint(
+    schedule_id: int,
+    db: AsyncSession = Depends(get_db),
+    _claims: dict = Depends(require_permission("view_reports")),
+) -> dict[str, str]:
+    sees_all = await _sees_all_schedules(_claims, db)
+    await delete_report_schedule(schedule_id, int(_claims["sub"]), sees_all, db)
+    return {"status": "deleted"}
 
 
 @router.get("/reports/{report_type}")

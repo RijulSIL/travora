@@ -107,7 +107,7 @@ export default function ForgotPasswordPage() {
               <div className="mb-10 text-left">
                 <img src="/assets/travoralogo.png" alt="Travora" className="h-11 w-auto object-contain mb-8" />
                 <h1 className="text-3xl font-extrabold tracking-tight text-slate-900">Reset Password</h1>
-                <p className="mt-2 text-sm text-slate-500 font-medium">Enter your email and we'll send you a one-time code to reset your password.</p>
+                <p className="mt-2 text-sm text-slate-500 font-medium">Enter your email and we&apos;ll send you a one-time code to reset your password.</p>
               </div>
 
               <form className="space-y-5" onSubmit={handleRequestOtp}>
@@ -250,12 +250,17 @@ export default function ForgotPasswordPage() {
                       {/[!@#$%^&*()_+={}[\]|\\:;"'<>,.?/~`-]/.test(password) ? <Check size={14} strokeWidth={3} className="shrink-0" /> : <div className="h-1.5 w-1.5 rounded-full bg-red-400 ml-1 mr-0.5 shrink-0" />}
                       <span>At least 1 special character</span>
                     </div>
+                    {/* Printed in every welcome email (backend welcome_service.TEMPORARY_PASSWORD). */}
+                    <div className={`flex items-center gap-2 transition-colors ${password && password !== 'Welcome@123' ? 'text-emerald-600' : 'text-red-500'}`}>
+                      {password && password !== 'Welcome@123' ? <Check size={14} strokeWidth={3} className="shrink-0" /> : <div className="h-1.5 w-1.5 rounded-full bg-red-400 ml-1 mr-0.5 shrink-0" />}
+                      <span>Not the temporary password</span>
+                    </div>
                   </div>
                 </div>
 
                 <button
                   type="submit"
-                  disabled={loading || !otpCode || !password || !confirmPassword}
+                  disabled={loading || !otpCode || !password || !confirmPassword || password === 'Welcome@123'}
                   className="btn-primary w-full h-12 mt-2 text-[15px] shadow-lg shadow-brand/25 transition-all hover:-translate-y-0.5 hover:shadow-xl hover:shadow-brand/40"
                 >
                   {loading ? 'Resetting Password...' : 'Reset Password'}

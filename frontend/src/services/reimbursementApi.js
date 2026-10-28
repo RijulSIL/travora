@@ -49,6 +49,10 @@ export const reimbursementApi = {
     }),
   travelSupportingDocumentBlob: (documentId) =>
     api.get(`travel-requests/supporting-documents/${documentId}/file`, { responseType: 'blob' }),
+  // Emails the configured travel agent a one-time /book/{token} link; same call for a first send
+  // and a resend (a resend overwrites the previous link).
+  sendRequestToAgent: (id) => api.post(`travel-requests/${id}/send-to-agent`),
+  travelAgentEmailConfigured: () => api.get('travel-requests/agent-email-configured'),
 
   invoices: (params) => api.get('invoices', { params }),
   uploadInvoice: (formData) =>
@@ -119,10 +123,14 @@ export const reimbursementApi = {
     api.get(`reports/${reportType}/export`, { params: { ...params, format: 'pdf' }, responseType: 'blob' }),
   reportSchedules: () => api.get('reports/schedule'),
   createReportSchedule: (payload) => api.post('reports/schedule', payload),
+  setReportScheduleActive: (id, isActive) => api.put(`reports/schedule/${id}/active`, { is_active: isActive }),
+  deleteReportSchedule: (id) => api.delete(`reports/schedule/${id}`),
   exceptionRequestsLog: (params) => api.get('reports/exception-requests', { params }),
 
   getException: (id) => api.get(`exceptions/${id}`),
   decideException: (id, payload) => api.post(`exceptions/${id}/approve`, payload),
+  // A claim's exceptions, one decision each: { decisions: [{ item_id, decision: ACCEPT|REJECT|SEND_BACK, comment }] }
+  decideExceptionItems: (id, payload) => api.post(`exceptions/${id}/decide-items`, payload),
   workflowConfig: () => api.get('workflow/config'),
   companyProfile: () => api.get('admin/company-profile'),
   resolveCityGroup: (cityName, travelDate) =>

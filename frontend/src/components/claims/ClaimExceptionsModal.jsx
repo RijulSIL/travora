@@ -256,8 +256,16 @@ export default function ClaimExceptionsModal({ open, expenses, onClose, onSubmit
 
   useEffect(() => {
     if (!open) return;
+    // An exception an approver sent back keeps the reason it was given, ready to edit.
+    const given = Object.fromEntries(
+      items.filter((expense) => expense.exception_reason).map((expense) => [exceptionKey(expense), expense.exception_reason]),
+    );
+    const merged = { ...given, ...reasons };
+    setReasons(merged);
     // Land on the first tab that still needs something.
-    const first = items.find((expense) => !isDone(expense)) || items[0];
+    const first =
+      items.find((expense) => expense.exception_mode !== 'BLOCK' && (merged[exceptionKey(expense)] || '').trim().length < MIN_REASON_CHARS) ||
+      items[0];
     setActiveKey(first ? exceptionKey(first) : null);
     setInvoiceIndex(0);
     setViewerOpen(false);
@@ -441,6 +449,17 @@ export default function ClaimExceptionsModal({ open, expenses, onClose, onSubmit
               </div>
             )}
 
+            {active.exception_status === 'SENT_BACK' ? (
+              <div className="rounded-xl border border-orange-200 bg-orange-50 p-3 text-[11.5px] leading-snug text-orange-900">
+                <div className="mb-0.5 flex items-center gap-1.5 font-bold">
+                  <AlertCircle size={14} className="text-orange-600" /> Sent back by your approver
+                </div>
+                {active.exception_comment ? <>&ldquo;{active.exception_comment}&rdquo; </> : null}
+                Change your reason below, or replace or remove this bill. On submit it goes back to the same approver,
+                who decides only what they sent back.
+              </div>
+            ) : null}
+
             <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/50 p-3.5">
               <div className="grid grid-cols-2 gap-y-2 text-[11.5px] font-semibold text-slate-500">
                 <div>Expense category</div>
@@ -490,9 +509,10 @@ export default function ClaimExceptionsModal({ open, expenses, onClose, onSubmit
 
             <div className="rounded-lg border border-slate-100 bg-slate-50 p-3 text-[11px] leading-relaxed text-slate-500">
               <span className="font-bold text-slate-600">What happens next: </span>
-              each exception goes to its own approvers, and they decide the whole claim — it doesn't also go
-              through the normal approvers. Once every exception is approved, the claim goes to Finance for payment; if
-              any exception is rejected, the whole claim is rejected.
+              your exceptions go together to the exception approvers, who decide the whole claim — it doesn&apos;t also
+              go through the normal approvers. Each approver accepts, rejects or sends back every exception. Once the
+              last one accepts them all, the claim goes to Finance for payment; if any exception is rejected, the whole
+              claim is rejected.
             </div>
           </div>
         </div>

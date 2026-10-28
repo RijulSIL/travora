@@ -79,6 +79,10 @@ async def upload_invoice(
             db=db,
             reimbursement_category=reimbursement_category,
         )
+    except HTTPException:
+        # A deliberate refusal (wrong file type 415, too big 413, empty 422 ...) goes back
+        # to the employee as-is — only unexpected failures become a 500.
+        raise
     except Exception as e:
         import traceback
         print("="*50)
@@ -232,9 +236,14 @@ async def duplicate_check(
     vendor_name: str = Query(...),
     invoice_date: date = Query(...),
     grand_total: Decimal = Query(...),
+    claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ) -> DuplicateCheckOut:
-    candidates = (await db.execute(select(Invoice.id))).scalars().all()
+    # Only the caller's own invoices: matching anyone's would let an employee probe vendor /
+    # date / amount combinations to learn about colleagues' bills.
+    candidates = (
+        await db.execute(select(Invoice.id).where(Invoice.uploader_user_id == int(claims["sub"])))
+    ).scalars().all()
     target = {
         "vendor_name": vendor_name,
         "invoice_date": invoice_date.isoformat(),

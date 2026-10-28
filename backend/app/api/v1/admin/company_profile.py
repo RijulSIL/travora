@@ -16,6 +16,7 @@ from app.services.department_service import (
     clean_department_name,
     department_counts,
     match_department,
+    removal_blocked_message,
     rename_department,
     validate_department_list,
 )
@@ -53,6 +54,7 @@ async def _serialize(profile: CompanyProfile, db: AsyncSession) -> CompanyProfil
         departments=list(profile.departments) if profile.departments is not None else list(DEFAULT_DEPARTMENTS),
         department_counts=await department_counts(db),
         office_counts=await office_counts(db),
+        travel_agent_email=profile.travel_agent_email,
     )
 
 
@@ -121,6 +123,7 @@ async def put_company_profile(
         "gstins": list(profile.gstins or []) if profile else [],
         "office_locations": list(profile.office_locations or []) if profile else [],
         "departments": list(stored_departments) if stored_departments is not None else list(DEFAULT_DEPARTMENTS),
+        "travel_agent_email": profile.travel_agent_email if profile else None,
     }
     if profile is None:
         profile = CompanyProfile(company_name=company_name)
@@ -143,6 +146,7 @@ async def put_company_profile(
     profile.gstins = gstins
     profile.office_locations = offices
     profile.bank_details = encrypt_text(json.dumps(bank))
+    profile.travel_agent_email = payload.travel_agent_email or None
 
     if payload.departments is not None:
         departments = validate_department_list(payload.departments)
@@ -156,6 +160,10 @@ async def put_company_profile(
                     detail=f"Couldn't rename {clean_department_name(old)} to {clean_department_name(new)}",
                 )
             await rename_department(old_name, new_name, db)
+        # People still in a department taken off the list would be left in one that isn't there.
+        blocked = await removal_blocked_message(before["departments"], departments, db)
+        if blocked:
+            raise HTTPException(status_code=422, detail=blocked)
         profile.departments = departments
 
     after = {
@@ -163,6 +171,7 @@ async def put_company_profile(
         "gstins": gstins,
         "office_locations": offices,
         "departments": list(profile.departments) if profile.departments is not None else list(DEFAULT_DEPARTMENTS),
+        "travel_agent_email": profile.travel_agent_email,
     }
     changed = [field for field in after if after[field] != before[field]]
     old_value = {field: before[field] for field in changed}

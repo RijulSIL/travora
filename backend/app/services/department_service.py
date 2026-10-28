@@ -3,8 +3,9 @@ User management, the CSV import, the Approval matrix's department heads and Team
 
 A person's department is still stored as text on their employee record. Names are matched ignoring
 capitals and extra spaces ("human resources " is Human Resources). Renaming a department moves the
-people in it, its department head and its team budget to the new name; removing one only takes it
-off the list — people already in it keep it until they're changed."""
+people in it, its department head and its team budget to the new name. A department can't be taken
+off the list while active people are still in it (see removal_blocked_message); its head and team
+budget don't block that, they just stay set up under the old name until they're changed."""
 
 import re
 
@@ -95,6 +96,42 @@ def validate_department_list(names: list[str]) -> list[str]:
         seen[key] = name
         cleaned.append(name)
     return cleaned
+
+
+def _people(count: int) -> str:
+    return f"{count} {'person' if count == 1 else 'people'}"
+
+
+async def removal_blocked_message(old_list: list[str], new_list: list[str], db: AsyncSession) -> str | None:
+    """Why the new list can't be saved: departments taken off it that active people are still in
+    (counted after any renames have moved people), or None. Mentions a head or team budget such a
+    department also has, since those stay behind under its name too."""
+    counts = await department_counts(db)
+    blocked: list[tuple[str, int]] = []
+    for name in old_list:
+        if match_department(name, new_list) is not None:
+            continue
+        people = sum(n for dept, n in counts.items() if department_key(dept) == department_key(name))
+        if people:
+            blocked.append((name, people))
+    if not blocked:
+        return None
+
+    row = await db.get(WorkflowConfigRow, 1)
+    config = row.config_json if row is not None and isinstance(row.config_json, dict) else {}
+    heads = config.get("department_heads") or {}
+    budgets = (await db.execute(select(DepartmentBudget.department))).scalars().all()
+    parts = [f"{name} still has {_people(people)}" for name, people in blocked]
+    message = f"{' and '.join(parts)} — move them to another department first"
+    for name, _ in blocked:
+        extras = []
+        if any(department_key(head) == department_key(name) for head in heads):
+            extras.append("a department head")
+        if any(department_key(budget) == department_key(name) for budget in budgets):
+            extras.append("a team budget")
+        if extras:
+            message += f". {name} also has {' and '.join(extras)}, which you may want to change too"
+    return message
 
 
 async def rename_department(old: str, new: str, db: AsyncSession) -> None:

@@ -68,6 +68,27 @@ function FieldError({ children }) {
   return children ? <p className="mt-1 text-[11px] font-bold text-rose-600">{children}</p> : null;
 }
 
+/** "2026-10-28" for a local Date (what a date input holds). */
+function isoDay(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** A round trip coming back before it goes (shown as soon as both dates are in). */
+function returnDateError(values) {
+  return values.travel_date && values.return_date && values.return_date < values.travel_date
+    ? 'Coming back is before going — pick a later date'
+    : null;
+}
+
+/** A multi-city leg dated in the past or before the leg ahead of it. */
+function legDateError(legs, i) {
+  const date = legs[i]?.travel_date;
+  if (!date) return null;
+  if (date < isoDay(today())) return `Leg ${i + 1} is in the past`;
+  const earlier = legs.slice(0, i).map((l) => l.travel_date).filter(Boolean).pop();
+  return earlier && date < earlier ? `Leg ${i + 1} is dated before an earlier leg — keep the legs in date order` : null;
+}
+
 /** "Wed, 14 Oct" */
 function formDate(value) {
   return value ? new Date(`${value}T00:00:00`).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' }) : '';
@@ -101,8 +122,14 @@ export default function TravelRequestsPage() {
       travel_mode: [required()],
       from_city: [(val, values) => values.trip_type !== 'MULTI_CITY' ? required()(val) : null],
       to_city: [(val, values) => values.trip_type !== 'MULTI_CITY' ? required()(val) : null],
-      travel_date: [(val, values) => values.trip_type !== 'MULTI_CITY' ? required()(val) : null],
-      return_date: [(val, values) => values.trip_type === 'ROUND_TRIP' ? required()(val) : null],
+      travel_date: [
+        (val, values) => values.trip_type !== 'MULTI_CITY' ? required()(val) : null,
+        (val, values) => (values.trip_type !== 'MULTI_CITY' && val && val < isoDay(today()) ? 'This date is in the past' : null),
+      ],
+      return_date: [
+        (val, values) => values.trip_type === 'ROUND_TRIP' ? required()(val) : null,
+        (val, values) => (values.trip_type === 'ROUND_TRIP' ? returnDateError(values) : null),
+      ],
       travel_type: [required()],
       project_code: [(val, values) => values.travel_type === 'PROJECT' ? required()(val) : null],
       purpose: [required()],
@@ -133,23 +160,25 @@ export default function TravelRequestsPage() {
     });
   }
 
-  function openTicketMenu(requestId, buttonEl, itemCount = 2) {
+  function ticketMenuPosition(buttonEl, itemCount) {
     const rect = buttonEl.getBoundingClientRect();
     // Opens below the button, or above it when there isn't room (e.g. the last row on screen).
     const menuHeight = itemCount * 36 + 14;
     const below = rect.bottom + 6 + menuHeight <= window.innerHeight;
-    setTicketMenuPos(
-      below
-        ? { top: rect.bottom + 6, right: window.innerWidth - rect.right }
-        : { bottom: window.innerHeight - rect.top + 6, right: window.innerWidth - rect.right },
-    );
+    const right = Math.max(8, window.innerWidth - rect.right);
+    return below ? { top: rect.bottom + 6, right } : { bottom: window.innerHeight - rect.top + 6, right };
+  }
+
+  function openTicketMenu(requestId, buttonEl, itemCount = 2) {
+    setTicketMenuPos({ ...ticketMenuPosition(buttonEl, itemCount), itemCount });
     setOpenTicketMenuId(requestId);
   }
 
-  // Close the open ticket picker on outside click (mirrors AppNavbar's user-menu dropdown) —
-  // checked against both the trigger button and the portal panel, since the panel is no longer
-  // a DOM descendant of the trigger once it's rendered into document.body. Also closes on
-  // scroll, since a fixed-position panel would otherwise visually detach from its button.
+  // Close the open ticket picker on outside click or Escape (mirrors AppNavbar's user-menu
+  // dropdown) — checked against both the trigger button and the portal panel, since the panel
+  // is no longer a DOM descendant of the trigger once it's rendered into document.body. On
+  // scroll / resize the fixed-position panel follows its button instead of closing (focusing
+  // the button can itself scroll a narrow table, which used to close the menu as it opened).
   useEffect(() => {
     if (openTicketMenuId === null) return;
     const handleClick = (e) => {
@@ -157,12 +186,22 @@ export default function TravelRequestsPage() {
       if (ticketMenuPanelRef.current?.contains(e.target)) return;
       setOpenTicketMenuId(null);
     };
-    const handleScroll = () => setOpenTicketMenuId(null);
+    const handleKey = (e) => {
+      if (e.key === 'Escape') setOpenTicketMenuId(null);
+    };
+    const follow = () => {
+      const button = ticketMenuTriggerRef.current?.querySelector('button');
+      if (button) setTicketMenuPos((pos) => (pos ? { ...ticketMenuPosition(button, pos.itemCount), itemCount: pos.itemCount } : pos));
+    };
     document.addEventListener('mousedown', handleClick);
-    window.addEventListener('scroll', handleScroll, true);
+    document.addEventListener('keydown', handleKey);
+    window.addEventListener('scroll', follow, true);
+    window.addEventListener('resize', follow);
     return () => {
       document.removeEventListener('mousedown', handleClick);
-      window.removeEventListener('scroll', handleScroll, true);
+      document.removeEventListener('keydown', handleKey);
+      window.removeEventListener('scroll', follow, true);
+      window.removeEventListener('resize', follow);
     };
   }, [openTicketMenuId]);
 
@@ -430,6 +469,7 @@ export default function TravelRequestsPage() {
     setPolicyError(null);
     try {
       if (!form.validateAll()) return;
+      if (form.values.trip_type === 'MULTI_CITY' && form.values.legs.some((_, i) => legDateError(form.values.legs, i))) return;
       if (pickSegments.some((seg) => !segmentComplete(seg) || !pickDone(legPicks[seg.key]))) {
         setShowPickErrors(true);
         pickerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -738,34 +778,47 @@ export default function TravelRequestsPage() {
                         {rv.ticketed.length === 1 ? (
                           <button
                             type="button"
-                            onClick={() => viewTicket(rv.ticketed[0].ticket, `Ticket · ${rv.ticketed[0].label}`)}
-                            className="inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-[11.5px] font-bold text-slate-700 hover:bg-slate-50"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              viewTicket(rv.ticketed[0].ticket, `Ticket · ${rv.ticketed[0].label}`);
+                            }}
+                            className="relative z-[1] inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-[11.5px] font-bold text-slate-700 hover:bg-slate-50"
                           >
-                            <Ticket size={13} /> Ticket
+                            <Ticket size={13} /> View Ticket
                           </button>
                         ) : rv.ticketed.length > 1 ? (
-                          <div ref={isTicketMenuOpen ? ticketMenuTriggerRef : null}>
+                          // Clicks here never reach the row (which would expand it instead).
+                          <div
+                            ref={isTicketMenuOpen ? ticketMenuTriggerRef : null}
+                            className="relative z-[1]"
+                            onClick={(e) => e.stopPropagation()}
+                            onKeyDown={(e) => e.stopPropagation()}
+                          >
                             <button
                               type="button"
                               onClick={(e) => (isTicketMenuOpen ? setOpenTicketMenuId(null) : openTicketMenu(request.id, e.currentTarget, rv.ticketed.length))}
+                              aria-haspopup="menu"
                               aria-expanded={isTicketMenuOpen}
+                              aria-label={`View tickets (${rv.ticketed.length})`}
                               className="inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-[11.5px] font-bold text-slate-700 hover:bg-slate-50"
                             >
-                              <Ticket size={13} /> {rv.ticketed.length} tickets
+                              <Ticket size={13} /> View Tickets ({rv.ticketed.length})
                               <ChevronDown size={12} className={`text-slate-400 transition-transform ${isTicketMenuOpen ? 'rotate-180' : ''}`} />
                             </button>
                             {isTicketMenuOpen && ticketMenuPos
                               ? createPortal(
                                   <div
                                     ref={ticketMenuPanelRef}
+                                    role="menu"
                                     style={{ position: 'fixed', top: ticketMenuPos.top, bottom: ticketMenuPos.bottom, right: ticketMenuPos.right }}
-                                    className="z-[100] w-56 rounded-lg border border-slate-200 bg-white py-1.5 text-left shadow-lg"
+                                    className="z-[100] w-64 max-w-[calc(100vw-16px)] rounded-lg border border-slate-200 bg-white py-1.5 text-left shadow-lg"
                                   >
                                     {rv.ticketed.map((seg) => (
                                       <button
                                         key={seg.seq}
                                         type="button"
-                                        className="block w-full px-3 py-2 text-left text-[11.5px] font-semibold text-slate-700 hover:bg-slate-50"
+                                        role="menuitem"
+                                        className="block w-full truncate px-3 py-2 text-left text-[11.5px] font-semibold text-slate-700 hover:bg-slate-50"
                                         onClick={() => {
                                           setOpenTicketMenuId(null);
                                           viewTicket(seg.ticket, `Ticket · ${seg.label}`);
@@ -991,6 +1044,7 @@ export default function TravelRequestsPage() {
                             id="tr-date"
                             type="date"
                             required
+                            min={isoDay(today())}
                             className={FIELD}
                             value={form.values.travel_date}
                             onChange={(e) => form.handleChange('travel_date', e.target.value)}
@@ -1005,12 +1059,14 @@ export default function TravelRequestsPage() {
                               id="tr-return"
                               type="date"
                               required
+                              min={form.values.travel_date || isoDay(today())}
                               className={FIELD}
                               value={form.values.return_date}
                               onChange={(e) => form.handleChange('return_date', e.target.value)}
                               onBlur={() => form.handleBlur('return_date')}
+                              aria-invalid={Boolean(form.errors.return_date || returnDateError(form.values))}
                             />
-                            <FieldError>{form.errors.return_date}</FieldError>
+                            <FieldError>{form.errors.return_date || returnDateError(form.values)}</FieldError>
                           </div>
                         ) : null}
                       </div>
@@ -1086,9 +1142,15 @@ export default function TravelRequestsPage() {
                               aria-label={`Leg ${i + 1} date`}
                               className={`${FIELD} col-span-3 sm:col-span-1 sm:col-start-5 sm:row-start-1`}
                               required
+                              min={form.values.legs.slice(0, i).map((l) => l.travel_date).filter(Boolean).pop() || isoDay(today())}
                               value={leg.travel_date}
                               onChange={(e) => updateLeg(i, { travel_date: e.target.value })}
                             />
+                            {legDateError(form.values.legs, i) ? (
+                              <div className="col-span-4 sm:col-span-6 sm:pl-[34px]">
+                                <FieldError>{legDateError(form.values.legs, i)}</FieldError>
+                              </div>
+                            ) : null}
                           </div>
                         );
                       })}
@@ -1220,8 +1282,12 @@ export default function TravelRequestsPage() {
                         className="min-h-[3rem] w-full rounded-[10px] border border-amber-200 bg-white p-2.5 text-[13px] text-ink outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-200/60"
                         placeholder="e.g. Urgent customer escalation meeting requested by the VP"
                         value={exceptionReason}
+                        maxLength={2000}
                         onChange={(e) => setExceptionReason(e.target.value)}
                       />
+                      {exceptionReason.length > 1800 ? (
+                        <p className="text-right text-[11px] text-amber-800">{exceptionReason.length} / 2000</p>
+                      ) : null}
                     </div>
                     <p className="text-[11.5px] text-amber-800">It goes for exception approval first, then to the travel desk.</p>
                   </section>

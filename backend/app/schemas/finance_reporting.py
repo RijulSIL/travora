@@ -4,6 +4,7 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.finance import ReportFormat, ScheduleFrequency
+from app.schemas.common import check_email_address
 
 
 class FinanceFilterParams(BaseModel):
@@ -119,6 +120,30 @@ class ReportScheduleIn(BaseModel):
             raise ValueError("Only CSV report_format is currently supported")
         return value
 
+    @field_validator("report_type")
+    @classmethod
+    def known_report_type(cls, value: str) -> str:
+        from app.services.finance_reporting_service import SCHEDULABLE_REPORT_TYPES
+
+        cleaned = value.strip()
+        if cleaned not in SCHEDULABLE_REPORT_TYPES:
+            raise ValueError(f"{cleaned or 'That'} isn't a report that can be scheduled")
+        return cleaned
+
+    @field_validator("recipients")
+    @classmethod
+    def valid_recipients(cls, value: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for address in value:
+            email = check_email_address(address)
+            if email not in cleaned:
+                cleaned.append(email)
+        return cleaned
+
+
+class ReportScheduleActiveIn(BaseModel):
+    is_active: bool
+
 
 class ReportScheduleOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -185,6 +210,7 @@ class PolicyViolationsOut(BaseModel):
 
 
 class ExceptionApprovalDecisionOut(BaseModel):
+    id: int | None = None
     required_role: str
     status: str
     acted_by_user_id: int | None = None
@@ -192,6 +218,36 @@ class ExceptionApprovalDecisionOut(BaseModel):
     acted_by_name: str | None = None
     sla_deadline_at: datetime | None = None
     comment: str | None = None
+
+
+class ExceptionItemStepDecisionOut(BaseModel):
+    """One step's decision on one exception of a claim's exception request."""
+
+    exception_approval_id: int
+    step: int | None = None
+    required_role: str | None = None
+    decision: str
+    comment: str | None = None
+    decided_by_user_id: int | None = None
+    decided_by_name: str | None = None
+    decided_at: datetime | None = None
+
+
+class ExceptionItemOut(BaseModel):
+    """One exception listed on a claim's exception request."""
+
+    item_id: int
+    exception_type: str
+    exception_type_label: str | None = None
+    category_name: str | None = None
+    claimed_amount: Decimal | None = None
+    cap_amount: Decimal | None = None
+    reason: str | None = None
+    status: str
+    decision_comment: str | None = None
+    # Whether the step now waiting still has to decide this one.
+    awaiting_current_step: bool = False
+    decisions: list[ExceptionItemStepDecisionOut] = Field(default_factory=list)
 
 
 class ExceptionTravelRequestLegOut(BaseModel):
@@ -222,6 +278,11 @@ class ExceptionTravelRequestOut(BaseModel):
 class ExceptionRequestLogOut(BaseModel):
     exception_id: int
     exception_ref: str | None = None
+    # CLAIM_EXCEPTIONS / TRAVEL_EXCEPTIONS; None for requests raised before the shared routes.
+    route_key: str | None = None
+    # A claim's one request listing each exception (decided one by one), with those exceptions.
+    itemized: bool = False
+    items: list[ExceptionItemOut] = Field(default_factory=list)
     claim_id: int | None = None
     claim_ref: str | None = None
     employee: str | None = None

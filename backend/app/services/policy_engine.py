@@ -22,7 +22,8 @@ async def resolve_city_group(city_name: str, travel_date: date, db: AsyncSession
     """Returns a CityGroupTier `code` (never the tier's numeric id) — ExpenseLimit.city_group and
     ClaimDraft.destination_city_group both store this same code as a plain string, so whatever
     this returns matches them directly with no further lookup needed."""
-    normalized_city = city_name.strip().lower()
+    # City names are stored tidied (clean_city_name), so the typed name is tidied the same way.
+    normalized_city = normalize_city_name(city_name)
     result = await db.execute(
         select(CityGroup).where(
             and_(
@@ -43,8 +44,14 @@ async def resolve_city_group(city_name: str, travel_date: date, db: AsyncSession
     return default_tier.code
 
 
+def clean_city_name(city_name: str) -> str:
+    """A city name as stored: trimmed, with runs of spaces inside it collapsed to one."""
+    return " ".join((city_name or "").split())
+
+
 def normalize_city_name(city_name: str) -> str:
-    return city_name.strip().lower()
+    """The key two city names are compared by — 'Qa  Town', ' qa town ' and 'QA TOWN' are one city."""
+    return clean_city_name(city_name).lower()
 
 
 def date_ranges_overlap(
@@ -297,6 +304,173 @@ async def enforce_immutability(version_id: int, db: AsyncSession) -> None:
             status_code=status.HTTP_409_CONFLICT,
             detail="Policy versions are immutable once their effective_from date is reached",
         )
+
+
+async def can_act_on_policy_step(user, required_role: str, db: AsyncSession) -> bool:
+    """Is it `user`'s turn at a Policy Approval step with this role? A policy version has no
+    employee behind it, so a Reporting Manager step means anyone with the Manager setting (the
+    generic role check treats "no employee" as anyone at all)."""
+    from app.core.rbac import is_manager
+    from app.models.auth import Role
+    from app.services.workflow_service import _user_matches_required_role
+
+    if required_role == Role.REPORTING_MANAGER.value:
+        return is_manager(user)
+    return await _user_matches_required_role(user, required_role, None, db)
+
+
+async def policy_step_user_ids(required_role: str, db: AsyncSession) -> list[int]:
+    """Who gets told a policy version is waiting on a step with this role."""
+    from app.models.auth import Role, User
+
+    query = select(User.id).where(User.is_active.is_(True))
+    if required_role == Role.REPORTING_MANAGER.value:
+        query = query.where(User.is_manager.is_(True))
+    else:
+        try:
+            query = query.where(User.role == Role(required_role))
+        except ValueError:
+            return []
+    return list((await db.execute(query)).scalars().all())
+
+
+async def notify_policy_step(version, required_role: str, db: AsyncSession) -> None:
+    """Tell the people at this Policy Approval step that a version is waiting for them (not
+    whoever created it — they can't approve their own version)."""
+    from app.models.claim_workflow import NotificationCategory
+    from app.services.notification_service import create_notification
+
+    for user_id in await policy_step_user_ids(required_role, db):
+        if user_id == version.created_by:
+            continue
+        await create_notification(
+            user_id=user_id,
+            title=f"Policy {version.version_number} is waiting for your approval",
+            body=f"Policy version {version.version_number} has been submitted. Review it and approve or send it back.",
+            link="/admin/policy-versions",
+            category=NotificationCategory.APPROVAL_REQUIRED.value,
+            db=db,
+        )
+
+
+# A Policy Approval step only the version's creator could act on — they hold the step's role,
+# nobody else active does, and they haven't delegated it — is skipped (same rule as a claimant
+# who is the only approver at a claim stage, see workflow_service._claimant_is_only_approver).
+# The last step is never skipped: it waits for someone else to get the role or a delegation.
+POLICY_STEP_SKIPPED_OWN = "SKIPPED_OWN"
+POLICY_SELF_SKIP_NOTE = (
+    "Skipped — whoever created this version can't approve it and is the only approver for this step."
+)
+
+
+def is_policy_version_creator(user, version) -> bool:
+    """Nobody approves or sends back a policy version they created themselves."""
+    return user is not None and version.created_by is not None and user.id == version.created_by
+
+
+async def creator_is_only_policy_approver(version, required_role: str, db: AsyncSession) -> bool:
+    from app.core.timezone import now_ist
+    from app.models.auth import Delegation, Role
+    from app.services.delegation_service import is_delegation_enabled
+
+    if version.created_by is None:
+        return False
+    user_ids = await policy_step_user_ids(required_role, db)
+    if user_ids != [version.created_by]:
+        return False
+    # A delegate covering the creator's role can approve in their place (a manager step has no
+    # delegation — anyone with the Manager setting is the pool).
+    if required_role != Role.REPORTING_MANAGER.value and await is_delegation_enabled(db):
+        now = now_ist()
+        delegated = (
+            await db.execute(
+                select(func.count(Delegation.id)).where(
+                    Delegation.delegator_id == version.created_by,
+                    Delegation.delegatee_id != version.created_by,
+                    Delegation.is_active,
+                    Delegation.start_date <= now,
+                    Delegation.end_date >= now,
+                )
+            )
+        ).scalar_one()
+        if delegated:
+            return False
+    return True
+
+
+async def open_policy_step(version, approvals: list, index: int, db: AsyncSession):
+    """Make approvals[index] the PENDING step and tell its approvers — or, when only the creator
+    could act on it, mark it skipped and open the next one instead. Returns the step opened."""
+    from app.core.timezone import now_ist
+    from app.services.audit_service import log_event
+
+    while index < len(approvals) - 1 and await creator_is_only_policy_approver(
+        version, approvals[index].required_role, db
+    ):
+        step = approvals[index]
+        step.status = POLICY_STEP_SKIPPED_OWN
+        step.acted_at = now_ist()
+        step.comment = POLICY_SELF_SKIP_NOTE
+        await log_event(
+            entity_type="policy_version",
+            entity_id=str(version.id),
+            action="policy_version_stage_skipped_own",
+            actor_id=None,
+            old={"stage_role": step.required_role},
+            new={"next_stage_role": approvals[index + 1].required_role, "comment": POLICY_SELF_SKIP_NOTE},
+            db=db,
+        )
+        index += 1
+    step = approvals[index]
+    step.status = "PENDING"
+    await notify_policy_step(version, step.required_role, db)
+    return step
+
+
+async def policy_versions_awaiting(user, db: AsyncSession) -> list[int]:
+    """Ids of policy versions whose current approval step is this user's (directly, or via a
+    delegation) — the Policy Approval chain decides who approves, not policy-edit rights."""
+    from app.models.policy import PolicyApproval
+
+    pending = (
+        await db.execute(select(PolicyVersion).where(PolicyVersion.status == PolicyStatus.PENDING_HRBP))
+    ).scalars().all()
+    awaiting = []
+    for version in pending:
+        if is_policy_version_creator(user, version):
+            continue
+        step = (
+            await db.execute(
+                select(PolicyApproval)
+                .where(PolicyApproval.policy_version_id == version.id, PolicyApproval.status == "PENDING")
+                .order_by(PolicyApproval.id)
+            )
+        ).scalars().first()
+        if step is not None and await can_act_on_policy_step(user, step.required_role, db):
+            awaiting.append(version.id)
+    return awaiting
+
+
+async def enforce_draft_contents(version_ids: list[int | None], db: AsyncSession) -> None:
+    """A version's impact levels and expense limits can only change while it's a DRAFT — once
+    submitted, the approvers are approving exactly what they saw (and an approved or scheduled
+    version must stay as approved). Every version touched (a row's own, and any it's being moved
+    to) must be a draft."""
+    for version_id in {v for v in version_ids if v is not None}:
+        version = await db.get(PolicyVersion, version_id)
+        if version is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Policy version not found")
+        if version.status != PolicyStatus.DRAFT:
+            state = {
+                PolicyStatus.PENDING_HRBP: "waiting for approval",
+                PolicyStatus.ACTIVE: "approved",
+                PolicyStatus.ARCHIVED: "archived",
+            }.get(version.status, version.status.value.lower())
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Policy {version.version_number} is {state}: its levels and limits can only be changed "
+                "while it's a draft",
+            )
 
 
 def enforce_city_group_immutability(city_group: CityGroup) -> None:

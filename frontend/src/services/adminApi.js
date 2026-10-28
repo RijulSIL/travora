@@ -53,6 +53,7 @@ export const adminApi = {
   rejectPolicyVersion: (id, reason) => api.post(`/admin/policy-versions/${id}/reject`, { reason }),
   diffPolicyVersions: (v1, v2) => api.get('/admin/policy-versions/diff', { params: { v1, v2 } }),
   policyApprovalChain: (id) => api.get(`/admin/policy-versions/${id}/approval-chain`),
+  policyVersionsAwaitingMe: () => api.get('/admin/policy-versions/awaiting-me'),
   schedulePolicyVersion: (id, effectiveFrom) => api.put(`/admin/policy-versions/${id}/schedule`, { effective_from: effectiveFrom }),
   expenseCategories: (params) => api.get('/admin/expense-categories', { params }),
   createExpenseCategory: (payload) => api.post('/admin/expense-categories', payload),

@@ -243,12 +243,15 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
     scope_categories |= set(head_scope["claim_categories"])
     scope_travel_request = scope_travel_request or head_scope["travel_request"]
     scope_exceptions |= set(head_scope["exceptions"])
+    from app.services.policy_engine import policy_versions_awaiting
+
     approver_scope = ApproverScopeOut(
         claims=bool(scope_categories),
         claim_categories=sorted(scope_categories),
         travel_request=scope_travel_request,
         exceptions=sorted(scope_exceptions),
         relocation=scope_relocation,
+        policy=len(await policy_versions_awaiting(user, db)),
     )
 
     # The single source the frontend trusts for "can I see/use this page" — replaces its own

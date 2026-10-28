@@ -23,6 +23,7 @@ from app.services.auth_service import (
     create_mfa_token,
     create_refresh_token,
     create_trusted_device_token,
+    end_sessions,
     generate_and_send_login_otp,
     hash_password,
     is_trusted_device,
@@ -70,8 +71,17 @@ async def change_password_confirm(
     payload: ChangePasswordConfirm,
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
+    refresh_token: str | None = Cookie(default=None),
+    x_refresh_token: str | None = Header(default=None),
 ) -> dict[str, str]:
-    await confirm_password_change(int(claims["sub"]), payload.otp_code, payload.new_password, db)
+    # Other sessions are signed out; this one (its refresh token) stays.
+    await confirm_password_change(
+        int(claims["sub"]),
+        payload.otp_code,
+        payload.new_password,
+        db,
+        keep_refresh_tokens=(refresh_token, x_refresh_token),
+    )
     return {"message": "Password successfully changed."}
 
 
@@ -80,9 +90,12 @@ async def set_initial_password(
     payload: SetInitialPasswordRequest,
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
+    refresh_token: str | None = Cookie(default=None),
+    x_refresh_token: str | None = Header(default=None),
 ) -> dict[str, str]:
     """First sign-in: someone still on the temporary password sets their own (they've just signed
-    in with it and the emailed code, so no further check is needed). Only while they still have to."""
+    in with it and the emailed code, so no further check is needed). Only while they still have to.
+    Anyone else signed in with the temporary password is signed out; this session stays."""
     user = await db.get(User, int(claims["sub"]))
     if user is None or not user.is_active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
@@ -96,6 +109,7 @@ async def set_initial_password(
         )
     user.hashed_password = hash_password(payload.new_password)
     user.must_change_password = False
+    await end_sessions(user, db, (refresh_token, x_refresh_token))
     await db.commit()
     return {"message": "Password set."}
 
@@ -228,7 +242,9 @@ async def refresh_access_token(
     new_refresh, user = await rotate_refresh_token(token, db)
     await db.commit()
     _set_refresh_cookie(response, new_refresh)
-    access_token = create_access_token(user.id, user.role, user.mfa_verified)
+    # A refresh token is only ever issued at the end of a full login (password + OTP, or password
+    # alone when OTP is switched off), so the session it renews was already verified.
+    access_token = create_access_token(user.id, user.role, mfa_verified=True)
     return {
         "access_token": access_token,
         "token_type": "bearer",

@@ -1,15 +1,16 @@
 import hashlib
+import math
 import secrets
 from datetime import datetime, timedelta
 
 from fastapi import HTTPException, status
 from jose import jwt
 from passlib.context import CryptContext
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.auth import RefreshToken, Role, User
+from app.models.auth import LoginFailure, RefreshToken, Role, User
 from app.models.mfa import LoginOTP, TrustedDevice
 from app.services.notification_service import send_email_async
 
@@ -44,19 +45,46 @@ async def request_password_reset_otp(email: str, db: AsyncSession) -> None:
     await generate_and_send_otp(user, db, purpose="password_reset")
 
 
+# Every wrong-code answer from the reset page, whether or not the email has an account (and
+# whether the code was wrong, old or tried too often), so the page can't be used to find out
+# which emails have accounts.
+RESET_CODE_ERROR = "That code is wrong or has expired. Check the latest email or request a new code."
+
+
+def _refuse_temporary_password(new_password: str) -> None:
+    """Welcome@123 is printed in every welcome email, so nobody may go back to it. Checked before
+    the code, so choosing it doesn't use up one of the tries."""
+    from app.services.welcome_service import TEMPORARY_PASSWORD
+
+    if new_password == TEMPORARY_PASSWORD:
+        raise HTTPException(status_code=422, detail="Choose a password other than the temporary one")
+
+
 async def confirm_password_reset(email: str, otp_code: str, new_password: str, db: AsyncSession) -> None:
+    _refuse_temporary_password(new_password)
     normalized_email = email.strip().lower()
     result = await db.execute(select(User).where(User.email == normalized_email))
     user = result.scalar_one_or_none()
 
     if not user or not user.is_active:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request")
+        # Same work as checking a real code, so the answer doesn't come back noticeably faster.
+        verify_password(otp_code, _dummy_hash())
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=RESET_CODE_ERROR)
 
-    await verify_otp(user.id, otp_code, db, purpose="password_reset")
+    try:
+        await verify_otp(user.id, otp_code, db, purpose="password_reset")
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=RESET_CODE_ERROR) from None
+        raise
 
     user.hashed_password = hash_password(new_password)
     # Their own password now: no longer on the temporary one from the welcome email.
     user.must_change_password = False
+    # Whoever was signed in with the old password is signed out everywhere.
+    await end_sessions(user, db)
+    # A reset also lifts a sign-in lockout.
+    await db.execute(delete(LoginFailure).where(LoginFailure.email == normalized_email[:255]))
     await db.commit()
 
 
@@ -79,18 +107,69 @@ def verify_password(password: str, hashed: str) -> bool:
         return False
 
 
+_DUMMY_HASH: str | None = None
+
+
+def _dummy_hash() -> str:
+    """A hash to check against when there's no account, so a made-up email takes as long to
+    answer as a wrong password."""
+    global _DUMMY_HASH
+    if _DUMMY_HASH is None:
+        _DUMMY_HASH = hash_password(secrets.token_urlsafe(16))
+    return _DUMMY_HASH
+
+
+# Wrong passwords in a row before an email can't sign in for a while. A correct password or a
+# password reset clears the count. Counted per email, known or not (see LoginFailure).
+MAX_FAILED_LOGINS = 5
+LOGIN_LOCKOUT = timedelta(minutes=15)
+
+
+def _locked_out(locked_until: datetime, now: datetime) -> HTTPException:
+    minutes = max(1, math.ceil((locked_until - now).total_seconds() / 60))
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail=f"Too many wrong passwords. Try again in {minutes} minute{'' if minutes == 1 else 's'}.",
+    )
+
+
 async def authenticate_user(email: str, password: str, db: AsyncSession) -> User:
     normalized_email = email.strip().lower()
+    failure_key = normalized_email[:255]
+    failure = (
+        await db.execute(select(LoginFailure).where(LoginFailure.email == failure_key))
+    ).scalar_one_or_none()
+    now = _utcnow()
+    # Locked: refused even with the right password, until the time is up.
+    if failure is not None and failure.locked_until is not None and failure.locked_until > now:
+        raise _locked_out(failure.locked_until, now)
+
     result = await db.execute(select(User).where(User.email == normalized_email))
     user = result.scalar_one_or_none()
-    if (
-        user is None
-        or not user.hashed_password
-        or not verify_password(password, user.hashed_password)
-    ):
+    if user is None or not user.hashed_password:
+        verify_password(password, _dummy_hash())
+        password_ok = False
+    else:
+        password_ok = verify_password(password, user.hashed_password)
+    if not password_ok:
+        if failure is None:
+            failure = LoginFailure(email=failure_key, failed_count=0)
+            db.add(failure)
+        failure.failed_count = (failure.failed_count or 0) + 1
+        failure.last_failed_at = now
+        if failure.failed_count >= MAX_FAILED_LOGINS:
+            # The count starts again once the lockout is over.
+            failure.failed_count = 0
+            failure.locked_until = now + LOGIN_LOCKOUT
+            await db.commit()
+            raise _locked_out(failure.locked_until, now)
+        await db.commit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password"
         )
+    if failure is not None:
+        await db.delete(failure)
+        await db.commit()
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="User account is inactive"
@@ -104,6 +183,8 @@ def create_access_token(user_id: int, role: Role, mfa_verified: bool) -> str:
         "sub": str(user_id),
         "role": role.value,
         "mfa_verified": mfa_verified,
+        # Whole seconds; compared with User.password_changed_at (rbac.get_current_claims).
+        "iat": _utcnow().replace(microsecond=0),
         "exp": expires_at,
     }
     return jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
@@ -162,6 +243,18 @@ async def revoke_refresh_token(token: str, db: AsyncSession) -> None:
         stored_token.revoked = True
 
 
+async def end_sessions(user: User, db: AsyncSession, keep_refresh_tokens: tuple[str | None, ...] = ()) -> None:
+    """After a password reset or change: every access token issued before now stops working,
+    and every refresh token is cancelled (no rotation grace) except `keep_refresh_tokens` — the
+    session that made the change, which then just refreshes. Doesn't commit."""
+    user.password_changed_at = _utcnow().replace(microsecond=0)
+    keep = [hash_token(t) for t in keep_refresh_tokens if t]
+    statement = update(RefreshToken).where(RefreshToken.user_id == user.id)
+    if keep:
+        statement = statement.where(RefreshToken.token_hash.notin_(keep))
+    await db.execute(statement.values(revoked=True, rotated_at=None).execution_options(synchronize_session=False))
+
+
 def create_mfa_token(user_id: int) -> str:
     # Match the token expiry with the OTP expiry
     expires_at = _utcnow() + timedelta(minutes=settings.otp_expire_minutes)
@@ -175,11 +268,11 @@ def create_mfa_token(user_id: int) -> str:
 
 async def generate_and_send_otp(user: User, db: AsyncSession, purpose: str = "login") -> None:
     import asyncio
-    import random
     import string
 
     alphabet = string.ascii_uppercase + string.digits
-    otp_code = ''.join(random.choices(alphabet, k=6))
+    # secrets, not random: codes must not be predictable from earlier ones.
+    otp_code = ''.join(secrets.choice(alphabet) for _ in range(6))
 
     otp_entry = LoginOTP(
         user_id=user.id,
@@ -253,16 +346,25 @@ async def request_password_change_otp(user_id: int, current_password: str, db: A
     await generate_and_send_otp(user, db, purpose="password_change")
 
 
-async def confirm_password_change(user_id: int, otp_code: str, new_password: str, db: AsyncSession) -> None:
+async def confirm_password_change(
+    user_id: int,
+    otp_code: str,
+    new_password: str,
+    db: AsyncSession,
+    keep_refresh_tokens: tuple[str | None, ...] = (),
+) -> None:
     user = await db.get(User, user_id)
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    _refuse_temporary_password(new_password)
 
     await verify_otp(user_id, otp_code, db, purpose="password_change")
 
     user.hashed_password = hash_password(new_password)
     # Their own password now: no longer on the temporary one from the welcome email.
     user.must_change_password = False
+    # Signed out everywhere else; this session stays signed in.
+    await end_sessions(user, db, keep_refresh_tokens)
     await db.commit()
 
 

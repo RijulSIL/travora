@@ -3,9 +3,10 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.travel_request import TravelRequestMode, TravelRequestTravelType
+from app.schemas.common import check_email_address
 
 
 class TravelRequestTicketAttachmentOut(BaseModel):
@@ -150,6 +151,10 @@ class TravelRequestOut(BaseModel):
     exception: TravelExceptionSummaryOut | None = None
     segments: list[TravelRequestSegmentOut] = Field(default_factory=list)
     supporting_documents: list[TravelRequestSupportingDocumentOut] = Field(default_factory=list)
+    # Whether a (possibly since-superseded) travel-agent link has ever been sent for this request —
+    # the Travel Desk shows the "With agent" pill from this while still APPROVED/PARTIALLY_BOOKED,
+    # and "Resend to agent" instead of "Send to agent" on the button.
+    sent_to_agent: bool = False
 
 
 class TravelRequestListItemOut(BaseModel):
@@ -215,7 +220,8 @@ class TravelOptionIn(BaseModel):
 
 
 class TravelOptionUpdateIn(BaseModel):
-    # Omit to keep the current value. Changing it also rewrites requests already using it.
+    # Omit to keep the current value. Changing it only affects new requests — ones already using
+    # it keep the old value (the rename is in the audit log).
     value: str | None = Field(default=None, min_length=1, max_length=128)
     label: str = Field(..., min_length=1, max_length=255)
     is_active: bool = True
@@ -227,12 +233,16 @@ class ProjectRecipientIn(BaseModel):
     email: str = Field(..., min_length=3, max_length=255)
     display_name: str | None = Field(default=None, max_length=255)
 
+    _valid_email = field_validator("email")(check_email_address)
+
 
 class ProjectRecipientUpdateIn(BaseModel):
     # project_code is deliberately absent — moving a recipient to a different project is an
     # add-to-the-new-one/remove-from-the-old-one action, not an edit of this row.
     email: str = Field(..., min_length=3, max_length=255)
     display_name: str | None = Field(default=None, max_length=255)
+
+    _valid_email = field_validator("email")(check_email_address)
 
 
 class ProjectRecipientOut(BaseModel):
@@ -261,3 +271,32 @@ class CityExpenseLimitOut(BaseModel):
     day_visit_cap: Decimal | None = None
     day_visit_is_hard_block: bool = False
     has_limits: bool = False
+
+
+class PublicAgentBookingSegmentOut(BaseModel):
+    """One leg of the trip as shown on the travel agent's public /book/{token} page — deliberately
+    narrower than TravelRequestSegmentOut: no ticket file metadata, just whether it's done."""
+
+    seq: int
+    label: str
+    mode: str
+    from_city: str | None = None
+    to_city: str | None = None
+    travel_date: date | None = None
+    ticketed: bool = False
+    # What the traveller asked for on this leg (see travel_request_service.agent_leg_pick).
+    pick: dict | None = None
+
+
+class PublicAgentBookingOut(BaseModel):
+    """Everything (and only this) the agent's public booking page may show — see
+    travel_request_service.agent_booking_summary. No employee id, exception, or other request's
+    data is ever included here."""
+
+    reference: str
+    employee_name: str
+    trip_type: str
+    notes: str | None = None
+    impact_level: str
+    entitlement_text: str
+    segments: list[PublicAgentBookingSegmentOut] = Field(default_factory=list)

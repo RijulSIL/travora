@@ -17,6 +17,9 @@ class ApproverScopeOut(BaseModel):
     exceptions: list[str] = Field(default_factory=list)
     # This role is a stage in the Relocation Approval workflow.
     relocation: bool = False
+    # Policy versions currently waiting on this user's approval (Policy Approval chain) — lets
+    # them open the policy pages to review and decide, whatever their policy rights.
+    policy: int = 0
 
 
 class MeOut(BaseModel):

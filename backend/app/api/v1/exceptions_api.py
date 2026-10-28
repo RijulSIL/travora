@@ -6,9 +6,10 @@ from app.core.database import get_db
 from app.core.rbac import get_current_claims, is_direct_report, require_any_permission
 from app.models.auth import Role, User
 from app.models.claim_workflow import ExceptionApproval
-from app.schemas.workflow import ExceptionDecisionBody, ExceptionRequestOut
+from app.schemas.workflow import ExceptionDecisionBody, ExceptionItemsDecisionBody, ExceptionRequestOut
 from app.services.workflow_service import (
     DEPARTMENT_HEAD,
+    decide_claim_exception_items,
     decide_exception_request,
     get_exception_request,
     is_department_head_for,
@@ -73,3 +74,19 @@ async def decide_exception(
 ) -> ExceptionRequestOut:
     row = await decide_exception_request(exception_id, int(claims["sub"]), payload.approve, payload.comment, db)
     return row
+
+
+@router.post("/{exception_id}/decide-items", response_model=ExceptionRequestOut)
+async def decide_exception_items(
+    exception_id: int,
+    payload: ExceptionItemsDecisionBody,
+    claims: dict = Depends(
+        require_any_permission("approve_claims", "configure_policy", "approve_exception")
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> ExceptionRequestOut:
+    """A claim's exceptions, decided one by one: Accept / Reject / Send back for every exception
+    this step still has to decide, all submitted together."""
+    return await decide_claim_exception_items(
+        exception_id, int(claims["sub"]), [d.model_dump() for d in payload.decisions], db
+    )

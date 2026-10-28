@@ -18,6 +18,12 @@ const KIND = {
   ONE_WAY: { label: 'One way', cls: 'bg-slate-100 text-slate-600' },
 };
 
+/** The claim's own value when it's no longer offered (renamed or retired since) — still shown. */
+function KeptOption({ options, value }) {
+  if (!value || (options || []).some((o) => o.value === value)) return null;
+  return <option value={value}>{value}</option>;
+}
+
 function TicketButton({ onClick }) {
   return (
     <button
@@ -276,6 +282,7 @@ export default function ClaimWizardStepTripInfo({
               {(travelOptions?.trip_purposes || []).map((o) => (
                 <option key={o.id} value={o.value}>{o.label || o.value}</option>
               ))}
+              <KeptOption options={travelOptions?.trip_purposes} value={form.trip_purpose} />
             </select>
             {(travelOptions?.trip_purposes || []).length === 0 ? (
               <p className="mt-1 text-[11px] font-bold text-amber-700">No trip purposes are configured yet. Ask an admin to add them.</p>
@@ -332,6 +339,7 @@ export default function ClaimWizardStepTripInfo({
                 {(travelOptions?.project_codes || []).map((o) => (
                   <option key={o.id} value={o.value}>{o.label || o.value}</option>
                 ))}
+                <KeptOption options={travelOptions?.project_codes} value={form.project_code} />
               </select>
               {(travelOptions?.project_codes || []).length === 0 ? (
                 <p className="mt-1 text-[11px] font-bold text-amber-700">No project codes are configured yet. Ask an admin to add them.</p>

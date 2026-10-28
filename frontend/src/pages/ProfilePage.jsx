@@ -7,7 +7,7 @@ import { Pill } from '../components/approvals/ApprovalQueueParts';
 import { BTN_GHOST, BTN_MAIN, BTN_NO, CARD, CardHead, FIELD, LABEL } from '../components/policy/PolicyAdminParts';
 import { useSetPageTitle } from '../context/PageTitleContext';
 import useToast from '../hooks/useToast';
-import api from '../services/api';
+import api, { currentRefreshToken } from '../services/api';
 import { reimbursementApi } from '../services/reimbursementApi';
 import { useAuthStore } from '../store/authStore';
 import { formatRole, showsManager } from '../utils/formatters';
@@ -19,6 +19,8 @@ const PASSWORD_RULES = [
   ['A lowercase letter', (v) => /[a-z]/.test(v), 'Password must contain at least one lowercase letter'],
   ['A number', (v) => /[0-9]/.test(v), 'Password must contain at least one number'],
   ['A special character', (v) => SPECIAL.test(v), 'Password must contain at least one special character'],
+  // Printed in every welcome email (backend welcome_service.TEMPORARY_PASSWORD).
+  ['Not the temporary password', (v) => v !== 'Welcome@123', 'Choose a password other than the temporary one'],
 ];
 const inr = (v) => `₹${Number(v || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 const fmtDay = (v) => new Date(v).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
@@ -187,7 +189,13 @@ function PasswordCard({ email }) {
     setError(null);
     setBusy(true);
     try {
-      await api.post('/auth/change-password/confirm', { otp_code: otp, new_password: next });
+      // This session's refresh token, so it stays signed in when the others are signed out.
+      const token = currentRefreshToken();
+      await api.post(
+        '/auth/change-password/confirm',
+        { otp_code: otp, new_password: next },
+        { headers: token ? { 'X-Refresh-Token': token } : {} },
+      );
       showToast('Password changed successfully', 'success');
       reset();
     } catch (err) {
@@ -327,7 +335,7 @@ function AutoApproveCard({ threshold, ceiling, onSaved }) {
 
   return (
     <section aria-label="Auto-approve" className={CARD}>
-      <CardHead title="Auto-approve" sub="Claims under your amount are approved for you once they reach you">
+      <CardHead title="Auto-approve" sub="Claims of your amount or less are approved for you once they reach you">
         <Pill tone={on ? 'ok' : 'slate'}>{on ? 'On' : 'Off'}</Pill>
       </CardHead>
       <form
@@ -339,15 +347,15 @@ function AutoApproveCard({ threshold, ceiling, onSaved }) {
       >
         <Problem>{error}</Problem>
         <div className={`rounded-xl px-3 py-2.5 ${on ? 'border border-emerald-200 bg-emerald-50' : 'border border-slate-200 bg-slate-50'}`}>
-          <b className="block text-[13px] text-ink">{on ? `Claims under ${inr(threshold)} are approved for you` : 'Every claim waits for your review'}</b>
+          <b className="block text-[13px] text-ink">{on ? `Claims of ${inr(threshold)} or less are approved for you` : 'Every claim waits for your review'}</b>
           <p className="mt-0.5 text-xs text-slate-500">{on ? 'Bigger ones still wait for you.' : 'Set an amount to approve smaller claims automatically.'}</p>
         </div>
         <div>
           <div className="mb-1 flex items-center justify-between gap-2">
             <label className={`${LABEL} mb-0`} htmlFor="auto-amount">
-              Approve claims under
+              Approve claims up to
             </label>
-            <small className="text-[11px] text-slate-400">up to {inr(ceiling)}</small>
+            <small className="text-[11px] text-slate-400">at most {inr(ceiling)}</small>
           </div>
           <div className="flex items-center overflow-hidden rounded-[10px] border border-slate-200 bg-white focus-within:border-brand focus-within:ring-[3px] focus-within:ring-brand/10">
             <span className="pl-3 pr-1.5 text-slate-400">₹</span>

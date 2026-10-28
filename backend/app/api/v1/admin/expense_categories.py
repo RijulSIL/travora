@@ -5,10 +5,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.rbac import require_any_permission, require_mfa, require_permission
+from app.core.rbac import get_current_claims, require_any_permission, require_mfa, require_permission
 from app.models.expense_category import ExpenseCategory
 from app.models.policy import PolicyStatus, PolicyVersion
 from app.schemas.common import BlacklistCheckRequest, ExpenseCategoryIn
+from app.services.audit_service import log_event, row_snapshot
 from app.services.expense_category_service import check_blacklist
 from app.services.policy_engine import enforce_immutability, get_active_policy_version
 
@@ -33,6 +34,20 @@ def _category_to_dict(category: ExpenseCategory) -> dict:
         "policy_version_id": category.policy_version_id,
         "children": [],
     }
+
+
+async def _audit(item: ExpenseCategory, action: str, claims: dict, old: dict | None, db: AsyncSession) -> None:
+    """Audit row for a category change, as it was and as it is now. Call before committing."""
+    await db.flush()
+    await log_event(
+        entity_type="expense_category",
+        entity_id=str(item.id),
+        action=action,
+        actor_id=int(claims["sub"]),
+        old=old,
+        new=row_snapshot(item),
+        db=db,
+    )
 
 
 async def _validate_policy_target(policy_version_id: int, db: AsyncSession) -> None:
@@ -131,7 +146,7 @@ async def list_expense_categories(
 
 @router.post("", dependencies=_WRITE_EXPENSE_CATEGORIES)
 async def create_expense_category(
-    payload: ExpenseCategoryIn, db: AsyncSession = Depends(get_db)
+    payload: ExpenseCategoryIn, db: AsyncSession = Depends(get_db), claims: dict = Depends(get_current_claims)
 ) -> dict:
     await _validate_policy_target(payload.policy_version_id, db)
     await _validate_parent_hierarchy(
@@ -141,6 +156,7 @@ async def create_expense_category(
     )
     item = ExpenseCategory(**payload.model_dump())
     db.add(item)
+    await _audit(item, "expense_category_created", claims, None, db)
     await db.commit()
     await db.refresh(item)
     return _category_to_dict(item)
@@ -148,7 +164,10 @@ async def create_expense_category(
 
 @router.put("/{category_id}", dependencies=_WRITE_EXPENSE_CATEGORIES)
 async def update_expense_category(
-    category_id: int, payload: ExpenseCategoryIn, db: AsyncSession = Depends(get_db)
+    category_id: int,
+    payload: ExpenseCategoryIn,
+    db: AsyncSession = Depends(get_db),
+    claims: dict = Depends(get_current_claims),
 ) -> dict:
     item = await db.get(ExpenseCategory, category_id)
     if item is None:
@@ -165,8 +184,10 @@ async def update_expense_category(
         policy_version_id=payload.policy_version_id,
         db=db,
     )
+    before = row_snapshot(item)
     for key, value in payload.model_dump().items():
         setattr(item, key, value)
+    await _audit(item, "expense_category_updated", claims, before, db)
     await db.commit()
     await db.refresh(item)
     return _category_to_dict(item)
@@ -174,7 +195,7 @@ async def update_expense_category(
 
 @router.delete("/{category_id}", dependencies=_WRITE_EXPENSE_CATEGORIES)
 async def deactivate_expense_category(
-    category_id: int, db: AsyncSession = Depends(get_db)
+    category_id: int, db: AsyncSession = Depends(get_db), claims: dict = Depends(get_current_claims)
 ) -> dict[str, str]:
     item = await db.get(ExpenseCategory, category_id)
     if item is None:
@@ -193,7 +214,9 @@ async def deactivate_expense_category(
             status_code=409,
             detail="Cannot deactivate a category with active child categories",
         )
+    before = row_snapshot(item)
     item.is_active = False
+    await _audit(item, "expense_category_deactivated", claims, before, db)
     await db.commit()
     return {"status": "inactive"}
 

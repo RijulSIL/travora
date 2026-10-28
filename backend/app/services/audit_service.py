@@ -14,6 +14,11 @@ def _json_safe(value: dict | None) -> dict | None:
     return None if value is None else json.loads(json.dumps(value, default=str))
 
 
+def row_snapshot(row) -> dict:
+    """Every column of a model row, for an audit entry's old/new values."""
+    return {column.key: getattr(row, column.key) for column in row.__table__.columns}
+
+
 def event_fingerprint(
     *,
     entity_type: str,

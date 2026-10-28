@@ -1,7 +1,8 @@
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import and_, delete, func, select
+from sqlalchemy import and_, delete, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -24,6 +25,7 @@ from app.models.policy import (
     PolicyStatus,
     PolicyVersion,
 )
+from app.models.reimbursement import ClaimExpense, InvoiceLineItem
 from app.schemas.common import (
     CityGroupIn,
     CityGroupOut,
@@ -39,23 +41,107 @@ from app.schemas.common import (
     PolicyVersionOut,
 )
 from app.schemas.workflow import RejectBody
-from app.services.audit_service import log_event
+from app.services.audit_service import log_event, row_snapshot
 from app.services.policy_engine import (
     archive_superseded_policy_versions,
+    can_act_on_policy_step,
+    clean_city_name,
     diff_policy_versions,
     enforce_city_group_immutability,
+    enforce_draft_contents,
     enforce_immutability,
+    is_policy_version_creator,
+    open_policy_step,
+    policy_versions_awaiting,
     resolve_city_group,
     validate_city_group_overlap,
 )
 
 router = APIRouter(prefix="/admin", tags=["admin-policy"])
 
-_READ_ADMIN_POLICY = [Depends(require_any_permission("configure_policy", "view_admin_readonly"))]
+_READ_POLICY_PERMISSIONS = ("configure_policy", "view_admin_readonly")
+
+
+async def _policy_reader(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)) -> dict:
+    """Policy pages are readable with policy rights — or by whoever a submitted version is
+    currently waiting on, so an approver can see what they're approving."""
+    try:
+        return await require_any_permission(*_READ_POLICY_PERMISSIONS)(claims=claims, db=db)
+    except HTTPException:
+        user = await db.get(User, int(claims["sub"]))
+        if user is not None and await policy_versions_awaiting(user, db):
+            return claims
+        raise
+
+
+_READ_ADMIN_POLICY = [Depends(_policy_reader)]
+# Approve / send back: whose turn it is in the Policy Approval chain decides (checked per
+# version below), not policy rights.
+_DECIDE_POLICY = [Depends(require_mfa)]
 _WRITE_ADMIN_POLICY = [Depends(require_permission("configure_policy")), Depends(require_mfa)]
 _CITY_GROUP_RESOLVE = [
     Depends(require_any_permission("submit_claim", "configure_policy", "view_admin_readonly")),
 ]
+
+
+async def _audit_table_edit(
+    entity_type: str, item, action: str, claims: dict, old: dict | None, db: AsyncSession
+) -> None:
+    """One audit row per change to a policy table row (impact levels, expense limits, city
+    groups, tiers), with the row as it was and as it is now. Call before committing."""
+    await db.flush()
+    await log_event(
+        entity_type=entity_type,
+        entity_id=str(item.id),
+        action=action,
+        actor_id=int(claims["sub"]),
+        old=old,
+        new=None if action.endswith("_deleted") else row_snapshot(item),
+        db=db,
+    )
+
+
+async def _assert_unique_level_code(
+    policy_version_id: int, level_code: str, db: AsyncSession, excluding_id: int | None = None
+) -> None:
+    query = select(ImpactLevel.id).where(
+        ImpactLevel.policy_version_id == policy_version_id,
+        func.lower(func.trim(ImpactLevel.level_code)) == level_code.strip().lower(),
+    )
+    if excluding_id is not None:
+        query = query.where(ImpactLevel.id != excluding_id)
+    if await db.scalar(query) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"This version already has a level {level_code.strip()}",
+        )
+
+
+async def _assert_unique_limit(payload: ExpenseLimitIn, db: AsyncSession, excluding_id: int | None = None) -> None:
+    query = select(ExpenseLimit.id).where(
+        ExpenseLimit.policy_version_id == payload.policy_version_id,
+        ExpenseLimit.impact_level_id == payload.impact_level_id,
+        ExpenseLimit.city_group == payload.city_group,
+    )
+    if excluding_id is not None:
+        query = query.where(ExpenseLimit.id != excluding_id)
+    if await db.scalar(query) is not None:
+        level = await db.get(ImpactLevel, payload.impact_level_id)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"This version already has limits for {level.level_code if level else 'that level'} "
+            f"in city group {payload.city_group} — edit that row instead",
+        )
+
+
+async def _assert_level_in_version(payload: ExpenseLimitIn, db: AsyncSession) -> None:
+    """A limit's level must be one of its own version's levels — every version has its own copy
+    of each level, so an id from another version would point the limit at the wrong copy."""
+    level = await db.get(ImpactLevel, payload.impact_level_id)
+    if level is None:
+        raise HTTPException(status_code=422, detail="That impact level doesn't exist")
+    if level.policy_version_id != payload.policy_version_id:
+        raise HTTPException(status_code=422, detail="That impact level belongs to a different policy version")
 
 
 async def _clone_policy_snapshot_from_source(
@@ -152,10 +238,14 @@ async def list_impact_levels(
 
 
 @router.post("/impact-levels", response_model=ImpactLevelOut, dependencies=_WRITE_ADMIN_POLICY)
-async def create_impact_level(payload: ImpactLevelIn, db: AsyncSession = Depends(get_db)) -> ImpactLevel:
-    await enforce_immutability(payload.policy_version_id, db)
+async def create_impact_level(
+    payload: ImpactLevelIn, db: AsyncSession = Depends(get_db), claims: dict = Depends(get_current_claims)
+) -> ImpactLevel:
+    await enforce_draft_contents([payload.policy_version_id], db)
+    await _assert_unique_level_code(payload.policy_version_id, payload.level_code, db)
     item = ImpactLevel(**payload.model_dump())
     db.add(item)
+    await _audit_table_edit("impact_level", item, "impact_level_created", claims, None, db)
     await db.commit()
     await db.refresh(item)
     return item
@@ -163,26 +253,36 @@ async def create_impact_level(payload: ImpactLevelIn, db: AsyncSession = Depends
 
 @router.put("/impact-levels/{item_id}", response_model=ImpactLevelOut, dependencies=_WRITE_ADMIN_POLICY)
 async def update_impact_level(
-    item_id: int, payload: ImpactLevelIn, db: AsyncSession = Depends(get_db)
+    item_id: int,
+    payload: ImpactLevelIn,
+    db: AsyncSession = Depends(get_db),
+    claims: dict = Depends(get_current_claims),
 ) -> ImpactLevel:
     item = await db.get(ImpactLevel, item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Impact level not found")
-    await enforce_immutability(item.policy_version_id, db)
+    await enforce_draft_contents([item.policy_version_id, payload.policy_version_id], db)
+    await _assert_unique_level_code(payload.policy_version_id, payload.level_code, db, excluding_id=item.id)
+    before = row_snapshot(item)
     for key, value in payload.model_dump().items():
         setattr(item, key, value)
+    await _audit_table_edit("impact_level", item, "impact_level_updated", claims, before, db)
     await db.commit()
     await db.refresh(item)
     return item
 
 
 @router.delete("/impact-levels/{item_id}", dependencies=_WRITE_ADMIN_POLICY)
-async def deprecate_impact_level(item_id: int, db: AsyncSession = Depends(get_db)) -> dict[str, str]:
+async def deprecate_impact_level(
+    item_id: int, db: AsyncSession = Depends(get_db), claims: dict = Depends(get_current_claims)
+) -> dict[str, str]:
     item = await db.get(ImpactLevel, item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Impact level not found")
-    await enforce_immutability(item.policy_version_id, db)
+    await enforce_draft_contents([item.policy_version_id], db)
+    before = row_snapshot(item)
     item.is_deprecated = True
+    await _audit_table_edit("impact_level", item, "impact_level_deprecated", claims, before, db)
     await db.commit()
     return {"status": "deprecated"}
 
@@ -212,7 +312,9 @@ async def list_city_group_tiers(db: AsyncSession = Depends(get_db)) -> list[City
 
 
 @router.post("/city-group-tiers", response_model=CityGroupTierOut, dependencies=_WRITE_ADMIN_POLICY)
-async def create_city_group_tier(payload: CityGroupTierIn, db: AsyncSession = Depends(get_db)) -> CityGroupTier:
+async def create_city_group_tier(
+    payload: CityGroupTierIn, db: AsyncSession = Depends(get_db), claims: dict = Depends(get_current_claims)
+) -> CityGroupTier:
     existing = await db.scalar(select(CityGroupTier).where(CityGroupTier.code == payload.code))
     if existing is not None:
         raise HTTPException(
@@ -224,6 +326,7 @@ async def create_city_group_tier(payload: CityGroupTierIn, db: AsyncSession = De
         code=payload.code, display_name=payload.display_name, is_default=payload.is_default, is_deprecated=False
     )
     db.add(item)
+    await _audit_table_edit("city_group_tier", item, "city_group_tier_created", claims, None, db)
     await db.commit()
     await db.refresh(item)
     return item
@@ -231,7 +334,10 @@ async def create_city_group_tier(payload: CityGroupTierIn, db: AsyncSession = De
 
 @router.put("/city-group-tiers/{item_id}", response_model=CityGroupTierOut, dependencies=_WRITE_ADMIN_POLICY)
 async def update_city_group_tier(
-    item_id: int, payload: CityGroupTierUpdateIn, db: AsyncSession = Depends(get_db)
+    item_id: int,
+    payload: CityGroupTierUpdateIn,
+    db: AsyncSession = Depends(get_db),
+    claims: dict = Depends(get_current_claims),
 ) -> CityGroupTier:
     """code is never editable here — see CityGroupTier's docstring for why renaming it would
     silently orphan every CityGroup/ExpenseLimit/claim row already referencing the old string."""
@@ -247,15 +353,19 @@ async def update_city_group_tier(
         if item.is_deprecated:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A deprecated tier cannot be made default")
         await _set_only_default_tier(db, keep_id=item.id)
+    before = row_snapshot(item)
     item.display_name = payload.display_name
     item.is_default = payload.is_default
+    await _audit_table_edit("city_group_tier", item, "city_group_tier_updated", claims, before, db)
     await db.commit()
     await db.refresh(item)
     return item
 
 
 @router.delete("/city-group-tiers/{item_id}", dependencies=_WRITE_ADMIN_POLICY)
-async def deprecate_city_group_tier(item_id: int, db: AsyncSession = Depends(get_db)) -> dict[str, str]:
+async def deprecate_city_group_tier(
+    item_id: int, db: AsyncSession = Depends(get_db), claims: dict = Depends(get_current_claims)
+) -> dict[str, str]:
     item = await db.get(CityGroupTier, item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="City group tier not found")
@@ -264,7 +374,9 @@ async def deprecate_city_group_tier(item_id: int, db: AsyncSession = Depends(get
             status_code=status.HTTP_409_CONFLICT,
             detail="Cannot deprecate the default city-group tier; set another tier as default first",
         )
+    before = row_snapshot(item)
     item.is_deprecated = True
+    await _audit_table_edit("city_group_tier", item, "city_group_tier_deprecated", claims, before, db)
     await db.commit()
     return {"status": "deprecated"}
 
@@ -275,7 +387,12 @@ async def list_city_groups(db: AsyncSession = Depends(get_db)) -> list[CityGroup
 
 
 @router.post("/city-groups", response_model=CityGroupOut, dependencies=_WRITE_ADMIN_POLICY)
-async def create_city_group(payload: CityGroupIn, db: AsyncSession = Depends(get_db)) -> CityGroup:
+async def create_city_group(
+    payload: CityGroupIn, db: AsyncSession = Depends(get_db), claims: dict = Depends(get_current_claims)
+) -> CityGroup:
+    payload.city_name = clean_city_name(payload.city_name)
+    if not payload.city_name:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="City name is required")
     if payload.effective_to is not None and payload.effective_to <= payload.effective_from:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -287,6 +404,7 @@ async def create_city_group(payload: CityGroupIn, db: AsyncSession = Depends(get
     )
     item = CityGroup(**payload.model_dump())
     db.add(item)
+    await _audit_table_edit("city_group", item, "city_group_created", claims, None, db)
     await db.commit()
     await db.refresh(item)
     return item
@@ -294,12 +412,18 @@ async def create_city_group(payload: CityGroupIn, db: AsyncSession = Depends(get
 
 @router.put("/city-groups/{item_id}", response_model=CityGroupOut, dependencies=_WRITE_ADMIN_POLICY)
 async def update_city_group(
-    item_id: int, payload: CityGroupIn, db: AsyncSession = Depends(get_db)
+    item_id: int,
+    payload: CityGroupIn,
+    db: AsyncSession = Depends(get_db),
+    claims: dict = Depends(get_current_claims),
 ) -> CityGroup:
     item = await db.get(CityGroup, item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="City group not found")
     enforce_city_group_immutability(item)
+    payload.city_name = clean_city_name(payload.city_name)
+    if not payload.city_name:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="City name is required")
     if payload.effective_to is not None and payload.effective_to <= payload.effective_from:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -313,8 +437,10 @@ async def update_city_group(
         db,
         excluding_id=item.id,
     )
+    before = row_snapshot(item)
     for key, value in payload.model_dump().items():
         setattr(item, key, value)
+    await _audit_table_edit("city_group", item, "city_group_updated", claims, before, db)
     await db.commit()
     await db.refresh(item)
     return item
@@ -331,12 +457,16 @@ async def resolve_city_group_endpoint(
 
 
 @router.delete("/city-groups/{item_id}", dependencies=_WRITE_ADMIN_POLICY)
-async def delete_city_group(item_id: int, db: AsyncSession = Depends(get_db)) -> dict[str, str]:
+async def delete_city_group(
+    item_id: int, db: AsyncSession = Depends(get_db), claims: dict = Depends(get_current_claims)
+) -> dict[str, str]:
     item = await db.get(CityGroup, item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="City group not found")
     enforce_city_group_immutability(item)
+    before = row_snapshot(item)
     await db.delete(item)
+    await _audit_table_edit("city_group", item, "city_group_deleted", claims, before, db)
     await db.commit()
     return {"status": "deleted"}
 
@@ -368,12 +498,15 @@ async def export_expense_limits(
 
 @router.post("/expense-limits", response_model=ExpenseLimitOut, dependencies=_WRITE_ADMIN_POLICY)
 async def create_expense_limit(
-    payload: ExpenseLimitIn, db: AsyncSession = Depends(get_db)
+    payload: ExpenseLimitIn, db: AsyncSession = Depends(get_db), claims: dict = Depends(get_current_claims)
 ) -> ExpenseLimit:
-    await enforce_immutability(payload.policy_version_id, db)
+    await enforce_draft_contents([payload.policy_version_id], db)
+    await _assert_level_in_version(payload, db)
     await _assert_valid_tier_code(payload.city_group, db)
+    await _assert_unique_limit(payload, db)
     item = ExpenseLimit(**payload.model_dump())
     db.add(item)
+    await _audit_table_edit("expense_limit", item, "expense_limit_created", claims, None, db)
     await db.commit()
     await db.refresh(item)
     return item
@@ -381,29 +514,50 @@ async def create_expense_limit(
 
 @router.put("/expense-limits/{item_id}", response_model=ExpenseLimitOut, dependencies=_WRITE_ADMIN_POLICY)
 async def update_expense_limit(
-    item_id: int, payload: ExpenseLimitIn, db: AsyncSession = Depends(get_db)
+    item_id: int,
+    payload: ExpenseLimitIn,
+    db: AsyncSession = Depends(get_db),
+    claims: dict = Depends(get_current_claims),
 ) -> ExpenseLimit:
     item = await db.get(ExpenseLimit, item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Expense limit not found")
-    await enforce_immutability(item.policy_version_id, db)
+    await enforce_draft_contents([item.policy_version_id, payload.policy_version_id], db)
+    await _assert_level_in_version(payload, db)
     await _assert_valid_tier_code(payload.city_group, db)
+    await _assert_unique_limit(payload, db, excluding_id=item.id)
+    before = row_snapshot(item)
     for key, value in payload.model_dump().items():
         setattr(item, key, value)
+    await _audit_table_edit("expense_limit", item, "expense_limit_updated", claims, before, db)
     await db.commit()
     await db.refresh(item)
     return item
 
 
 @router.delete("/expense-limits/{item_id}", dependencies=_WRITE_ADMIN_POLICY)
-async def delete_expense_limit(item_id: int, db: AsyncSession = Depends(get_db)) -> dict[str, str]:
+async def delete_expense_limit(
+    item_id: int, db: AsyncSession = Depends(get_db), claims: dict = Depends(get_current_claims)
+) -> dict[str, str]:
     item = await db.get(ExpenseLimit, item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Expense limit not found")
-    await enforce_immutability(item.policy_version_id, db)
+    await enforce_draft_contents([item.policy_version_id], db)
+    before = row_snapshot(item)
     await db.delete(item)
+    await _audit_table_edit("expense_limit", item, "expense_limit_deleted", claims, before, db)
     await db.commit()
     return {"status": "deleted"}
+
+
+@router.get("/policy-versions/awaiting-me")
+async def policy_versions_awaiting_me(
+    claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)
+) -> list[int]:
+    """Ids of submitted versions whose current approval step is the caller's — the page shows
+    Approve / Send back on exactly these."""
+    user = await db.get(User, int(claims["sub"]))
+    return await policy_versions_awaiting(user, db) if user is not None else []
 
 
 @router.get("/policy-versions", response_model=list[PolicyVersionOut], dependencies=_READ_ADMIN_POLICY)
@@ -433,6 +587,33 @@ async def get_policy_approval_chain(version_id: int, db: AsyncSession = Depends(
     ]
 
 
+def _version_exists(version_number: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT, detail=f"A version called {version_number} already exists"
+    )
+
+
+async def _assert_unique_version_number(
+    version_number: str, db: AsyncSession, excluding_id: int | None = None
+) -> None:
+    if not version_number:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Version number is required")
+    query = select(PolicyVersion.id).where(func.lower(PolicyVersion.version_number) == version_number.lower())
+    if excluding_id is not None:
+        query = query.where(PolicyVersion.id != excluding_id)
+    if await db.scalar(query) is not None:
+        raise _version_exists(version_number)
+
+
+async def _flush_version(item: PolicyVersion, db: AsyncSession) -> None:
+    """Flush, turning a clash on the unique version number (two saves at once) into a 409."""
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise _version_exists(item.version_number) from exc
+
+
 @router.post("/policy-versions", response_model=PolicyVersionOut, dependencies=_WRITE_ADMIN_POLICY)
 async def create_policy_version(
     payload: PolicyVersionIn,
@@ -440,13 +621,15 @@ async def create_policy_version(
     db: AsyncSession = Depends(get_db),
 ) -> PolicyVersion:
     user_id = int(claims["sub"])
+    payload.version_number = payload.version_number.strip()
+    await _assert_unique_version_number(payload.version_number, db)
     item = PolicyVersion(
         **payload.model_dump(exclude={"status"}),
         status=PolicyStatus.DRAFT,
         created_by=user_id,
     )
     db.add(item)
-    await db.flush()
+    await _flush_version(item, db)
     source_version = (
         await db.execute(
             select(PolicyVersion)
@@ -484,9 +667,12 @@ async def update_policy_version(
     await enforce_immutability(item.id, db)
     if item.status != PolicyStatus.DRAFT:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only draft versions can be updated")
+    payload.version_number = payload.version_number.strip()
+    await _assert_unique_version_number(payload.version_number, db, excluding_id=item.id)
     for key, value in payload.model_dump().items():
         setattr(item, key, value)
     item.status = PolicyStatus.DRAFT
+    await _flush_version(item, db)
     await db.commit()
     await db.refresh(item)
     return item
@@ -516,14 +702,12 @@ async def submit_policy_version(
     cfg = await get_workflow_config(db)
     chain = cfg.get("exception_chains", {}).get("POLICY_APPROVAL") or EXCEPTION_APPROVAL_CHAINS["POLICY_APPROVAL"]
     item.status = PolicyStatus.PENDING_HRBP
-    for i, role in enumerate(chain):
-        db.add(
-            PolicyApproval(
-                policy_version_id=item.id,
-                required_role=role,
-                status="PENDING" if i == 0 else "AWAITING",
-            )
-        )
+    steps = [PolicyApproval(policy_version_id=item.id, required_role=role, status="AWAITING") for role in chain]
+    db.add_all(steps)
+    await db.flush()
+    if steps:
+        # Opens the first step — or the first one someone other than the creator can act on.
+        await open_policy_step(item, steps, 0, db)
     await log_event(
         entity_type="policy_version",
         entity_id=str(item.id),
@@ -537,22 +721,22 @@ async def submit_policy_version(
     return {"status": "pending_hrbp"}
 
 
-@router.post(
-    "/policy-versions/{version_id}/approve",
-    dependencies=[Depends(require_permission("approve_policy")), Depends(require_mfa)],
-)
+def _refuse_own_version(user: User | None, item: PolicyVersion, verb: str) -> None:
+    if is_policy_version_creator(user, item):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"You created this version, so you can't {verb} it — someone else at this step has to",
+        )
+
+
+@router.post("/policy-versions/{version_id}/approve", dependencies=_DECIDE_POLICY)
 async def approve_policy_version(
     version_id: int,
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
-    """approve_policy (the route-level gate above) is deliberately a coarse pre-filter — "is
-    this the kind of role that could ever approve a policy" — same two-layer pattern as claim
-    stages and exceptions. The real, fine-grained "is it actually your turn" check is the
-    _user_matches_required_role call below, against whichever role the configured
-    POLICY_APPROVAL chain currently has active for this version."""
-    from app.services.workflow_service import _user_matches_required_role
-
+    """Whoever's turn it is in the configured POLICY_APPROVAL chain approves — checked below
+    (can_act_on_policy_step) — whatever their policy-edit rights."""
     item = await db.get(PolicyVersion, version_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Policy version not found")
@@ -570,7 +754,8 @@ async def approve_policy_version(
         raise HTTPException(status_code=409, detail="No active approval stage for this policy version")
 
     approver = await db.get(User, int(claims["sub"]))
-    if approver is None or not await _user_matches_required_role(approver, active_stage.required_role, None, db):
+    _refuse_own_version(approver, item, "approve")
+    if approver is None or not await can_act_on_policy_step(approver, active_stage.required_role, db):
         raise HTTPException(
             status_code=403, detail="Your role is not the active stage of this policy's approval chain"
         )
@@ -584,7 +769,7 @@ async def approve_policy_version(
     next_stage = approvals[current_idx + 1] if current_idx + 1 < len(approvals) else None
 
     if next_stage is not None and next_stage.status == "AWAITING":
-        next_stage.status = "PENDING"
+        next_stage = await open_policy_step(item, approvals, current_idx + 1, db)
         await log_event(
             entity_type="policy_version",
             entity_id=str(item.id),
@@ -723,10 +908,7 @@ async def schedule_policy_version(
     return item
 
 
-@router.post(
-    "/policy-versions/{version_id}/reject",
-    dependencies=[Depends(require_permission("approve_policy")), Depends(require_mfa)],
-)
+@router.post("/policy-versions/{version_id}/reject", dependencies=_DECIDE_POLICY)
 async def reject_policy_version(
     version_id: int,
     payload: RejectBody,
@@ -740,8 +922,6 @@ async def reject_policy_version(
     clears these approval rows and starts the chain fresh. Same active-stage check as approve:
     whoever's turn it currently is can also be the one to send it back, not just anyone who
     generally holds approve_policy."""
-    from app.services.workflow_service import _user_matches_required_role
-
     item = await db.get(PolicyVersion, version_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Policy version not found")
@@ -759,7 +939,8 @@ async def reject_policy_version(
         raise HTTPException(status_code=409, detail="No active approval stage for this policy version")
 
     approver = await db.get(User, int(claims["sub"]))
-    if approver is None or not await _user_matches_required_role(approver, active_stage.required_role, None, db):
+    _refuse_own_version(approver, item, "send back")
+    if approver is None or not await can_act_on_policy_step(approver, active_stage.required_role, db):
         raise HTTPException(
             status_code=403, detail="Your role is not the active stage of this policy's approval chain"
         )
@@ -787,13 +968,63 @@ async def reject_policy_version(
 
 
 @router.delete("/policy-versions/{version_id}", dependencies=_WRITE_ADMIN_POLICY)
-async def delete_policy_version(version_id: int, db: AsyncSession = Depends(get_db)) -> dict[str, str]:
+async def delete_policy_version(
+    version_id: int, db: AsyncSession = Depends(get_db), claims: dict = Depends(get_current_claims)
+) -> dict[str, str]:
+    """A draft goes with the levels, limits and categories it holds (copied in when it was
+    created). Only drafts — a submitted, approved or archived version is never deleted."""
     item = await db.get(PolicyVersion, version_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Policy version not found")
     await enforce_immutability(item.id, db)
     if item.status != PolicyStatus.DRAFT:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only draft versions can be deleted")
+
+    level_ids = select(ImpactLevel.id).where(ImpactLevel.policy_version_id == item.id)
+    category_ids = select(ExpenseCategory.id).where(ExpenseCategory.policy_version_id == item.id)
+    # A draft's rows are never in use — but if something did get pointed at one, refuse rather
+    # than break that record.
+    in_use = (
+        await db.scalar(select(func.count()).select_from(Employee).where(Employee.impact_level_id.in_(level_ids)))
+        or await db.scalar(
+            select(func.count()).select_from(ClaimExpense).where(ClaimExpense.expense_category_id.in_(category_ids))
+        )
+        or await db.scalar(
+            select(func.count()).select_from(InvoiceLineItem).where(InvoiceLineItem.category_id.in_(category_ids))
+        )
+    )
+    if in_use:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Policy {item.version_number} can't be deleted: people or claims already use its levels "
+            "or categories",
+        )
+
+    counts = {
+        "impact_levels": await db.scalar(select(func.count()).select_from(level_ids.subquery())),
+        "expense_limits": await db.scalar(
+            select(func.count()).select_from(ExpenseLimit).where(ExpenseLimit.policy_version_id == item.id)
+        ),
+        "expense_categories": await db.scalar(select(func.count()).select_from(category_ids.subquery())),
+    }
+    # Limits point at levels, and categories at their parent category: limits first, then the
+    # categories' parent links, then categories and levels, then the version itself.
+    await db.execute(delete(ExpenseLimit).where(ExpenseLimit.policy_version_id == item.id))
+    await db.execute(
+        update(ExpenseCategory).where(ExpenseCategory.policy_version_id == item.id).values(parent_category_id=None)
+    )
+    await db.execute(delete(ExpenseCategory).where(ExpenseCategory.policy_version_id == item.id))
+    await db.execute(delete(ImpactLevel).where(ImpactLevel.policy_version_id == item.id))
+    await db.execute(delete(PolicyApproval).where(PolicyApproval.policy_version_id == item.id))
+    await log_event(
+        entity_type="policy_version",
+        entity_id=str(item.id),
+        action="policy_version_deleted",
+        actor_id=int(claims["sub"]),
+        old={"version_number": item.version_number, "status": item.status.value, **counts},
+        new=None,
+        db=db,
+    )
     await db.delete(item)
     await db.commit()
     return {"status": "deleted"}

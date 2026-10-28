@@ -41,6 +41,24 @@ async def list_department_budgets(db: AsyncSession) -> list[DepartmentBudget]:
 async def upsert_department_budget(
     department: str, monthly_amount: Decimal, user_id: int | None, db: AsyncSession
 ) -> DepartmentBudget:
+    # Only a department on the company's list (or one someone is still in) — the same choices
+    # the budgets page offers — stored under the list's spelling.
+    from app.services.department_service import (
+        clean_department_name,
+        departments_with_people,
+        match_department,
+    )
+
+    listed = match_department(department, await departments_with_people(db))
+    if listed is None:
+        # A budget already set for a department since taken off the list can still be changed.
+        listed = await db.scalar(select(DepartmentBudget.department).where(DepartmentBudget.department == department))
+    if listed is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"{clean_department_name(department)} isn't a department — add it on the Company profile page first",
+        )
+    department = listed
     existing = (
         await db.execute(select(DepartmentBudget).where(DepartmentBudget.department == department))
     ).scalar_one_or_none()

@@ -1,4 +1,4 @@
-import { ArrowLeftRight, Clock, Info, ListOrdered, Plane, Plus, Timer, X } from 'lucide-react';
+import { ArrowLeftRight, Clock, Info, ListOrdered, Pause, Plane, Play, Plus, Timer, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 
@@ -11,14 +11,14 @@ import { reimbursementApi } from '../../services/reimbursementApi';
 
 /*
  * Compliance reports: run one of the four server reports (GET reports/{type}), download it, or
- * have it emailed on a schedule. Each report only shows the filters the server applies to it —
- * department, office and expense category aren't used by any of them.
+ * have it emailed on a schedule. The page offers the period (each report by its own date) and the
+ * employee level; the server refuses a filter a report can't apply (expense category, for these).
  */
 
 const REPORTS = {
   'claim-aging': {
     name: 'Claims by stage',
-    what: 'How many claims are at each stage, from submitted to paid.',
+    what: 'How many submitted claims are at each stage, up to paid. Drafts are left out.',
     icon: ListOrdered,
     dateField: 'claim created',
   },
@@ -26,13 +26,13 @@ const REPORTS = {
     name: 'Claim approval speed',
     what: 'How long each claim approval stage takes, against its SLA.',
     icon: Timer,
-    dateField: null,
+    dateField: 'claim submitted',
   },
   'travel-spend-summary': {
     name: 'Travel spend by mode',
     what: 'What booked trips cost, by flight, train and bus.',
     icon: Plane,
-    dateField: null,
+    dateField: 'of travel',
   },
   'travel-requests-summary': {
     name: 'Travel requests by status',
@@ -261,6 +261,86 @@ function ApprovalSpeed({ rows, tip }) {
   );
 }
 
+/** The server's message — a plain string, or the first field error of a 422. */
+function apiError(e, fallback) {
+  const detail = e?.response?.data?.detail;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail) && detail[0]?.msg) return String(detail[0].msg).replace(/^Value error, /, '');
+  return fallback;
+}
+
+const when = (iso) => (iso ? new Date(iso).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : null);
+
+/** One schedule: pause / resume it, or delete it (asks first, right in the row). */
+function ScheduleRow({ schedule: s, onChanged }) {
+  const { showToast } = useToast();
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const run = async (call, done) => {
+    setBusy(true);
+    try {
+      await call();
+      showToast(done, 'success');
+      onChanged();
+    } catch (e) {
+      showToast(apiError(e, 'Could not change the schedule'), 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const btn = 'inline-flex h-7 items-center gap-1 rounded-lg border px-2.5 text-[11.5px] font-bold disabled:opacity-50';
+  return (
+    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3.5 border-t border-slate-100 px-4 py-[13px] first-of-type:border-t-0">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <b className="text-[13.5px] text-ink">{REPORTS[s.report_type]?.name || s.report_type}</b>
+          <span className="rounded-full bg-sky-50 px-2 py-0.5 text-[11px] font-bold text-sky-700">{FREQUENCY[s.frequency] || s.frequency}</span>
+          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-500">{s.report_format}</span>
+          <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${s.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+            {s.is_active ? 'Active' : 'Paused'}
+          </span>
+        </div>
+        <div className="mt-0.5 text-xs text-slate-500">
+          Last sent {when(s.last_run_at) || 'never'} · {s.is_active ? `next ${when(s.next_run_at) || '—'}` : 'not sending while paused'}
+        </div>
+        <div className="mt-1.5 flex flex-wrap gap-1.5">
+          {(s.recipients || []).map((r) => (
+            <span key={r} className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[11.5px] font-semibold text-slate-700">
+              {r}
+            </span>
+          ))}
+        </div>
+      </div>
+      {confirmDelete ? (
+        <div className="flex flex-wrap items-center justify-end gap-1.5" role="group" aria-label="Confirm delete">
+          <span className="text-xs font-semibold text-slate-600">Delete this schedule?</span>
+          <button type="button" disabled={busy} className={`${btn} border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100`} onClick={() => run(() => reimbursementApi.deleteReportSchedule(s.id), 'Schedule deleted')}>
+            <Trash2 size={13} /> Delete
+          </button>
+          <button type="button" disabled={busy} className={`${btn} border-slate-200 bg-white text-slate-700 hover:bg-slate-50`} onClick={() => setConfirmDelete(false)}>
+            Keep it
+          </button>
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
+          <button
+            type="button"
+            disabled={busy}
+            className={`${btn} border-slate-200 bg-white text-slate-700 hover:bg-slate-50`}
+            onClick={() => run(() => reimbursementApi.setReportScheduleActive(s.id, !s.is_active), s.is_active ? 'Schedule paused' : 'Schedule resumed')}
+          >
+            {s.is_active ? <Pause size={13} /> : <Play size={13} />}
+            {s.is_active ? 'Pause' : 'Resume'}
+          </button>
+          <button type="button" disabled={busy} aria-label="Delete schedule" className={`${btn} border-slate-200 bg-white text-rose-700 hover:bg-rose-50`} onClick={() => setConfirmDelete(true)}>
+            <Trash2 size={13} /> Delete
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ScheduleModal({ open, defaults, levelLabel, onClose, onSaved }) {
   const { showToast } = useToast();
   const [form, setForm] = useState(defaults);
@@ -304,7 +384,7 @@ function ScheduleModal({ open, defaults, levelLabel, onClose, onSaved }) {
       showToast('Schedule saved', 'success');
       onSaved();
     } catch (e) {
-      showToast(e?.response?.data?.detail || 'Could not save the schedule', 'error');
+      showToast(apiError(e, 'Could not save the schedule'), 'error');
     } finally {
       setSaving(false);
     }
@@ -676,33 +756,7 @@ export default function ReportsPage() {
             }
           />
           {schedules.length ? (
-            schedules.map((s) => {
-              const when = (iso) => (iso ? new Date(iso).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : null);
-              return (
-                <div key={s.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3.5 border-t border-slate-100 px-4 py-[13px] first-of-type:border-t-0">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <b className="text-[13.5px] text-ink">{REPORTS[s.report_type]?.name || s.report_type}</b>
-                      <span className="rounded-full bg-sky-50 px-2 py-0.5 text-[11px] font-bold text-sky-700">{FREQUENCY[s.frequency] || s.frequency}</span>
-                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-500">{s.report_format}</span>
-                    </div>
-                    <div className="mt-0.5 text-xs text-slate-500">
-                      Last sent {when(s.last_run_at) || 'never'} · next {when(s.next_run_at) || '—'}
-                    </div>
-                    <div className="mt-1.5 flex flex-wrap gap-1.5">
-                      {(s.recipients || []).map((r) => (
-                        <span key={r} className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[11.5px] font-semibold text-slate-700">
-                          {r}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                  <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${s.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
-                    {s.is_active ? 'Active' : 'Paused'}
-                  </span>
-                </div>
-              );
-            })
+            schedules.map((s) => <ScheduleRow key={s.id} schedule={s} onChanged={loadSchedules} />)
           ) : (
             <p className="px-4 py-8 text-center text-[12.5px] text-slate-500">No scheduled reports yet.</p>
           )}

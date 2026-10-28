@@ -42,7 +42,10 @@ export default function SetInitialPasswordPage() {
     setError(null);
     setLoading(true);
     try {
-      await api.post('/auth/set-initial-password', { new_password: password });
+      // Sends this session's refresh token so it stays signed in (anyone else on the temporary
+      // password is signed out); the /me below then refreshes into a new session.
+      const token = currentRefreshToken();
+      await api.post('/auth/set-initial-password', { new_password: password }, { headers: token ? { 'X-Refresh-Token': token } : {} });
       const { data } = await api.get('/me');
       useAuthStore.getState().setProfile(data);
       showToast('Your password is set. Welcome to Travora!', 'success');

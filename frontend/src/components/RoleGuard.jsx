@@ -14,12 +14,18 @@ import { useAuthStore } from '../store/authStore';
  * (profile.approver_scope[orScope]) — for queues decided by workflow stage roles rather than a
  * permission, e.g. relocation approvals (a Recruiter holds no approval permission). The page's
  * own ApprovalScopeGuard still checks which tab they may open.
+ *
+ * `roles` additionally requires one of these roles, for pages the server keeps to a role
+ * rather than a permission (Finance's GST dashboard and ERP ledger).
  */
-export default function RoleGuard({ permission, anyOf, orScope, children }) {
+export default function RoleGuard({ permission, anyOf, orScope, roles, children }) {
   const permissions = useAuthStore((state) => state.profile?.permissions);
   const scope = useAuthStore((state) => state.profile?.approver_scope);
+  const role = useAuthStore((state) => state.profile?.role);
 
   if (orScope && scope?.[orScope]) return children || <Outlet />;
+
+  if (roles?.length && !roles.includes(role)) return <Navigate to="/access-denied" replace />;
 
   if (anyOf?.length) {
     if (!hasAnyPermission(permissions, anyOf)) {

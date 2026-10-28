@@ -154,10 +154,17 @@ class ClaimExpenseOut(BaseModel):
     exception_type: str | None = None
     # ALLOW (submittable with a reason) or BLOCK, per the Approval Matrix's "When flagged".
     exception_mode: str | None = None
-    # Latest exception request's status for this expense (PENDING/APPROVED/REJECTED), if any.
+    # Latest exception request's status for this expense (PENDING/APPROVED/REJECTED), if any — or,
+    # on the claim's one exception request, this expense's own exception there (also SENT_BACK).
     exception_status: str | None = None
     # The submit modal must collect a reason for this expense (see annotate_expense_exceptions).
     exception_reason_required: bool = False
+    # On the claim's one exception request: this expense's exception, the reason given (prefilled
+    # after a send-back), why it was sent back or rejected, and each approver's decision on it.
+    exception_item_id: int | None = None
+    exception_reason: str | None = None
+    exception_comment: str | None = None
+    exception_decisions: list[dict] = Field(default_factory=list)
 
 
 class ClaimSubmitExceptionIn(BaseModel):

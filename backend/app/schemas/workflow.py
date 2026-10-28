@@ -1,5 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -44,12 +45,28 @@ class ExceptionRequestOut(BaseModel):
     decided_at: datetime | None = None
     decided_by_user_id: int | None = None
     decision_comment: str | None = None
+    # CLAIM_EXCEPTIONS / TRAVEL_EXCEPTIONS (the shared route it follows); None for older requests.
+    route_key: str | None = None
     created_at: datetime
 
 
 class ExceptionDecisionBody(BaseModel):
     approve: bool
     comment: str | None = None
+
+
+class ExceptionItemDecisionIn(BaseModel):
+    item_id: int
+    decision: Literal["ACCEPT", "REJECT", "SEND_BACK"]
+    # Required for REJECT (sent to the employee) and SEND_BACK (what they need to change).
+    comment: str | None = Field(default=None, max_length=2000)
+
+
+class ExceptionItemsDecisionBody(BaseModel):
+    """One approver's decision on every exception their step of a claim's exception request
+    still has to decide, submitted together."""
+
+    decisions: list[ExceptionItemDecisionIn] = Field(..., min_length=1)
 
 
 class AdvanceGrantIn(BaseModel):

@@ -157,6 +157,8 @@ const CHAIN_STEP = {
   APPROVED: ['bg-emerald-50 text-emerald-700', 'bg-emerald-600', '✓'],
   REJECTED: ['bg-rose-50 text-rose-700', 'bg-rose-600', '✕'],
   SLA_SKIPPED: ['bg-orange-50 text-orange-700', 'bg-orange-600', 'skip'],
+  // Exceptions sent back to the employee from this step; it comes back here on resubmission.
+  SENT_BACK: ['bg-orange-50 text-orange-700', 'bg-orange-600', '↩'],
   PENDING: ['bg-amber-50 text-amber-700', 'bg-amber-600', '●'],
   YOU: ['bg-brand text-white', 'bg-white text-brand', '●'],
   AWAITING: ['bg-slate-100 text-slate-500', 'bg-slate-400', ''],
@@ -184,7 +186,9 @@ export function ApprovalChain({ decisions, yourTurn = false }) {
               ? `Rejected${d.acted_by_name ? ` by ${d.acted_by_name}` : ''}`
               : d.status === 'SLA_SKIPPED'
                 ? 'Missed its SLA, passed on'
-                : d.status === 'PENDING'
+                : d.status === 'SENT_BACK'
+                  ? `Sent back to the employee${d.acted_by_name ? ` by ${d.acted_by_name}` : ''}`
+                  : d.status === 'PENDING'
                   ? 'Deciding now'
                   : 'Still to come';
         return (
@@ -243,7 +247,9 @@ export function ExceptionSubject({ row }) {
         )}
       </div>
       <div className="mt-0.5 text-xs text-slate-500">
-        {row.expense_category_name || 'Claim expense'}
+        {row.itemized
+          ? `${(row.items || []).length} exception${(row.items || []).length === 1 ? '' : 's'}: ${row.expense_category_name || 'claim expenses'}`
+          : row.expense_category_name || 'Claim expense'}
         {row.claimed_amount ? (
           <>
             {' · '}

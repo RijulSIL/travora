@@ -28,6 +28,7 @@ const ifscProblem = (ifsc) =>
   ifsc && !IFSC.test(ifsc) ? 'Not a valid IFSC. An IFSC has 11 characters: 4 letters, a 0, then 6 letters or digits (e.g. HDFC0001234).' : null;
 
 const EMPTY_BANK = { account_name: '', account_number: '', ifsc: '' };
+const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const toItems = (names) => (names || []).map((name) => ({ name, original: name, listed: true }));
 const errorText = (err, fallback) => {
   const detail = err?.response?.data?.detail;
@@ -51,7 +52,7 @@ export default function CompanyProfile() {
   const canEdit = useCanConfigurePolicy();
   const [saved, setSaved] = useState(null);
   const [loadError, setLoadError] = useState(null);
-  const [form, setForm] = useState({ company_name: '', gstins: [], bank: EMPTY_BANK });
+  const [form, setForm] = useState({ company_name: '', gstins: [], bank: EMPTY_BANK, travel_agent_email: '' });
   const [offices, setOffices] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [newGstin, setNewGstin] = useState('');
@@ -66,6 +67,7 @@ export default function CompanyProfile() {
       company_name: profile.company_name || '',
       gstins: profile.gstins || [],
       bank: { ...EMPTY_BANK, ...(profile.bank_details || {}) },
+      travel_agent_email: profile.travel_agent_email || '',
     });
     setOffices(toItems(profile.office_locations));
     setDepartments(toItems(profile.departments));
@@ -90,10 +92,13 @@ export default function CompanyProfile() {
   }
 
   const savedBank = { ...EMPTY_BANK, ...(saved.bank_details || {}) };
+  const travelAgentEmailError =
+    form.travel_agent_email.trim() && !EMAIL.test(form.travel_agent_email.trim()) ? 'That doesn’t look like a valid email address' : null;
   const changeCount =
     (form.company_name.trim() !== (saved.company_name || '') ? 1 : 0) +
     (JSON.stringify(form.gstins) !== JSON.stringify(saved.gstins || []) ? 1 : 0) +
     (['account_name', 'account_number', 'ifsc'].some((k) => (form.bank[k] || '') !== (savedBank[k] || '')) ? 1 : 0) +
+    (form.travel_agent_email.trim() !== (saved.travel_agent_email || '') ? 1 : 0) +
     listChanges(offices, saved.office_locations || []) +
     listChanges(departments, saved.departments || []);
 
@@ -103,6 +108,7 @@ export default function CompanyProfile() {
     !form.company_name.trim() ? 'Enter the company name' : null,
     badGstins.length ? `Fix or remove ${badGstins.length === 1 ? 'the invalid GSTIN' : `${badGstins.length} invalid GSTINs`}` : null,
     ifscError ? 'Fix the IFSC' : null,
+    travelAgentEmailError ? 'Fix the travel agent email' : null,
   ].filter(Boolean);
 
   const officeCounts = saved.office_counts || {};
@@ -129,6 +135,7 @@ export default function CompanyProfile() {
         company_name: form.company_name.trim(),
         gstins: form.gstins,
         bank_details: form.bank,
+        travel_agent_email: form.travel_agent_email.trim() || null,
         office_locations: offices.map((o) => o.name),
         office_renames: renamesOf(offices),
         departments: departments.map((d) => d.name),
@@ -218,6 +225,24 @@ export default function CompanyProfile() {
                   </button>
                 </div>
                 <UsedIn items={[]} note="kept for your records" />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className={LABEL} htmlFor="travel-agent-email">
+                  Travel agent email
+                </label>
+                <input
+                  id="travel-agent-email"
+                  type="email"
+                  className={`${FIELD} ${travelAgentEmailError ? 'border-amber-400 bg-amber-50' : ''}`}
+                  placeholder="agent@travelpartner.example"
+                  value={form.travel_agent_email}
+                  onChange={(e) => setForm((f) => ({ ...f, travel_agent_email: e.target.value }))}
+                />
+                {travelAgentEmailError ? (
+                  <span className="text-[11.5px] font-semibold text-amber-800">⚠ {travelAgentEmailError}</span>
+                ) : null}
+                <UsedIn items={['Travel Desk · “Send to agent”']} />
               </div>
             </fieldset>
           </section>
@@ -326,6 +351,7 @@ export default function CompanyProfile() {
               moves={(n) => `the ${people(n)} in it, its department head and its team budget move to the new name`}
               usedIn={['User management', 'CSV import', 'Approval matrix · department heads', 'Team budgets']}
               placeholder="New department, e.g. Quality"
+              peopleMustMove
             />
           </fieldset>
         </div>

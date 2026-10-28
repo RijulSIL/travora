@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 
 import { EYEBROW, RouteTimeline, slaRemaining } from '../../components/approvals/ApprovalDetail';
+import ClaimExceptionList from '../../components/claims/ClaimExceptionList';
 import { RelocationClaimPanel } from '../../components/claims/ClaimRelocationSteps';
 import { claimRouteItems } from '../../components/claims/claimRoute';
 import ClaimStatusBadge from '../../components/ui/ClaimStatusBadge';
@@ -27,7 +28,7 @@ import useToast from '../../hooks/useToast';
 import { reimbursementApi } from '../../services/reimbursementApi';
 import { useAuthStore } from '../../store/authStore';
 import { claimEditPath } from '../../utils/claimRoutes';
-import { formatDate, formatDatetime } from '../../utils/formatters';
+import { formatDate, formatDatetime, formatRole } from '../../utils/formatters';
 
 const inr = (value) =>
   `₹${Number(value || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -153,6 +154,10 @@ export default function ClaimDetail() {
 
   const stages = chain?.stages || [];
   const pending = stages.find((s) => s.status === 'PENDING');
+  // The claim's policy exceptions, each with every approver's decision on it.
+  const exceptionItems = chain?.exceptions || [];
+  const exceptionStep = (chain?.exception_stages || []).find((s) => s.status === 'PENDING');
+  const exceptionSentBackBy = (chain?.exception_stages || []).find((s) => s.itemized && s.status === 'SENT_BACK');
   const nextAfterPending = stages.find((s) => pending && s.stage_number > pending.stage_number && s.status === 'NOT_STARTED');
 
   let banner;
@@ -173,11 +178,18 @@ export default function ClaimDetail() {
     banner = {
       tone: 'rose',
       icon: Undo2,
-      title: 'Sent back to fix',
+      title: exceptionSentBackBy ? 'Policy exceptions sent back to fix' : 'Sent back to fix',
       sub: [sentBackEvent?.actor ? `by ${sentBackEvent.actor}` : null, sentBackEvent?.timestamp ? formatDatetime(sentBackEvent.timestamp) : null]
         .filter(Boolean)
         .join(', ') || null,
       quote: sentBackEvent?.comment || 'Please update and resubmit',
+      ...(exceptionSentBackBy
+        ? {
+            sub: `${exceptionSentBackBy.acted_by_name ? `${exceptionSentBackBy.acted_by_name} sent` : 'Sent'} back the exceptions marked below. Change their reason or bill and resubmit — the claim goes back to ${
+              exceptionSentBackBy.acted_by_name || formatRole(exceptionSentBackBy.required_role)
+            }, who decides only those again.`,
+          }
+        : {}),
       action: (
         <button type="button" className="btn-primary gap-1.5" onClick={() => navigate(claimEditPath(claim))}>
           <PencilLine size={14} /> Edit &amp; resubmit
@@ -201,7 +213,12 @@ export default function ClaimDetail() {
       tone: 'amber',
       icon: Clock,
       title: 'Waiting on policy exception approvals',
-      sub: 'Each flagged expense is reviewed by its exception approvers. Once every one is approved, the claim goes to Finance for payment.',
+      sub: [
+        exceptionStep?.pending_approver_names?.length ? `With ${exceptionStep.pending_approver_names.join(', ')} now.` : null,
+        'Each exception approver accepts, rejects or sends back every exception. Once the last one accepts them all, the claim goes to Finance for payment.',
+      ]
+        .filter(Boolean)
+        .join(' '),
     };
   } else if (pending) {
     const left = slaRemaining(pending.sla_deadline_at);
@@ -304,6 +321,15 @@ export default function ClaimDetail() {
               </div>
             </div>
           </div>
+
+          {exceptionItems.length ? (
+            <div>
+              <div className={`${EYEBROW} mb-1.5`}>Policy exceptions ({exceptionItems.length})</div>
+              <div className="overflow-hidden rounded-[10px] border border-slate-200">
+                <ClaimExceptionList exceptions={exceptionItems} />
+              </div>
+            </div>
+          ) : null}
 
           {hasGst ? (
             <div>

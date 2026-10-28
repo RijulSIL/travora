@@ -5,7 +5,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -55,12 +55,16 @@ from app.services.workflow_service import (
     EXCEPTION_SUBMISSION_BLOCK,
     assert_user_can_view_claim_workflow,
     cancel_pending_claim_exceptions,
+    claim_exception_request_awaiting_resubmit,
+    close_claim_exception_request,
     exception_submission_mode,
     get_workflow_config,
     init_claim_approval_chain,
     init_claim_exception_route,
     is_exception_enabled,
-    raise_submitted_claim_exception,
+    plan_claim_exception_resume,
+    raise_claim_exception_request,
+    resume_claim_exception_request,
 )
 
 logger = logging.getLogger(__name__)
@@ -78,7 +82,9 @@ SUPPORTED_CONTENT_TYPES = {
 # Not every valid invoice carries a GSTIN (unregistered vendors, cash memos, foreign
 # expenses) — must match frontend's InvoiceReview.jsx OPTIONAL_FIELD_KEYS exactly, or
 # review can look complete in the UI while the backend still refuses to mark it REVIEWED.
-OPTIONAL_INVOICE_FIELD_KEYS = {"supplier_gstin", "company_gstin"}
+# Never block review. expense_category only labels the line items at extraction (claims are built
+# from line items), and review shows it as optional — so it mustn't hold the invoice back either.
+OPTIONAL_INVOICE_FIELD_KEYS = {"supplier_gstin", "company_gstin", "expense_category", "nights"}
 GSTIN_PATTERN = re.compile(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$")
 
 # A claim in any of these states moves its invoices to the Archived Invoices view
@@ -151,7 +157,11 @@ def _validate_upload(filename: str, content_type: str, content: bytes) -> None:
     if suffix not in SUPPORTED_EXTENSIONS or content_type not in SUPPORTED_CONTENT_TYPES:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail="Supported invoice formats are JPEG, PNG, HEIC, PDF, Word and Excel",
+            detail="Supported invoice formats are JPEG, PNG, HEIC and PDF",
+        )
+    if not content:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="The file is empty"
         )
     if len(content) > MAX_INVOICE_SIZE_BYTES:
         raise HTTPException(status_code=413, detail="Invoice file exceeds 10 MB")
@@ -606,6 +616,7 @@ async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSe
         "other_tax",
         "is_tatkal",
         "expense_category",
+        "nights",
     ]
     extracted: dict[str, tuple[str, Decimal]] = {
         key: _parsed_field(raw_fields.get(key)) for key in keys
@@ -658,7 +669,10 @@ async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSe
             # fall back to Gemini's estimate, still capped low so a human must correct/confirm
             # it manually rather than trust an unverified guess.
             est_value, est_confidence = _parsed_field(raw_fields.get("grand_total_inr_estimate"))
-            converted_value = est_value if est_value.strip() else str(original_foreign_total)
+            # No rate and no estimate: the rupee amount is left EMPTY (confidence 0), so review
+            # can't finish until the employee types what they actually paid in INR. (Copying the
+            # foreign number in as rupees used to pay "USD 60" as ₹60.)
+            converted_value = est_value if est_value.strip() else ""
             forced_confidence = min(est_confidence, Decimal("40.00")) if est_value.strip() else Decimal("0.00")
         db.add(
             InvoiceField(
@@ -670,8 +684,10 @@ async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSe
             )
         )
         # Downstream math (line-item synthesis, claim totals, policy caps) needs an actual
-        # INR number to work with.
-        converted_grand_total = (converted_value, forced_confidence)
+        # INR number to work with. With no INR figure yet, the line items keep the foreign
+        # amounts' proportions; review rescales them to the INR total the employee enters
+        # (_rescale_line_items_to_total), and the invoice can't go on a claim before that.
+        converted_grand_total = (converted_value or str(original_foreign_total), forced_confidence)
 
     travel_date = date.today()
     idate = extracted.get("invoice_date", ("", Decimal(0)))[0]
@@ -1066,10 +1082,103 @@ async def get_invoice_for_view(invoice_id: int, user_id: int, db: AsyncSession) 
     raise HTTPException(status_code=403, detail="Not allowed to access this invoice")
 
 
+_LINE_MONEY_FIELDS = ("unit_price", "taxable_value", "cgst", "sgst", "igst", "other_tax", "total_amount")
+
+
+async def _rescale_line_items_to_total(invoice_id: int, fields: dict, db: AsyncSession) -> None:
+    """Claims are built from an invoice's line items, so when review corrects the invoice's total
+    the line items must follow: each line (amount and its tax) is scaled in proportion so they add
+    up to the corrected total, keeping its category and blacklisted flag. A foreign invoice's line
+    items are in rupees, so they follow its INR total instead of the original-currency one."""
+    currency_field = fields.get("currency")
+    currency = (currency_field.final_value or currency_field.original_value) if currency_field else None
+    key = "grand_total_inr_estimate" if _is_non_inr_currency(currency or "") else "grand_total"
+    total_field = fields.get(key)
+    if total_field is None:
+        return
+    raw = total_field.final_value if total_field.final_value not in (None, "") else total_field.original_value
+    try:
+        target = Decimal(str(raw).replace(",", "").strip()).quantize(Decimal("0.01"))
+    except (InvalidOperation, ValueError):
+        return  # not a number: left for review validation, line items untouched
+    if target <= 0:
+        return
+    lines = (
+        await db.execute(select(InvoiceLineItem).where(InvoiceLineItem.invoice_id == invoice_id).order_by(InvoiceLineItem.id))
+    ).scalars().all()
+    current = sum((line.total_amount or Decimal("0") for line in lines), Decimal("0"))
+    if not lines or current <= 0 or abs(current - target) < Decimal("0.01"):
+        return
+    ratio = target / current
+    for line in lines:
+        for name in _LINE_MONEY_FIELDS:
+            value = getattr(line, name)
+            if value is not None:
+                setattr(line, name, (value * ratio).quantize(Decimal("0.01")))
+    # Rounding: put any leftover paisa on the largest line so the lines add up exactly.
+    residue = target - sum((line.total_amount or Decimal("0") for line in lines), Decimal("0"))
+    if residue:
+        largest = max(lines, key=lambda line: line.total_amount or Decimal("0"))
+        largest.total_amount = (largest.total_amount or Decimal("0")) + residue
+        largest.taxable_value = (largest.taxable_value or Decimal("0")) + residue
+
+
+# Review edits are free text, so the values everything downstream does sums and date maths on
+# are checked before they're saved. Labels match InvoiceReview.jsx's FIELD_LABELS.
+_INVOICE_TOTAL_FIELD_LABELS = {"grand_total": "Total", "grand_total_inr_estimate": "Rupee amount"}
+_INVOICE_MONEY_FIELD_LABELS = {
+    "total_taxable_value": "Taxable value",
+    "cgst": "CGST",
+    "sgst": "SGST",
+    "igst": "IGST",
+    "other_tax": "Other tax",
+}
+
+
+def _validate_invoice_field_values(payload: InvoiceFieldsUpdateRequest) -> None:
+    """Refuse (422) a review edit whose amount isn't a number (totals above zero, taxes zero or
+    more), whose invoice date isn't a real date, or whose nights aren't a whole number. Blank
+    values are left to the review-complete check."""
+    for update in payload.fields:
+        raw = str(update.final_value).strip() if update.final_value is not None else ""
+        if not raw:
+            continue
+        key = update.field_key
+        if key in _INVOICE_TOTAL_FIELD_LABELS or key in _INVOICE_MONEY_FIELD_LABELS:
+            label = _INVOICE_TOTAL_FIELD_LABELS.get(key) or _INVOICE_MONEY_FIELD_LABELS[key]
+            try:
+                amount = Decimal(raw.replace(",", ""))
+            except InvalidOperation:
+                amount = None
+            if amount is None or not amount.is_finite():
+                raise HTTPException(status_code=422, detail=f"{label} must be a number")
+            if key in _INVOICE_TOTAL_FIELD_LABELS and amount <= 0:
+                raise HTTPException(status_code=422, detail=f"{label} must be greater than zero")
+            if amount < 0:
+                raise HTTPException(status_code=422, detail=f"{label} can't be negative")
+        elif key == "invoice_date":
+            try:
+                date.fromisoformat(raw[:10])
+                if raw[10:] and raw[10] not in "T ":
+                    raise ValueError
+            except ValueError:
+                raise HTTPException(
+                    status_code=422, detail="Invoice date must be a real date (YYYY-MM-DD)"
+                ) from None
+        elif key == "nights":
+            try:
+                nights = Decimal(raw)
+            except InvalidOperation:
+                nights = None
+            if nights is None or not nights.is_finite() or nights < 0 or nights != nights.to_integral_value():
+                raise HTTPException(status_code=422, detail="Nights must be a whole number")
+
+
 async def update_invoice_fields(
     invoice_id: int, payload: InvoiceFieldsUpdateRequest, user_id: int, db: AsyncSession
 ) -> Invoice:
     invoice = _ensure_invoice_owner(await db.get(Invoice, invoice_id), user_id)
+    _validate_invoice_field_values(payload)
     _, claim_reference, claim_status = await get_invoice_claim_link(invoice_id, db)
     if claim_status in INVOICE_LOCKING_CLAIM_STATUSES:
         label = claim_reference or "its claim"
@@ -1107,6 +1216,7 @@ async def update_invoice_fields(
             field.confirmed_by = None
 
     invoice.duplicate_acknowledged = payload.duplicate_acknowledged
+    await _rescale_line_items_to_total(invoice_id, fields, db)
 
     refreshed = (
         await db.execute(select(InvoiceField).where(InvoiceField.invoice_id == invoice_id))
@@ -1293,9 +1403,12 @@ async def _is_twin_sharing_active(claim: ClaimDraft, db: AsyncSession) -> bool:
     if not impact or not impact.twin_sharing_mandatory:
         return False
 
+    # Only a colleague's stay can mean a shared room — the employee's own other claims for the
+    # same trip (say food on one, the hotel on another) never halve their cap.
     query = select(ClaimDraft).where(
         and_(
             ClaimDraft.id != claim.id,
+            ClaimDraft.employee_user_id != claim.employee_user_id,
             ClaimDraft.destination_city == claim.destination_city,
             ClaimDraft.departure_date <= claim.return_date,
             ClaimDraft.return_date >= claim.departure_date,
@@ -1305,6 +1418,8 @@ async def _is_twin_sharing_active(claim: ClaimDraft, db: AsyncSession) -> bool:
     candidates = (await db.execute(query)).scalars().all()
     
     for cand in candidates:
+        if cand.employee_user_id == claim.employee_user_id:
+            continue
         cand_user = await db.get(User, cand.employee_user_id)
         if not cand_user or not cand_user.employee_id:
             continue
@@ -1402,6 +1517,50 @@ async def _claim_invoice_breakdown(invoice_ids: list[int], db: AsyncSession) -> 
     return breakdown
 
 
+async def _invoice_dates_and_nights(
+    invoice_ids: list[int], db: AsyncSession
+) -> tuple[dict[int, date | None], dict[int, int]]:
+    """Each invoice's bill date and (hotel bills) number of nights, as reviewed (final value, else
+    what extraction read)."""
+    if not invoice_ids:
+        return {}, {}
+    rows = (
+        await db.execute(
+            select(InvoiceField).where(
+                InvoiceField.invoice_id.in_(invoice_ids), InvoiceField.field_key.in_(("invoice_date", "nights"))
+            )
+        )
+    ).scalars().all()
+    dates: dict[int, date | None] = {}
+    nights: dict[int, int] = {}
+    for row in rows:
+        value = str(row.final_value if row.final_value not in (None, "") else (row.original_value or "")).strip()
+        if row.field_key == "invoice_date":
+            try:
+                dates[row.invoice_id] = date.fromisoformat(value[:10])
+            except ValueError:
+                dates[row.invoice_id] = None
+        else:
+            try:
+                count = int(Decimal(value))
+            except (InvalidOperation, ValueError):
+                continue
+            if count > 0:
+                nights[row.invoice_id] = count
+    return dates, nights
+
+
+def _hotel_nights(invoice_ids: set[int], bill_nights: dict[int, int], claim: ClaimDraft) -> int:
+    """Nights a hotel cap covers: the nights on the bills (a bill without them counts as 1), or —
+    when no bill has them — the trip's nights (return − departure), at least 1."""
+    known = [bill_nights[i] for i in invoice_ids if i in bill_nights]
+    if known:
+        return sum(known) + (len(invoice_ids) - len(known))
+    if claim.departure_date and claim.return_date:
+        return max((claim.return_date - claim.departure_date).days, 1)
+    return 1
+
+
 async def _build_claim_expenses(
     claim: ClaimDraft, invoice_ids: list[int], db: AsyncSession
 ) -> tuple[list[ClaimExpense], dict]:
@@ -1423,6 +1582,11 @@ async def _build_claim_expenses(
     line_items = (
         await db.execute(select(InvoiceLineItem).where(InvoiceLineItem.invoice_id.in_(invoice_ids)))
     ).scalars().all()
+    # Policy caps are per night (hotel) / per day (food, incidentals, day visit), so caps are
+    # checked against each bill's own date and nights, not the claim's lump total.
+    bill_dates, bill_nights = await _invoice_dates_and_nights(invoice_ids, db)
+    per_day: dict[tuple[int | None, str], dict] = defaultdict(lambda: defaultdict(lambda: Decimal("0.00")))
+    group_invoices: dict[tuple[int | None, str], set[int]] = defaultdict(set)
     for item in line_items:
         gst_summary["taxable_value"] += item.taxable_value
         gst_summary["total_taxable_value"] += item.taxable_value
@@ -1435,6 +1599,8 @@ async def _build_claim_expenses(
             key = (item.category_id, item.category_name or "Uncategorised")
             grouped[key] += item.total_amount
             grouped_taxable[key] += item.taxable_value
+            per_day[key][bill_dates.get(item.invoice_id)] += item.total_amount
+            group_invoices[key].add(item.invoice_id)
             gst_summary["itc_eligible_amount"] += item.cgst + item.sgst + item.igst
 
     # Fetch user, employee and impact level for air/taxi eligibility checks
@@ -1495,10 +1661,27 @@ async def _build_claim_expenses(
             expenses.append(expense)
             continue
         if limit_row and field and is_exception_enabled(cfg, field_exception_types.get(field, field)):
-            cap_amount = getattr(limit_row, f"{field}_cap")
-            if twin_sharing_active and field == "hotel" and cap_amount:
-                cap_amount = cap_amount / 2
-            policy_status, _ = check_cap(limit_row, field, amount, override_cap=cap_amount)
+            unit_cap = getattr(limit_row, f"{field}_cap")
+            if twin_sharing_active and field == "hotel" and unit_cap:
+                unit_cap = unit_cap / 2
+            key = (category_id, category_name)
+            if unit_cap is None:
+                cap_amount = None
+            elif field == "hotel":
+                # Nightly cap × nights: the nights on the hotel bills (read at extraction,
+                # correctable in review), or the trip's nights if no bill has them.
+                nights = _hotel_nights(group_invoices[key], bill_nights, claim)
+                cap_amount = unit_cap * nights
+                policy_status, _ = check_cap(limit_row, field, amount, override_cap=cap_amount)
+            else:
+                # Daily cap, checked day by day (bills grouped by their bill date); flagged if any
+                # one day goes over. The cap shown is the daily cap × the number of bill days.
+                days = per_day[key]
+                cap_amount = unit_cap * max(len(days), 1)
+                for day_total in days.values():
+                    day_status, _ = check_cap(limit_row, field, day_total, override_cap=unit_cap)
+                    if day_status == "HARD_BLOCK" or (day_status == "SOFT_FLAG" and policy_status == "OK"):
+                        policy_status = day_status
 
         # Override policy_status for non-cap policy exceptions
         normalized_cat = (category_name or "").lower()
@@ -1643,6 +1826,84 @@ async def assert_invoices_eligible_for_claim(
             )
 
 
+async def trip_ids_on_claims(
+    trip_ids: list[int], db: AsyncSession, *, exclude_claim_id: int | None = None
+) -> dict[int, str]:
+    """Which of these trips already sit on a claim — any claim but a rejected one (a deleted
+    draft leaves no link behind) — mapped to that claim's reference, for "still to claim" and
+    the one-claim-per-trip rule."""
+    if not trip_ids:
+        return {}
+    query = (
+        select(ClaimTrip.trip_id, ClaimDraft.id, ClaimDraft.claim_reference)
+        .join(ClaimDraft, ClaimDraft.id == ClaimTrip.claim_id)
+        .where(ClaimTrip.trip_id.in_(trip_ids), ClaimDraft.status != ClaimStatus.REJECTED)
+    )
+    if exclude_claim_id is not None:
+        query = query.where(ClaimDraft.id != exclude_claim_id)
+    rows = (await db.execute(query)).all()
+    return {trip_id: reference or f"claim #{claim_id}" for trip_id, claim_id, reference in rows}
+
+
+async def assert_trips_not_on_other_claim(trip_ids: list[int], claim_id: int, db: AsyncSession) -> None:
+    """A booked trip is claimed once: refuse (409) a trip already on another claim, naming it."""
+    linked = await trip_ids_on_claims(trip_ids, db, exclude_claim_id=claim_id)
+    if not linked:
+        return
+    trip_id, where = next(iter(linked.items()))
+    trip = await db.get(TravelTrip, trip_id)
+    label = (trip.reference_id if trip is not None and trip.reference_id else None) or f"Trip {trip_id}"
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=f"{label} is already on {where}. A trip can only be claimed once.",
+    )
+
+
+def _assert_trip_dates_in_order(claim: Any) -> None:
+    if claim.departure_date and claim.return_date and claim.return_date < claim.departure_date:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Return date must be on or after the departure date",
+        )
+
+
+def assert_claim_complete_for_submit(claim: ClaimDraft, invoice_ids: list[int], expenses: list) -> None:
+    """What the claim wizards require before Submit, checked again here so a claim can't reach
+    approvers half-filled: a travel claim needs its trip details (TravelClaimWizard's step 1 —
+    a relocation claim takes its cities from the relocation approval and has no trip dates),
+    and every claim needs at least one bill adding up to more than ₹0."""
+    if claim.reimbursement_category == ReimbursementCategory.TRAVEL:
+        required = (
+            ("trip_purpose", "Trip purpose"),
+            ("office_location", "Office location"),
+            ("from_city", "From city"),
+            ("destination_city", "Destination city"),
+            ("departure_date", "Departure date"),
+            ("return_date", "Return date"),
+        )
+        missing = [
+            label for key, label in required
+            if getattr(claim, key) is None or not str(getattr(claim, key)).strip()
+        ]
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Fill in the trip details before submitting: {', '.join(missing)}",
+            )
+        _assert_trip_dates_in_order(claim)
+    if not invoice_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Add at least one bill to submit this claim",
+        )
+    total = sum((Decimal(str(expense.amount or 0)) for expense in expenses), Decimal("0"))
+    if total <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="The bills on this claim add up to ₹0, so there's nothing to reimburse",
+        )
+
+
 async def create_or_update_claim_draft(
     payload: ClaimDraftIn, user_id: int, db: AsyncSession
 ) -> tuple[ClaimDraft, list[ClaimExpense], list[int], list[int]]:
@@ -1670,7 +1931,21 @@ async def delete_claim_draft(claim_id: int, user_id: int, db: AsyncSession) -> N
             detail=f"Only a draft claim can be deleted — this claim is {claim.status.value.replace('_', ' ').title()}.",
         )
 
-    from app.models.claim_workflow import ExceptionRequest
+    from app.models.claim_workflow import ClaimApprovalStage, ExceptionRequest
+
+    # A claim that was ever submitted keeps its history — this also covers one left in DRAFT by
+    # an edit after a send-back from before sent-back claims kept their status.
+    ever_submitted = claim.claim_reference is not None or claim.submitted_at is not None or (
+        await db.execute(select(ClaimApprovalStage.id).where(ClaimApprovalStage.claim_id == claim_id).limit(1))
+    ).first() is not None
+    if ever_submitted:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This claim has already been through approval, so it can't be deleted — its history is kept. "
+                "Correct it and submit it again instead."
+            ),
+        )
 
     # claim_invoices, claim_trips, claim_expenses and exception_requests have no DB-level
     # ON DELETE CASCADE (NO ACTION), so they're removed explicitly; only claim_approval_stages
@@ -1701,10 +1976,9 @@ async def _create_or_update_claim_draft_impl(
         raise HTTPException(status_code=403, detail="Cannot edit another employee's claim")
     if claim.status not in (ClaimStatus.DRAFT, ClaimStatus.SENT_BACK):
         raise HTTPException(status_code=409, detail="Only draft or sent-back claims can be edited")
-    if claim.status == ClaimStatus.SENT_BACK:
-        # Re-open sent-back claims for correction/resubmission.
-        claim.status = ClaimStatus.DRAFT
-        claim.current_approval_stage = None
+    # A sent-back claim stays SENT_BACK while the employee corrects it (submit_claim accepts it
+    # as-is) — flipping it to DRAFT would hide it from the approver who sent it back and let it
+    # be deleted along with its approval history (see delete_claim_draft).
 
     # Relocation: started from the Travel Claim form with trip purpose "Relocation". It's its own
     # claim type (RELOCATION), raised against an approved relocation, with Relocation invoices only
@@ -1739,6 +2013,8 @@ async def _create_or_update_claim_draft_impl(
             exclude_claim_id=claim.id,
             claim_category=payload.reimbursement_category,
         )
+    await assert_trips_not_on_other_claim(list(payload.trip_ids), claim.id, db)
+    _assert_trip_dates_in_order(payload)
 
     # Validated the same way _validate_request_details validates a travel request — the Travel
     # Claim wizard offers the identical admin-managed dropdowns (GET /travel-requests/options),
@@ -1750,12 +2026,28 @@ async def _create_or_update_claim_draft_impl(
     type_val = (payload.travel_type or "NON_PROJECT").upper()
     if type_val not in {t.value for t in TravelRequestTravelType}:
         raise HTTPException(status_code=422, detail="Invalid travel_type")
+    # A value the claim already has is kept as it is (it may have been renamed or retired since);
+    # a new one must be an available option, and one an option was renamed from (say, from a trip
+    # raised before the rename) is saved under the option's new name.
     if type_val == TravelRequestTravelType.PROJECT.value:
         if not payload.project_code or not payload.project_code.strip():
             raise HTTPException(status_code=422, detail="Project code is required for project travel")
-        await _require_active_option(TravelOptionType.PROJECT_CODE, payload.project_code, "Project code", db)
-    if payload.trip_purpose and payload.trip_purpose.strip():
-        await _require_active_option(TravelOptionType.TRIP_PURPOSE, payload.trip_purpose, "Trip purpose", db)
+        if payload.project_code != claim.project_code:
+            payload = payload.model_copy(
+                update={
+                    "project_code": await _require_active_option(
+                        TravelOptionType.PROJECT_CODE, payload.project_code, "Project code", db
+                    )
+                }
+            )
+    if payload.trip_purpose and payload.trip_purpose.strip() and payload.trip_purpose != claim.trip_purpose:
+        payload = payload.model_copy(
+            update={
+                "trip_purpose": await _require_active_option(
+                    TravelOptionType.TRIP_PURPOSE, payload.trip_purpose, "Trip purpose", db
+                )
+            }
+        )
 
     # Set standard fields from payload
     exclude_keys = {"claim_id", "invoice_ids", "trip_ids"}
@@ -1814,8 +2106,16 @@ async def annotate_expense_exceptions(
     `exception_status` (its latest exception request's status, if any) and
     `exception_reason_required` — True while the claim is still editable and this expense has no
     approved exception for its current amount (an approved one survives a send-back only while
-    the amount is unchanged)."""
-    from app.models.claim_workflow import ExceptionRequest, ExceptionRequestStatus
+    the amount is unchanged).
+
+    A claim's exception request on the shared route lists every exception on it: each expense
+    then also gets its own exception's state there — `exception_status` (PENDING / SENT_BACK /
+    APPROVED / REJECTED), `exception_reason` (the reason given, to edit after a send-back),
+    `exception_comment` (why it was sent back or rejected) and `exception_decisions` (each
+    approver's decision on it). A sent-back exception needs a fresh look before resubmitting (its
+    reason is prefilled); one already accepted doesn't, while its amount is unchanged."""
+    from app.models.claim_workflow import ExceptionApproval, ExceptionRequest, ExceptionRequestStatus
+    from app.services.workflow_service import describe_exception_items, is_itemized_claim_request
 
     cfg = cfg or await get_workflow_config(db)
     requests = (
@@ -1829,10 +2129,43 @@ async def annotate_expense_exceptions(
         )
     ).scalars().all()
     editable = claim.status in (ClaimStatus.DRAFT, ClaimStatus.SENT_BACK)
+    itemized = [req for req in requests if is_itemized_claim_request(req)]
+    items: list[dict] = []
+    if itemized:
+        current = itemized[-1]
+        steps = (
+            await db.execute(select(ExceptionApproval).where(ExceptionApproval.exception_request_id == current.id))
+        ).scalars().all()
+        items = [i for i in await describe_exception_items(current, list(steps), db) if i["status"] != "DROPPED"]
     for expense in expenses:
         exc_type = expense.exception_type
+        expense.exception_item_id = None
+        expense.exception_reason = None
+        expense.exception_comment = None
+        expense.exception_decisions = []
+        item = next(
+            (i for i in items if i["exception_type"] == exc_type and i["category_name"] == expense.category_name),
+            None,
+        )
+        if exc_type and item is not None:
+            same_amount = item["claimed_amount"] is not None and Decimal(item["claimed_amount"]) == Decimal(
+                str(expense.amount)
+            )
+            expense.exception_mode = exception_submission_mode(cfg, exc_type)
+            expense.exception_item_id = item["item_id"]
+            expense.exception_status = item["status"]
+            expense.exception_reason = item["reason"]
+            expense.exception_decisions = item["decisions"]
+            if item["status"] in (ExceptionRequestStatus.SENT_BACK.value, ExceptionRequestStatus.REJECTED.value):
+                expense.exception_comment = item["decision_comment"]
+            expense.exception_reason_required = editable and (
+                item["status"] == ExceptionRequestStatus.SENT_BACK.value or not same_amount
+            )
+            continue
         latest = None
         for req in requests:
+            if is_itemized_claim_request(req):
+                continue
             # Requests raised before per-expense tracking have no category — match on type.
             if req.exception_type == exc_type and req.expense_category_name in (None, expense.category_name):
                 latest = req
@@ -1928,18 +2261,22 @@ async def submit_claim(
 ) -> ClaimDraft:
     """Submit a draft (or sent-back) claim. Every flagged expense still needing an exception
     must come with a reason in `exception_reasons` ({exception_type, category_name, reason}) —
-    the wizard's submit modal collects one per flagged expense. Each becomes its own exception
-    request with its own approver chain, raised here and nowhere else, so an unsubmitted claim
-    never has one. A claim with any exception skips the normal approval stages: its exception
-    approvers are its approval, and it goes to Finance once every exception is approved; any
-    rejection rejects the whole claim (see workflow_service.init_claim_exception_route /
-    decide_exception_request). A claim with no exceptions takes the normal approval chain."""
+    the wizard's submit modal collects one per flagged expense (a sent-back one keeps its reason
+    unless a new one is given). Together they become the claim's one exception request, an item
+    per exception, raised here and nowhere else, so an unsubmitted claim never has one. A claim
+    with any exception skips the normal approval stages: the shared claim exception route is its
+    approval, and it goes to Finance once the last step accepts every exception; any rejection
+    rejects the whole claim, a send-back returns it to the employee (see
+    workflow_service.raise_claim_exception_request / decide_claim_exception_items). A claim with
+    no exceptions takes the normal approval chain."""
     user = await db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
     claim, expenses, invoice_ids, trip_ids = await get_claim_bundle(claim_id, user_id, db)
     if claim.status not in (ClaimStatus.DRAFT, ClaimStatus.SENT_BACK):
         raise HTTPException(status_code=409, detail="Only draft or sent-back claims can be submitted")
+    assert_claim_complete_for_submit(claim, invoice_ids, expenses)
+    await assert_trips_not_on_other_claim(list(trip_ids), claim.id, db)
     if invoice_ids:
         await assert_invoices_eligible_for_claim(
             list(invoice_ids),
@@ -1977,6 +2314,12 @@ async def submit_claim(
     for item in exception_reasons or []:
         key = (str(item.get("exception_type") or ""), str(item.get("category_name") or ""))
         reasons[key] = str(item.get("reason") or "").strip()
+    # An exception sent back (or already accepted on a request the employee is resubmitting)
+    # keeps the reason it was given unless a new one is typed.
+    for expense in expenses:
+        key = (expense.exception_type, expense.category_name)
+        if expense.exception_type and not reasons.get(key) and getattr(expense, "exception_reason", None):
+            reasons[key] = expense.exception_reason.strip()
     missing = [
         expense.category_name
         for expense in needing
@@ -2039,27 +2382,67 @@ async def submit_claim(
     # Anything still pending here predates exceptions-on-submit (raised mid-wizard on a draft) —
     # superseded by the reasons given now.
     await cancel_pending_claim_exceptions(claim.id, "Superseded by the reason given at submission.", db)
+
+    # Resubmitting after an exception approver sent some exceptions back: the same request picks up
+    # at that approver's step (see resume_claim_exception_request) — unless the claim changed
+    # beyond those exceptions (a new one, or an accepted one's amount), then it starts afresh.
+    resubmitting = await claim_exception_request_awaiting_resubmit(claim.id, db)
+    plan = None
+    if resubmitting is not None:
+        from app.services.workflow_service import _load_exception_items
+
+        plan = plan_claim_exception_resume(await _load_exception_items(resubmitting.id, db), expenses)
+        if plan is None:
+            await close_claim_exception_request(
+                resubmitting, "Started again: the claim changed after its exceptions were sent back.", db
+            )
+    covered_by_resubmitted = (
+        {(e.exception_type, e.category_name) for e in expenses if getattr(e, "exception_item_id", None)}
+        if resubmitting is not None and plan is None
+        else set()
+    )
+    to_raise = (
+        []
+        if plan is not None
+        else [
+            e
+            for e in expenses
+            if e.exception_type
+            and (e.exception_reason_required or (e.exception_type, e.category_name) in covered_by_resubmitted)
+        ]
+    )
     # Both set the claim reference used in the notifications below.
     if any(expense.exception_type for expense in expenses):
         # A claim with policy exceptions is approved by its exception approvers alone and then
         # goes to Finance — it skips the normal approval stages entirely.
-        await init_claim_exception_route(claim, db, exceptions_pending=bool(needing))
+        await init_claim_exception_route(
+            claim, db, exceptions_pending=bool(to_raise) or bool(plan and plan["remaining"])
+        )
     else:
         await init_claim_approval_chain(claim, db)
-    for expense in needing:
-        await raise_submitted_claim_exception(
+    if plan is not None:
+        await resume_claim_exception_request(claim, resubmitting, plan, reasons, cfg, db)
+    elif to_raise:
+        await raise_claim_exception_request(
             claim,
-            exception_type=expense.exception_type,
-            category_name=expense.category_name,
-            amount=expense.amount,
-            reason=reasons[(expense.exception_type, expense.category_name)],
+            items=[
+                {
+                    "exception_type": e.exception_type,
+                    "category_name": e.category_name,
+                    "amount": e.amount,
+                    "cap_amount": getattr(e, "cap_amount", None),
+                    "reason": reasons[(e.exception_type, e.category_name)],
+                }
+                for e in to_raise
+            ],
             cfg=cfg,
             db=db,
         )
+    for expense in to_raise:
         expense.exception_requested = True
-    if needing:
+    if to_raise:
         claim_ref = claim.claim_reference or f"CLM-{claim.id}"
-        count = len(needing)
+        count = len(to_raise)
         await create_notification(
             user_id=claim.employee_user_id,
             title=f"Exception{'s' if count > 1 else ''} sent for approval: {claim_ref}",

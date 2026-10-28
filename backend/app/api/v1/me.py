@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -14,6 +14,10 @@ from app.services.me_service import build_me_profile, build_my_policy_limits
 from app.services.workflow_service import get_workflow_config
 
 router = APIRouter(tags=["me"])
+
+# A delegation's last moment: the end of its Until day (whole seconds — the column rounds
+# fractions, and 23:59:59.999999 would round into the next day).
+DELEGATION_DAY_END = time(23, 59, 59)
 
 
 @router.get("/me", response_model=MeOut)
@@ -132,10 +136,17 @@ async def create_delegation(
     delegatee = await db.get(User, payload.delegatee_id)
     if not delegatee:
         raise HTTPException(status_code=404, detail="Delegatee not found")
+    if not delegatee.is_active:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{delegatee.full_name or delegatee.email} is deactivated, so they can't cover for you",
+        )
 
+    # Whole days: from the start of the first day to the end of the last, so From = Until covers
+    # that one day. Only the date is read ("2026-10-27" or the browser's "2026-10-27T00:00:00.000Z").
     try:
-        start = datetime.fromisoformat(payload.start_date)
-        end = datetime.fromisoformat(payload.end_date)
+        start = datetime.combine(date.fromisoformat(payload.start_date.strip()[:10]), time.min)
+        end = datetime.combine(date.fromisoformat(payload.end_date.strip()[:10]), DELEGATION_DAY_END)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid date format") from exc
 

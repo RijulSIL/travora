@@ -1,6 +1,6 @@
 """Travel booking (/booking). Historical self-serve flows are unused by SPA; merged trip listing is authoritative."""
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -22,6 +22,7 @@ from app.schemas.travel_booking import (
     TrainSearchIn,
     TripOut,
 )
+from app.services.reimbursement_service import trip_ids_on_claims
 from app.services.travel_booking_service import (
     book_bus,
     book_flight,
@@ -167,6 +168,8 @@ async def buses_book(
 @router.get("/trips", response_model=list[TripOut])
 @router.get("/trips/my", response_model=list[TripOut])
 async def my_trips(
+    unlinked_only: bool = Query(False),
+    editing_claim_id: int | None = Query(None),
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ) -> list[TripOut]:
@@ -175,6 +178,12 @@ async def my_trips(
     from app.models.travel_request import TravelRequest
 
     trips = await list_trips(int(claims["sub"]), db)
+    if unlinked_only:
+        # "Still to claim": drop trips already on a claim (any but a rejected one — see
+        # reimbursement_service.assert_trips_not_on_other_claim). The claim being edited keeps
+        # its own trips, so reopening it in the wizard still shows them as selected.
+        linked = await trip_ids_on_claims([t.id for t in trips], db, exclude_claim_id=editing_claim_id)
+        trips = [t for t in trips if t.id not in linked]
     desk_ids = await desk_ticket_ids_for_trips(trips, db)
 
     # Fetch return date / trip type / purpose / travel type / project code from travel requests

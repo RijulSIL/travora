@@ -31,6 +31,17 @@ class ExceptionRequestStatus(str, enum.Enum):
     # Closed without a decision — its claim was sent back, rejected, or another exception on it
     # was rejected (which rejects the whole claim), so there's nothing left to approve.
     CANCELLED = "CANCELLED"
+    # A claim's exception request whose approver sent some of its exceptions back to the
+    # employee: it waits with them, and picks up again at that same step when they resubmit.
+    SENT_BACK = "SENT_BACK"
+
+
+class ExceptionItemDecisionValue(str, enum.Enum):
+    """What one approver decided for one exception on a claim (see ExceptionItemDecision)."""
+
+    ACCEPTED = "ACCEPTED"
+    REJECTED = "REJECTED"
+    SENT_BACK = "SENT_BACK"
 
 
 class NotificationCategory(str, enum.Enum):
@@ -116,7 +127,53 @@ class ExceptionRequest(Base):
     decided_at: Mapped[datetime | None] = mapped_column(DateTime)
     decided_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     decision_comment: Mapped[str | None] = mapped_column(Text)
+    # Which shared exception route (Approval Matrix -> Exception flows) this request follows:
+    # CLAIM_EXCEPTIONS or TRAVEL_EXCEPTIONS. NULL on requests raised before the shared routes,
+    # which finish on the per-type chain they were created with.
+    route_key: Mapped[str | None] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
+
+
+class ExceptionRequestItem(Base):
+    """One exception on a claim's exception request — a claim with several flagged expenses gets
+    one request listing each of them, and every approver on the route decides each one."""
+
+    __tablename__ = "exception_request_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    exception_request_id: Mapped[int] = mapped_column(
+        ForeignKey("exception_requests.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    exception_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    expense_category_name: Mapped[str | None] = mapped_column(String(128))
+    claimed_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    cap_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    reason: Mapped[str | None] = mapped_column(Text)
+    # PENDING (still on the route), SENT_BACK (with the employee), APPROVED (accepted by every
+    # step), REJECTED, CANCELLED (the request closed another way), or DROPPED (no longer flagged
+    # after the employee changed the claim).
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default=ExceptionRequestStatus.PENDING.value)
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
+
+
+class ExceptionItemDecision(Base):
+    """One approver's decision on one exception at one step. Append-only: a step that sent an
+    exception back and decides it again after the resubmission gets a second row."""
+
+    __tablename__ = "exception_item_decisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    item_id: Mapped[int] = mapped_column(
+        ForeignKey("exception_request_items.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    exception_approval_id: Mapped[int] = mapped_column(
+        ForeignKey("exception_approvals.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    decision: Mapped[str] = mapped_column(String(32), nullable=False)
+    comment: Mapped[str | None] = mapped_column(Text)
+    decided_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    decided_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
 class ExceptionApproval(Base):

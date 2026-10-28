@@ -139,7 +139,7 @@ export default function TravelClaimWizard() {
     let cancelled = false;
     (async () => {
       const [tripOutcome, invoiceOutcome, meOutcome, optionsOutcome] = await Promise.allSettled([
-        reimbursementApi.bookingTripsMy({ unlinked_only: true }),
+        reimbursementApi.bookingTripsMy({ unlinked_only: true, editing_claim_id: effectiveEditId || undefined }),
         reimbursementApi.invoices({ unlinked: true, editing_claim_id: effectiveEditId || undefined }),
         reimbursementApi.me(),
         reimbursementApi.travelOptions(),

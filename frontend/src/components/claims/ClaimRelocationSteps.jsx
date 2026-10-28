@@ -121,13 +121,18 @@ function RequestForm({ routeText, busy, onSubmit }) {
   });
   const [errors, setErrors] = useState({});
   const set = (key) => (e) => setValues((prev) => ({ ...prev, [key]: e.target.value }));
+  const today = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD, local
 
   const submit = () => {
     const next = {};
     if (!values.origin_city.trim()) next.origin_city = 'Required';
     if (!values.destination_city.trim()) next.destination_city = 'Required';
+    else if (values.destination_city.trim().toLowerCase() === values.origin_city.trim().toLowerCase()) {
+      next.destination_city = "Can't be the same as Moving from";
+    }
     if (!(Number(values.estimated_amount) > 0)) next.estimated_amount = 'Enter the estimated amount';
     if (!values.planned_move_date) next.planned_move_date = 'Required';
+    else if (values.planned_move_date < today) next.planned_move_date = "Can't be in the past";
     if (values.family_members !== '' && !(Number(values.family_members) >= 0 && Number(values.family_members) <= 50)) {
       next.family_members = 'Enter a number from 0 to 50';
     }
@@ -174,7 +179,7 @@ function RequestForm({ routeText, busy, onSubmit }) {
         </label>
         <label className="space-y-1">
           <span className={LABEL}>Planned move date *</span>
-          <input className={INPUT} type="date" value={values.planned_move_date} onChange={set('planned_move_date')} />
+          <input className={INPUT} type="date" min={today} value={values.planned_move_date} onChange={set('planned_move_date')} />
           {err('planned_move_date')}
         </label>
         <label className="space-y-1">

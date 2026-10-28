@@ -1,6 +1,7 @@
 import calendar
 import csv
 import io
+import json
 import logging
 import re
 from datetime import date, datetime, timedelta
@@ -10,11 +11,12 @@ from uuid import uuid4
 import xlsxwriter
 from fastapi import HTTPException
 from fpdf import FPDF
+from pydantic import ValidationError
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timezone import now_ist
-from app.models.auth import User
+from app.models.auth import Role, User
 from app.models.claim_workflow import ClaimApprovalStage, ExceptionApproval, ExceptionRequest
 from app.models.employee import AuditLog, Employee
 from app.models.finance import ERPLedgerEntry, ERPPostStatus, ScheduledReport, ScheduleFrequency
@@ -140,6 +142,9 @@ async def get_spend_by_category(filters: FinanceFilterParams, db: AsyncSession) 
         conditions.append(Employee.office_location == filters.office_location)
     if employee_level:
         conditions.append(ImpactLevel.level_code == employee_level)
+    if filters.expense_category:
+        wanted = filters.expense_category.lower()
+        conditions.append(func.lower(func.coalesce(InvoiceLineItem.category_name, "")) == wanted)
 
     query = (
         select(
@@ -165,6 +170,11 @@ async def get_spend_by_category(filters: FinanceFilterParams, db: AsyncSession) 
 async def post_ledger_entry_to_erp(
     claim_id: int, posted_by_user_id: int, erp_system: str | None, db: AsyncSession
 ) -> ERPLedgerEntry:
+    # Same rule as recording the payment it posts (workflow_service.record_claim_payment):
+    # process_payments alone also covers Payroll.
+    poster = await db.get(User, posted_by_user_id)
+    if poster is None or poster.role != Role.FINANCE:
+        raise HTTPException(status_code=403, detail="Only finance can post to the ERP ledger")
     claim = await db.get(ClaimDraft, claim_id)
     if claim is None:
         raise HTTPException(status_code=404, detail="Claim not found")
@@ -228,6 +238,16 @@ _AUDIT_REFERENCE = re.compile(r"^(TR|CLM|REL)-?(?:\d{4}-)?(\d+)$", re.IGNORECASE
 _AUDIT_REFERENCE_TYPES = {"TR": "travel_request", "CLM": "claim_draft", "REL": "relocation_request"}
 
 
+def _person_matches(needle: str):
+    """A person whose name or email contains the text (ignoring capitals). Both are searched: a
+    person with a name can still be found by their email."""
+    needle = needle.lower()
+    return or_(
+        func.lower(func.coalesce(User.full_name, "")).contains(needle),
+        func.lower(func.coalesce(User.email, "")).contains(needle),
+    )
+
+
 async def _audit_query(
     *,
     claim_id: str | None = None,
@@ -252,13 +272,12 @@ async def _audit_query(
         conditions.append(AuditLog.entity_type == entity_type)
     if actor or search:
         query = query.outerjoin(User, User.id == AuditLog.actor_id)
-    person = func.lower(func.coalesce(User.full_name, User.email, ""))
     if actor:
         needle = actor.strip()
         if needle.isdigit():
             conditions.append(AuditLog.actor_id == int(needle))
         else:
-            conditions.append(person.contains(needle.lower()))
+            conditions.append(_person_matches(needle))
     if search and search.strip():
         needle = search.strip()
         reference = _AUDIT_REFERENCE.match(needle)
@@ -272,12 +291,10 @@ async def _audit_query(
             # Entries about a matching person too (e.g. "Added a user · Aarav Mehta").
             about_people = (
                 await db.execute(
-                    select(User.id).where(
-                        func.lower(func.coalesce(User.full_name, User.email, "")).contains(needle.lower())
-                    )
+                    select(User.id).where(_person_matches(needle))
                 )
             ).scalars().all()
-            either = [person.contains(needle.lower()), AuditLog.entity_id == needle]
+            either = [_person_matches(needle), AuditLog.entity_id == needle]
             if about_people:
                 either.append(
                     and_(AuditLog.entity_type == "user", AuditLog.entity_id.in_([str(i) for i in about_people]))
@@ -419,9 +436,18 @@ async def audit_overview(db: AsyncSession) -> dict:
     }
 
 
+# The reports generate_report can build — the only ones a schedule can be set up for.
+SCHEDULABLE_REPORT_TYPES = ("claim-aging", "approval-tat", "travel-spend-summary", "travel-requests-summary")
+
+
 async def schedule_report(payload: ReportScheduleIn, user_id: int, db: AsyncSession) -> ScheduledReport:
     if payload.report_format.value != "CSV":
         raise HTTPException(status_code=422, detail="Only CSV report_format is currently supported")
+    # Checked now, the same way each run is, so a schedule can't be saved with a filter its report
+    # can't apply (or a level that doesn't exist) and then email the wrong figures.
+    filters = stored_report_filters(payload.filters)
+    check_report_filters(payload.report_type, filters)
+    await _resolve_employee_level(filters.employee_level or filters.impact_level, db)
     row = ScheduledReport(
         report_type=payload.report_type,
         report_format=payload.report_format,
@@ -454,9 +480,63 @@ async def schedule_report(payload: ReportScheduleIn, user_id: int, db: AsyncSess
     return row
 
 
-async def list_scheduled_reports(db: AsyncSession) -> list[ScheduledReport]:
-    result = await db.execute(select(ScheduledReport).order_by(ScheduledReport.created_at.desc()))
-    return list(result.scalars().all())
+async def list_scheduled_reports(db: AsyncSession, created_by_user_id: int | None = None) -> list[ScheduledReport]:
+    """Every schedule, or (with created_by_user_id) only the ones that person set up."""
+    query = select(ScheduledReport).order_by(ScheduledReport.created_at.desc())
+    if created_by_user_id is not None:
+        query = query.where(ScheduledReport.created_by_user_id == created_by_user_id)
+    return list((await db.execute(query)).scalars().all())
+
+
+async def _own_schedule(schedule_id: int, user_id: int, sees_all: bool, db: AsyncSession) -> ScheduledReport:
+    row = await db.get(ScheduledReport, schedule_id)
+    # Someone else's schedule reads as not found, the same as the list not showing it.
+    if row is None or (not sees_all and row.created_by_user_id != user_id):
+        raise HTTPException(status_code=404, detail="Scheduled report not found")
+    return row
+
+
+async def set_report_schedule_active(
+    schedule_id: int, is_active: bool, user_id: int, sees_all: bool, db: AsyncSession
+) -> ScheduledReport:
+    """Pause (stop emailing) or resume a schedule. Resuming makes it due on the next tick."""
+    row = await _own_schedule(schedule_id, user_id, sees_all, db)
+    if row.is_active != is_active:
+        row.is_active = is_active
+        if is_active:
+            row.next_run_at = now_ist()
+        await log_event(
+            entity_type="scheduled_report",
+            entity_id=str(row.id),
+            action="report_schedule_resumed" if is_active else "report_schedule_paused",
+            actor_id=user_id,
+            old={"is_active": not is_active},
+            new={"is_active": is_active},
+            db=db,
+        )
+        await db.commit()
+        await db.refresh(row)
+    return row
+
+
+async def delete_report_schedule(schedule_id: int, user_id: int, sees_all: bool, db: AsyncSession) -> None:
+    row = await _own_schedule(schedule_id, user_id, sees_all, db)
+    await log_event(
+        entity_type="scheduled_report",
+        entity_id=str(row.id),
+        action="report_schedule_deleted",
+        actor_id=user_id,
+        old={
+            "report_type": row.report_type,
+            "frequency": row.frequency.value,
+            "recipients": row.recipients,
+            "created_by_user_id": row.created_by_user_id,
+        },
+        new=None,
+        db=db,
+    )
+    await db.delete(row)
+    await db.commit()
 
 
 def _rows_to_csv_bytes(rows: list[dict]) -> bytes:
@@ -499,11 +579,9 @@ async def run_scheduled_reports(db: AsyncSession) -> int:
     ).scalars().all()
     for schedule in due:
         try:
-            # Filters are stored as raw JSON from the "Run Report" panel's state, which may
-            # include empty strings for unset date fields — FinanceFilterParams' date fields
-            # reject "" (only a real date or None), so strip blanks before validating.
-            clean_filters = {k: v for k, v in (schedule.filters or {}).items() if v not in (None, "")}
-            filters = FinanceFilterParams(**clean_filters)
+            # Filters are stored as raw JSON from the Reports page, which may include empty
+            # strings for unset dates — stored_report_filters drops those.
+            filters = stored_report_filters(schedule.filters)
             report = await generate_report(schedule.report_type, filters, db)
             csv_bytes = _rows_to_csv_bytes(report.get("rows") or [])
             subject = f"Scheduled report: {schedule.report_type} ({schedule.frequency.value.title()})"
@@ -593,24 +671,86 @@ async def list_erp_ledger_entries(
     return out
 
 
+# The filters each report generate_report builds can apply. Department, office and level are the
+# employee's; each report has its own date (see generate_report). A filter a report can't apply
+# is refused rather than ignored — e.g. a schedule must not email unfiltered figures under a
+# filter it was saved with.
+_EMPLOYEE_REPORT_FILTERS = frozenset(
+    {"from_date", "to_date", "department", "office_location", "employee_level", "impact_level"}
+)
+REPORT_FILTERS = {report_type: _EMPLOYEE_REPORT_FILTERS for report_type in SCHEDULABLE_REPORT_TYPES}
+_FILTER_NAMES = {
+    "from_date": "From date",
+    "to_date": "To date",
+    "department": "Department",
+    "expense_category": "Expense category",
+    "office_location": "Office location",
+    "employee_level": "Employee level",
+    "impact_level": "Impact level",
+}
+
+
+def check_report_filters(report_type: str, filters: FinanceFilterParams) -> None:
+    """404 for a report generate_report can't build; 422 for a filter that report can't apply."""
+    supported = REPORT_FILTERS.get(report_type)
+    if supported is None:
+        raise HTTPException(status_code=404, detail="Unsupported report_type")
+    for name, value in filters.model_dump().items():
+        if value not in (None, "") and name not in supported:
+            label = _FILTER_NAMES.get(name, name)
+            raise HTTPException(status_code=422, detail=f"{label} isn't available for this report")
+
+
+def stored_report_filters(raw: dict | None) -> FinanceFilterParams:
+    """A schedule's saved filters as report filters. Blank values are dropped (the Reports page
+    may send "" for an unset date); anything that isn't a report filter is refused."""
+    clean = {key: value for key, value in (raw or {}).items() if value not in (None, "")}
+    for key in clean:
+        if key not in FinanceFilterParams.model_fields:
+            raise HTTPException(status_code=422, detail=f"{key} isn't a report filter")
+    try:
+        return FinanceFilterParams(**clean)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=422, detail="Check the report filters — dates are written like 2026-01-31"
+        ) from exc
+
+
+def _employee_filter_conditions(filters: FinanceFilterParams, employee_level: str | None) -> list:
+    """Department / office / level conditions on the joined Employee (and ImpactLevel) rows."""
+    conditions = []
+    if filters.department and filters.department.strip():
+        wanted = filters.department.strip().lower()
+        conditions.append(func.lower(func.trim(func.coalesce(Employee.department, ""))) == wanted)
+    if filters.office_location and filters.office_location.strip():
+        wanted = filters.office_location.strip().lower()
+        conditions.append(func.lower(func.trim(func.coalesce(Employee.office_location, ""))) == wanted)
+    if employee_level:
+        conditions.append(ImpactLevel.level_code == employee_level)
+    return conditions
+
+
 async def generate_report(report_type: str, filters: FinanceFilterParams, db: AsyncSession) -> dict:
-    employee_level = await _resolve_employee_level(filters.employee_level, db)
+    check_report_filters(report_type, filters)
+    employee_level = await _resolve_employee_level(filters.employee_level or filters.impact_level, db)
     start, end = _date_bounds(filters.from_date, filters.to_date)
+    employee_conditions = _employee_filter_conditions(filters, employee_level)
     if report_type == "claim-aging":
+        # Submitted claims only: a draft hasn't entered the pipeline yet.
         q = (
             select(ClaimDraft.status, func.count(ClaimDraft.id))
             .select_from(ClaimDraft)
             .outerjoin(Employee, Employee.employee_id == ClaimDraft.employee_id)
             .outerjoin(ImpactLevel, ImpactLevel.id == Employee.impact_level_id)
-            .where(ClaimDraft.is_exception_shell.is_(False))
+            .where(ClaimDraft.is_exception_shell.is_(False), ClaimDraft.status != ClaimStatus.DRAFT)
             .group_by(ClaimDraft.status)
         )
         if start:
             q = q.where(ClaimDraft.created_at >= start)
         if end:
             q = q.where(ClaimDraft.created_at <= end)
-        if employee_level:
-            q = q.where(ImpactLevel.level_code == employee_level)
+        if employee_conditions:
+            q = q.where(and_(*employee_conditions))
         rows = (await db.execute(q)).all()
         return {"report_type": report_type, "rows": [{"stage": s.value, "count": c} for s, c in rows]}
 
@@ -636,8 +776,13 @@ async def generate_report(report_type: str, filters: FinanceFilterParams, db: As
             .where(ClaimDraft.is_exception_shell.is_(False))
             .order_by(ClaimApprovalStage.claim_id, ClaimApprovalStage.stage_number)
         )
-        if employee_level:
-            q = q.where(ImpactLevel.level_code == employee_level)
+        # By when the claim was submitted.
+        if start:
+            q = q.where(ClaimDraft.submitted_at >= start)
+        if end:
+            q = q.where(ClaimDraft.submitted_at <= end)
+        if employee_conditions:
+            q = q.where(and_(*employee_conditions))
         rows = (await db.execute(q)).all()
 
         stats: dict[str, dict] = {}
@@ -692,8 +837,13 @@ async def generate_report(report_type: str, filters: FinanceFilterParams, db: As
             .group_by(TravelTrip.mode)
             .order_by(func.sum(TravelTrip.amount).desc())
         )
-        if employee_level:
-            q = q.where(ImpactLevel.level_code == employee_level)
+        # By the trip's travel date.
+        if filters.from_date:
+            q = q.where(TravelTrip.travel_date >= filters.from_date)
+        if filters.to_date:
+            q = q.where(TravelTrip.travel_date <= filters.to_date)
+        if employee_conditions:
+            q = q.where(and_(*employee_conditions))
         rows = (await db.execute(q)).all()
         return {"report_type": report_type, "rows": [{"travel_mode": d.value, "spend": str(v)} for d, v in rows]}
 
@@ -710,8 +860,8 @@ async def generate_report(report_type: str, filters: FinanceFilterParams, db: As
             q = q.where(TravelRequest.requested_at >= start)
         if end:
             q = q.where(TravelRequest.requested_at <= end)
-        if employee_level:
-            q = q.where(ImpactLevel.level_code == employee_level)
+        if employee_conditions:
+            q = q.where(and_(*employee_conditions))
         rows = (await db.execute(q)).all()
         return {
             "report_type": report_type,
@@ -798,6 +948,8 @@ async def get_policy_violations(
         .where(
             ClaimExpense.cap_amount.is_not(None),
             ClaimExpense.amount > ClaimExpense.cap_amount,
+            # An unsubmitted draft isn't a violation yet — it may still be fixed before submitting.
+            ClaimDraft.status != ClaimStatus.DRAFT,
         )
     )
     if start:
@@ -885,7 +1037,14 @@ async def list_exception_requests_log(
     if status_value:
         query = query.where(func.lower(ExceptionRequest.status) == status_value.lower())
     if exception_type:
-        query = query.where(func.lower(ExceptionRequest.exception_type).contains(exception_type.lower()))
+        # A request covering several types (a claim's one request, a travel request's combined
+        # one) matches on any of them.
+        query = query.where(
+            or_(
+                func.lower(ExceptionRequest.exception_type).contains(exception_type.lower()),
+                func.json_contains(ExceptionRequest.exception_types, json.dumps(exception_type.upper())) == 1,
+            )
+        )
     query = query.order_by(ExceptionRequest.created_at.desc())
     result = (await db.execute(query)).all()
 
@@ -945,6 +1104,8 @@ async def list_exception_requests_log(
                 ).scalars().all()
             )
 
+    from app.services.workflow_service import describe_exception_items, is_itemized_claim_request
+
     response: list[dict] = []
     for exc, claim_ref, full_name, employee_id, email, _uid, _email2, _full_name2, travel_request in result:
         approvals = approvals_map.get(exc.id, [])
@@ -977,10 +1138,16 @@ async def list_exception_requests_log(
         else:
             resolved_ref = None
 
+        # A claim's one request listing every exception on it, each decided at every step.
+        itemized = is_itemized_claim_request(exc)
+        items = await describe_exception_items(exc, approvals, db) if itemized else []
         response.append(
             {
                 "exception_id": exc.id,
                 "exception_ref": f"EXC-{exc.id:04d}",
+                "route_key": exc.route_key,
+                "itemized": itemized,
+                "items": [i for i in items if i["status"] != "DROPPED"],
                 "claim_id": exc.claim_id,
                 "claim_ref": resolved_ref,
                 "employee": full_name or email,
@@ -997,6 +1164,7 @@ async def list_exception_requests_log(
                 "required_approvers": [a.required_role for a in approvals],
                 "decisions": [
                     {
+                        "id": a.id,
                         "required_role": a.required_role,
                         "status": a.status,
                         "acted_by_user_id": a.acted_by_user_id,

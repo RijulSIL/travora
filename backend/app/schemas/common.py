@@ -1,3 +1,4 @@
+import re
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -5,6 +6,16 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.auth import Role
 from app.models.policy import AirClass, AirEligibility, PolicyStatus
+
+_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def check_email_address(value: str) -> str:
+    """A trimmed, lower-cased email address, or a ValueError (a 422) if it doesn't look like one."""
+    cleaned = (value or "").strip().lower()
+    if not _EMAIL_PATTERN.match(cleaned):
+        raise ValueError(f"{value.strip() or 'That'} isn't a valid email address")
+    return cleaned
 
 
 class LoginRequest(BaseModel):
@@ -221,8 +232,9 @@ class ImpactLevelIn(BaseModel):
     air_eligibility_conditions: dict | None = None
     train_classes_allowed: list | None = None
     local_conveyance_modes: list | None = None
-    vehicle_rate_4w: Decimal | None = None
-    vehicle_rate_2w: Decimal | None = None
+    # Per-km reimbursement rates: never below zero.
+    vehicle_rate_4w: Decimal | None = Field(default=None, ge=0)
+    vehicle_rate_2w: Decimal | None = Field(default=None, ge=0)
     twin_sharing_mandatory: bool = False
     policy_version_id: int
 
@@ -278,13 +290,14 @@ class ExpenseLimitIn(BaseModel):
     policy_version_id: int
     impact_level_id: int
     city_group: str
-    hotel_cap: Decimal | None = None
+    # Caps are amounts: zero or more (left empty means no cap).
+    hotel_cap: Decimal | None = Field(default=None, ge=0)
     hotel_is_hard_block: bool = False
-    food_cap: Decimal | None = None
+    food_cap: Decimal | None = Field(default=None, ge=0)
     food_is_hard_block: bool = False
-    incidental_cap: Decimal | None = None
+    incidental_cap: Decimal | None = Field(default=None, ge=0)
     incidental_is_hard_block: bool = False
-    day_visit_cap: Decimal | None = None
+    day_visit_cap: Decimal | None = Field(default=None, ge=0)
     day_visit_is_hard_block: bool = False
 
 
@@ -335,6 +348,13 @@ class CompanyProfileIn(BaseModel):
     department_renames: dict[str, str] = Field(default_factory=dict)
     # {old name: new name} for offices renamed in this save — moves the people in them.
     office_renames: dict[str, str] = Field(default_factory=dict)
+    # Single company-wide address "Send to agent" emails ticketing requests to; optional.
+    travel_agent_email: str | None = None
+
+    @field_validator("travel_agent_email")
+    @classmethod
+    def _valid_travel_agent_email(cls, value: str | None) -> str | None:
+        return check_email_address(value) if value and value.strip() else None
 
 
 class CompanyProfileOut(BaseModel):
@@ -348,6 +368,8 @@ class CompanyProfileOut(BaseModel):
     department_counts: dict[str, int] = Field(default_factory=dict)
     # Active people per office as stored on their records, including offices not on the list.
     office_counts: dict[str, int] = Field(default_factory=dict)
+    # None when not configured yet.
+    travel_agent_email: str | None = None
 
 
 class DelegationConfigOut(BaseModel):

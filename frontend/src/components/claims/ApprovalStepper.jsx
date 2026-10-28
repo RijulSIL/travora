@@ -8,11 +8,15 @@ function statusMeta(status) {
   if (status === 'AWAITING') return { icon: Circle, className: 'bg-slate-50/60 text-slate-400 border-slate-200/40' };
   // Approver didn't act within the SLA, so it passed to the next approver.
   if (status === 'SLA_SKIPPED') return { icon: SkipForward, className: 'bg-orange-50 text-orange-600 border-orange-200/60' };
+  if (status === 'SKIPPED_OWN') return { icon: SkipForward, className: 'bg-slate-50 text-slate-500 border-slate-200/60' };
   return { icon: Circle, className: 'bg-slate-50/60 text-slate-400 border-slate-200/40' };
 }
 
 function statusText(status) {
-  return status === 'SLA_SKIPPED' ? 'SLA missed — passed on' : status;
+  if (status === 'SLA_SKIPPED') return 'SLA missed — passed on';
+  // Only the claimant could have approved this step, so it was passed over.
+  if (status === 'SKIPPED_OWN') return "Skipped — can't approve own claim";
+  return status;
 }
 
 function slaText(deadlineIso) {

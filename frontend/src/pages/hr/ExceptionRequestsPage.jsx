@@ -24,6 +24,7 @@ import { EXCEPTION_TYPE_LABELS, formatExceptionType, formatRole } from '../../ut
 const STATUS_TABS = [
   ['mine', 'Waiting on you'],
   ['PENDING', 'In progress'],
+  ['SENT_BACK', 'Sent back'],
   ['APPROVED', 'Approved'],
   ['REJECTED', 'Rejected'],
   ['CANCELLED', 'Cancelled'],
@@ -127,9 +128,53 @@ export default function ExceptionRequestsPage() {
     }));
   });
 
+  // A claim's exceptions, one decision each, submitted together. The row stays open with the
+  // outcome until the list is next loaded.
+  const decideItemsAction = useAsyncAction(async (row, choices) => {
+    const id = row.exception_id;
+    await reimbursementApi.decideExceptionItems(id, { decisions: choices });
+    const actedAt = new Date().toISOString();
+    const values = choices.map((c) => c.decision);
+    const outcome = values.includes('REJECT') ? 'REJECTED' : values.includes('SEND_BACK') ? 'SENT_BACK' : 'APPROVED';
+    const steps = row.decisions || [];
+    const current = steps.findIndex((d) => d.status === 'PENDING');
+    const next = steps.find((d, i) => i > current && d.status === 'AWAITING');
+    setRows((prev) =>
+      prev.map((r) => {
+        if (r.exception_id !== id) return r;
+        const decisions = steps.map((d, i) => {
+          if (i === current) return { ...d, status: outcome, acted_at: actedAt, acted_by_name: 'you', acted_by_user_id: userId };
+          if (outcome === 'APPROVED' && next && d === next) return { ...d, status: 'PENDING' };
+          if (outcome === 'REJECTED' && d.status === 'AWAITING') return { ...d, status: 'REJECTED' };
+          return d;
+        });
+        const status = outcome === 'APPROVED' ? (next ? 'PENDING' : 'APPROVED') : outcome;
+        return { ...r, decisions, status, decided_by: status === 'PENDING' || status === 'SENT_BACK' ? r.decided_by : 'you' };
+      }),
+    );
+    const name = row.employee || 'The employee';
+    const sentBack = choices.filter((c) => c.decision === 'SEND_BACK').length;
+    setDecided((prev) => ({
+      ...prev,
+      [id]:
+        outcome === 'REJECTED'
+          ? { ok: false, pill: 'Rejected', text: `Rejected. ${name}'s claim is rejected and they've been told which exception and why.` }
+          : outcome === 'SENT_BACK'
+            ? {
+                ok: false,
+                pill: 'Sent back',
+                text: `Sent back to ${name} with your comment${sentBack > 1 ? 's' : ''}. It comes back to you once they resubmit; what you accepted stays accepted.`,
+              }
+            : next
+              ? { ok: true, pill: `Accepted → ${formatRole(next.required_role)}`, text: `Accepted. The claim moves on to ${formatRole(next.required_role)}.` }
+              : { ok: true, pill: 'Accepted', text: 'Accepted. Every exception is approved, so the claim goes to Finance for payment.' },
+    }));
+  });
+
   const groups = {
     mine: rows.filter((r) => mineIds.has(r.exception_id)),
     PENDING: rows.filter((r) => r.status === 'PENDING'),
+    SENT_BACK: rows.filter((r) => r.status === 'SENT_BACK'),
     APPROVED: rows.filter((r) => r.status === 'APPROVED'),
     REJECTED: rows.filter((r) => r.status === 'REJECTED'),
     CANCELLED: rows.filter((r) => r.status === 'CANCELLED'),
@@ -214,9 +259,10 @@ export default function ExceptionRequestsPage() {
         ) : null}
       </div>
 
-      {loadError || decideAction.error ? (
+      {loadError || decideAction.error || decideItemsAction.error ? (
         <div className="rounded-xl border border-red-200 bg-red-50 p-3.5 text-[13px] text-red-700">
-          {(loadError || decideAction.error)?.response?.data?.detail || (loadError || decideAction.error)?.message}
+          {(loadError || decideAction.error || decideItemsAction.error)?.response?.data?.detail ||
+            (loadError || decideAction.error || decideItemsAction.error)?.message}
         </div>
       ) : null}
 
@@ -271,15 +317,22 @@ export default function ExceptionRequestsPage() {
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-[7px] text-[13.5px] font-bold text-ink">
                     <span>{row.exception_ref || `EXC-${String(id).padStart(4, '0')}`}</span>
-                    {types.map((t) => (
-                      <Pill key={t} title={formatExceptionType(t)}>{shortType(t)}</Pill>
-                    ))}
+                    {row.itemized ? (
+                      // A claim shows once, however many exceptions it has.
+                      <Pill title={types.map(formatExceptionType).join(', ')}>
+                        {(row.items || []).length} exception{(row.items || []).length === 1 ? '' : 's'}
+                      </Pill>
+                    ) : (
+                      types.map((t) => (
+                        <Pill key={t} title={formatExceptionType(t)}>{shortType(t)}</Pill>
+                      ))
+                    )}
                   </div>
                   <div className="mt-0.5 text-xs text-slate-500">
                     {row.employee || '—'}
                     {row.requested_on ? ` · requested ${ago(row.requested_on)}` : ''}
                   </div>
-                  {row.description ? <div className="mt-1 break-words text-xs italic text-slate-700">“{row.description}”</div> : null}
+                  {row.description && !row.itemized ? <div className="mt-1 break-words text-xs italic text-slate-700">“{row.description}”</div> : null}
                 </div>
                 <div className="min-w-0">
                   <ExceptionSubject row={row} />
@@ -296,6 +349,8 @@ export default function ExceptionRequestsPage() {
                     ) : (
                       <Pill tone="amber">With {current ? formatRole(current.required_role) : 'an approver'}</Pill>
                     )
+                  ) : row.status === 'SENT_BACK' ? (
+                    <Pill tone="orange">Sent back</Pill>
                   ) : row.status === 'APPROVED' ? (
                     <Pill tone="ok">Approved</Pill>
                   ) : row.status === 'REJECTED' ? (
@@ -322,10 +377,11 @@ export default function ExceptionRequestsPage() {
                     onCommentChange={(value) => setActionState((prev) => ({ ...prev, [id]: { comment: value } }))}
                     rejecting={Boolean(rejecting[id])}
                     onRejectingChange={(value) => setRejecting((prev) => ({ ...prev, [id]: value }))}
-                    busy={decideAction.loading}
+                    busy={decideAction.loading || decideItemsAction.loading}
                     decided={decided[id]}
                     onApprove={() => decideAction.run(row, true).catch(() => {})}
                     onReject={(reason) => decideAction.run(row, false, reason).catch(() => {})}
+                    onSubmitItems={(choices) => decideItemsAction.run(row, choices).catch(() => {})}
                     now={now}
                   />
                 </div>

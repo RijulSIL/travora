@@ -23,7 +23,6 @@ import {
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
 import { adminApi } from '../../services/adminApi';
-import { hasPermission } from '../../services/permissions';
 import { useAuthStore } from '../../store/authStore';
 import { formatRole } from '../../utils/formatters';
 
@@ -204,7 +203,7 @@ function CompareCard({ versions, initialFrom, initialTo }) {
   );
 }
 
-function VersionCard({ version, versions, isViewOnly, canApprovePolicy, pendingRole, actions }) {
+function VersionCard({ version, versions, isViewOnly, myTurn, pendingRole, skippedRoles = [], isCreator, actions }) {
   const navigate = useNavigate();
   const phase = versionPhase(version, versions);
   const today = todayIso();
@@ -230,6 +229,12 @@ function VersionCard({ version, versions, isViewOnly, canApprovePolicy, pendingR
           Policy {version.version_number} <Pill tone={phase.tone}>{phase.label}</Pill>
         </div>
         <p className="mt-0.5 text-xs text-slate-500">{dates}</p>
+        {phase.key === 'review' && skippedRoles.length ? (
+          <p className="mt-0.5 text-xs text-slate-500">
+            {skippedRoles.map(formatRole).join(', ')} step skipped — whoever created this version can&apos;t approve it, and nobody else holds that role
+          </p>
+        ) : null}
+        {phase.key === 'review' && isCreator ? <p className="mt-0.5 text-xs text-slate-500">You created this version, so someone else has to approve it.</p> : null}
         <Steps phase={phase} />
         {sendBack ? (
           <div className="mt-2.5 flex flex-col gap-2 rounded-[10px] border border-rose-200 bg-rose-50/50 p-2.5">
@@ -267,7 +272,7 @@ function VersionCard({ version, versions, isViewOnly, canApprovePolicy, pendingR
             </button>
           </>
         ) : null}
-        {phase.key === 'review' && !isViewOnly && canApprovePolicy && !sendBack ? (
+        {phase.key === 'review' && myTurn && !isCreator && !sendBack ? (
           <>
             <button type="button" className={`${BTN_MAIN} h-7 rounded-lg px-2.5 text-[11.5px]`} disabled={actions.approve.loading} onClick={() => actions.approve.run(version.id).catch(() => {})}>
               <CheckIcon size={13} />
@@ -290,7 +295,7 @@ function VersionCard({ version, versions, isViewOnly, canApprovePolicy, pendingR
             </button>
           </div>
         ) : null}
-        {!(draft && !isViewOnly) && !(phase.key === 'review' && !isViewOnly && canApprovePolicy) && !canSchedule ? <Pill>Read-only</Pill> : null}
+        {!(draft && !isViewOnly) && !(phase.key === 'review' && myTurn && !isCreator) && !canSchedule ? <Pill>Read-only</Pill> : null}
       </div>
     </div>
   );
@@ -303,25 +308,34 @@ export default function PolicyVersionManager() {
   const [pendingStageByVersion, setPendingStageByVersion] = useState({});
   const [compare, setCompare] = useState(false);
   const [newDraft, setNewDraft] = useState(null);
-  const permissions = useAuthStore((state) => state.profile?.permissions);
   const isViewOnly = !useCanConfigurePolicy();
-  // Approving a submitted version is gated by the separate approve_policy permission (see
-  // admin/policy.py's approve endpoint); whose turn it is comes from the approval chain.
-  const canApprovePolicy = hasPermission(permissions, 'approve_policy');
+  // Whoever a submitted version is waiting on (its Policy Approval chain) approves it — whatever
+  // their policy-edit rights (see admin/policy.py's approve endpoint).
+  const [awaitingMe, setAwaitingMe] = useState([]);
+  // Whoever created a version can't approve it (the server leaves it off awaiting-me too).
+  const userId = useAuthStore((state) => state.profile?.user_id ?? state.user?.id);
 
   const load = async () => {
     try {
       setLoadError(null);
       const loaded = (await adminApi.policyVersions()).data;
       setVersions(loaded);
+      setAwaitingMe((await adminApi.policyVersionsAwaitingMe().catch(() => ({ data: [] }))).data || []);
       const pending = loaded.filter((v) => v.status === 'PENDING_HRBP');
       const entries = await Promise.all(
         pending.map(async (v) => {
           try {
             const chain = (await adminApi.policyApprovalChain(v.id)).data;
-            return [v.id, chain.find((row) => row.status === 'PENDING')?.required_role ?? null];
+            return [
+              v.id,
+              {
+                role: chain.find((row) => row.status === 'PENDING')?.required_role ?? null,
+                // Steps passed over because only the version's creator could have approved them.
+                skipped: chain.filter((row) => row.status === 'SKIPPED_OWN').map((row) => row.required_role),
+              },
+            ];
           } catch {
-            return [v.id, null];
+            return [v.id, { role: null, skipped: [] }];
           }
         }),
       );
@@ -414,8 +428,10 @@ export default function PolicyVersionManager() {
             version={version}
             versions={versions}
             isViewOnly={isViewOnly}
-            canApprovePolicy={canApprovePolicy}
-            pendingRole={pendingStageByVersion[version.id]}
+            myTurn={awaitingMe.includes(version.id)}
+            pendingRole={pendingStageByVersion[version.id]?.role}
+            skippedRoles={pendingStageByVersion[version.id]?.skipped}
+            isCreator={userId != null && version.created_by === userId}
             actions={actions}
           />
         ))}

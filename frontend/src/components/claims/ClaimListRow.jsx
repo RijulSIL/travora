@@ -46,7 +46,7 @@ export function describeClaim(claim) {
 export function claimStanding(claim, chain, sentBack, viewer = 'employee') {
   const stages = chain?.stages || [];
   const total = stages.length;
-  const done = stages.filter((s) => s.status === 'APPROVED' || s.status === 'SLA_SKIPPED').length;
+  const done = stages.filter((s) => ['APPROVED', 'SLA_SKIPPED', 'SKIPPED_OWN'].includes(s.status)).length;
   const pending = stages.find((s) => s.status === 'PENDING');
   switch (claim.status) {
     case 'DRAFT':

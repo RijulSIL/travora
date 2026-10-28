@@ -271,8 +271,10 @@ async def _relocation_stages(db: AsyncSession, clock: _Clock) -> None:
     ).all()
     if not rows:
         return
-    stage_defs = ws.relocation_request_stage_defs(await ws.get_workflow_config(db))
+    cfg = await ws.get_workflow_config(db)
     for row, req in rows:
+        # A request's chain, or a prior-approval upload's check — each has its own route.
+        stage_defs = ws.relocation_stage_defs_for(cfg, req.source)
         ref = relocation_service.relocation_ref(req)
         link = "/claims/pending?tab=relocation"
         owner = await db.get(User, req.employee_user_id)
@@ -348,7 +350,12 @@ async def _exception_steps(db: AsyncSession, clock: _Clock) -> None:
         if claim is None and travel is None:
             continue
         ref = (claim.claim_reference or f"CLM-{claim.id}") if claim else f"TR-{travel.id:04d}"
-        what = f"exception '{ws._exception_label(req)}' on {ref}"
+        # A claim's one request listing all its exceptions reads as "the exception request on CLM-…".
+        what = (
+            f"exception request on {ref}"
+            if ws.is_itemized_claim_request(req)
+            else f"exception '{ws._exception_label(req)}' on {ref}"
+        )
         role_label = ws._humanize_token(step.required_role)
 
         async def recipients_for(role: str, _claim=claim, _travel=travel) -> list[int]:
@@ -357,7 +364,9 @@ async def _exception_steps(db: AsyncSession, clock: _Clock) -> None:
             return await ws._user_ids_for_exception_role_for_travel(_travel, role, db)
 
         if step.sla_deadline_at is None:  # activated before SLAs were tracked
-            hours = ws.exception_step_sla_hours(cfg, req.exception_types or [req.exception_type], step.required_role)
+            hours = ws.exception_step_sla_hours(
+                cfg, req.exception_types or [req.exception_type], step.required_role, req.route_key
+            )
             step.sla_deadline_at = add_working_hours(clock.now, hours, clock.holidays)
         if step.last_notified_at is None:
             step.last_notified_at = clock.now

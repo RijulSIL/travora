@@ -1,197 +1,15 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Search, Plane, Train, Bus, FileText, CheckCircle2,
-  ArrowRight, UploadCloud,
+  Search, FileText, CheckCircle2,
+  ArrowRight, UploadCloud, Send,
   Clock, AlertCircle, Paperclip, ChevronDown, ChevronUp
 } from 'lucide-react';
 
-import { busTypesText, leaveWindowsText } from '../../components/travel/travelRequestView';
+import SegmentUploadForm, { EMPTY_UPLOAD_FIELDS, ModeIcon } from '../../components/travel/SegmentUploadForm';
 import TicketPreviewDrawer from '../../components/ui/TicketPreviewDrawer';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import useToast from '../../hooks/useToast';
 import { reimbursementApi } from '../../services/reimbursementApi';
-
-function ModeIcon({ mode, className }) {
-  if (mode === 'FLIGHT') return <Plane className={className} size={16} />;
-  if (mode === 'TRAIN') return <Train className={className} size={16} />;
-  if (mode === 'BUS') return <Bus className={className} size={16} />;
-  return <FileText className={className} size={16} />;
-}
-
-const EMPTY_UPLOAD_FIELDS = {
-  file: null,
-  pnr_or_booking_ref: '',
-  provider: '',
-  notes_for_employee: '',
-};
-
-/** What the traveler chose for this leg when requesting: an option found with Google by Gemini,
- * or their own description. A suggestion — the desk checks fare and seats before booking. */
-function TravelerPick({ pick }) {
-  if (!pick || (pick.choice !== 'own' && pick.choice !== 'bus' && !pick.option)) return null;
-  const o = pick.option;
-  const found = pick.searched_at ? new Date(pick.searched_at) : null;
-  const foundOn = found && !Number.isNaN(found.getTime()) ? found.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : null;
-  const own = pick.choice === 'own';
-  const when = leaveWindowsText(pick.time_windows);
-  if (pick.choice === 'bus') {
-    // Buses aren't searched: the traveler said what kind of bus and when; the desk finds one.
-    return (
-      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-        <div className="border-b border-slate-100 bg-slate-50 px-3 py-2">
-          <span className="text-[10px] font-bold text-brand uppercase tracking-wide">Traveler’s request</span>
-        </div>
-        <div className="px-3 py-2.5 text-xs leading-relaxed">
-          <span className="font-semibold text-slate-800">{busTypesText(pick.bus_types) || 'Any bus'}</span>
-          {when ? <span className="block text-[11px] text-slate-500">Wanted to leave {when}</span> : null}
-        </div>
-      </div>
-    );
-  }
-  return (
-    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-      <div className="flex items-center justify-between gap-2 border-b border-slate-100 bg-slate-50 px-3 py-2">
-        <span className="text-[10px] font-bold text-brand uppercase tracking-wide">{own ? 'Traveler’s request' : 'Traveler’s pick'}</span>
-        {!own ? (
-          <span className="min-w-0 truncate text-xs font-bold text-slate-800">
-            {o.name || o.operator}
-            {o.number ? <> <span className="font-mono font-semibold">{o.number}</span></> : null}
-          </span>
-        ) : null}
-      </div>
-      {own ? (
-        <div className="px-3 py-2.5 text-xs leading-relaxed">
-          <span className="font-semibold text-slate-800">“{pick.note}”</span>
-          <span className="block text-[11px] text-slate-500">None of the suggestions suited them, so they described what they want.</span>
-          {when ? <span className="block text-[11px] text-slate-500">Wanted to leave {when}</span> : null}
-        </div>
-      ) : (
-        <>
-          <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2.5 px-3 py-3">
-            <div className="min-w-0">
-              <div className="text-lg font-extrabold leading-none text-slate-800 tabular-nums">{o.depart_time || '—'}</div>
-              {o.from_station ? <div className="mt-1 max-w-[100px] truncate text-[11px] text-slate-500 sm:max-w-[150px]" title={o.from_station}>{o.from_station}</div> : null}
-            </div>
-            <div className="flex flex-col items-center gap-0.5 whitespace-nowrap text-[10.5px] text-slate-400">
-              {o.duration || ''}
-              <span className="w-full border-t border-dashed border-slate-300" />
-            </div>
-            <div className="min-w-0 text-right">
-              <div className="text-lg font-extrabold leading-none text-slate-800 tabular-nums">{o.arrive_time || '—'}</div>
-              {o.to_station ? <div className="ml-auto mt-1 max-w-[100px] truncate text-[11px] text-slate-500 sm:max-w-[150px]" title={o.to_station}>{o.to_station}</div> : null}
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 px-3 py-2 text-[11px]">
-            <span className="flex items-center gap-1.5">
-              {o.travel_class ? <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10.5px] font-bold text-slate-600">{o.travel_class}</span> : null}
-              {o.fare_inr ? <b className="text-[13px] text-slate-800 tabular-nums">~₹{Number(o.fare_inr).toLocaleString('en-IN')}</b> : null}
-            </span>
-            <span className="text-slate-400">{foundOn ? `Found ${foundOn} · ` : ''}check fare &amp; seats</span>
-          </div>
-          {when ? (
-            <div className="flex items-center gap-1.5 border-t border-slate-100 px-3 py-1.5 text-[11px] text-slate-500">
-              <Clock size={12} className="text-slate-400" /> Wanted to leave {when}
-            </div>
-          ) : null}
-        </>
-      )}
-    </div>
-  );
-}
-
-function SegmentUploadForm({ seg, pick, fields, onChange, onFile, read, onSubmit, busy, isOnlySegment }) {
-  const filled = read?.filled || [];
-  const AutoTag = ({ field }) =>
-    filled.includes(field) ? (
-      <span className="ml-1.5 rounded-full bg-emerald-100 px-1.5 py-px text-[9px] font-bold normal-case tracking-normal text-emerald-700">auto-filled</span>
-    ) : null;
-  return (
-    <form className="rounded-lg border border-slate-200 bg-slate-50/60 p-3.5 space-y-3" onSubmit={onSubmit}>
-      <div className="text-[11px] font-bold text-slate-700 flex items-center gap-1.5">
-        <ModeIcon mode={seg.mode} className="text-slate-400" />
-        <span>{seg.label}</span>
-      </div>
-
-      <TravelerPick pick={pick} />
-
-      <div className="space-y-1">
-        <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Ticket File *</span>
-        {/* The chosen file lives in the form's state (fields.file), not just in the input — so the
-            name shown and what Save sends always agree, even if the browser resets the input. */}
-        <label className="flex cursor-pointer items-center gap-3 text-xs text-slate-500">
-          <input
-            type="file"
-            accept=".pdf,.png,.jpg,.jpeg,.heic"
-            className="sr-only"
-            onChange={(e) => onFile(e.target.files?.[0] || null)}
-          />
-          <span className="rounded-lg bg-slate-100 px-4 py-2 font-bold text-slate-700 hover:bg-slate-200">
-            {fields.file ? 'Change file' : 'Choose file'}
-          </span>
-          <span className={`min-w-0 truncate ${fields.file ? 'font-semibold text-slate-700' : ''}`}>
-            {fields.file ? fields.file.name : 'No file chosen'}
-          </span>
-        </label>
-        {read?.status === 'reading' ? (
-          <p className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500">
-            <Clock size={12} className="animate-spin" /> Reading the ticket…
-          </p>
-        ) : null}
-        {read?.status === 'failed' ? (
-          <p className="text-[11px] font-semibold text-slate-500">{read.message || 'Couldn’t read this ticket — type it in.'}</p>
-        ) : null}
-        {read?.mismatch ? (
-          <div role="alert" className="rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-2 text-[11px] font-medium text-amber-900">
-            <b>⚠ {read.mismatch}</b> Check you picked the right file. You can still save it.
-          </div>
-        ) : null}
-      </div>
-
-      <div className="space-y-1">
-        <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">PNR / Booking Reference *<AutoTag field="pnr_or_booking_ref" /></span>
-        <input
-          className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all bg-white"
-          placeholder="Enter PNR or airline reference number"
-          value={fields.pnr_or_booking_ref}
-          onChange={(e) => onChange({ pnr_or_booking_ref: e.target.value })}
-          required
-        />
-      </div>
-
-      <div className="space-y-1">
-        <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Provider (Airline / Transporter) *<AutoTag field="provider" /></span>
-        <input
-          className="w-full h-9 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all bg-white"
-          placeholder="e.g. IndiGo, Air India, Indian Railways"
-          value={fields.provider}
-          onChange={(e) => onChange({ provider: e.target.value })}
-          required
-        />
-        {filled.length ? (
-          <p className="text-[11px] font-semibold text-emerald-700">✓ Read from the ticket — check them. You can still change them.</p>
-        ) : null}
-      </div>
-
-      <div className="space-y-1">
-        <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">Notes for Employee</span>
-        <textarea
-          className="w-full min-h-[3rem] p-3 text-xs rounded-lg border border-slate-205 focus:border-slate-400 outline-none transition-all bg-white"
-          placeholder="Add ticket remarks or guidelines for the traveler"
-          value={fields.notes_for_employee}
-          onChange={(e) => onChange({ notes_for_employee: e.target.value })}
-        />
-      </div>
-
-      <button
-        type="submit"
-        className="inline-flex w-full h-10 items-center justify-center gap-1.5 rounded-lg bg-brand text-xs font-bold text-white hover:bg-brand/90 transition-all duration-200 shadow-md"
-        disabled={busy}
-      >
-        <CheckCircle2 size={13} /> {isOnlySegment ? 'Complete Ticketing & Notify Employee' : `Save Ticket — ${seg.label}`}
-      </button>
-    </form>
-  );
-}
 
 const SUPPORTING_DOC_STATUSES = ['APPROVED', 'PARTIALLY_BOOKED', 'BOOKED'];
 
@@ -350,6 +168,13 @@ function getStatusDetails(status) {
   }
 }
 
+/** The "With agent" pill: shown while a link has been sent and the request is still waiting on
+ * ticketing — it disappears once every leg is booked (or the request is cancelled/rejected),
+ * matching when the "Send to agent" button itself stops being offered. */
+function withAgentPillVisible(request) {
+  return Boolean(request.sent_to_agent) && (request.status === 'APPROVED' || request.status === 'PARTIALLY_BOOKED');
+}
+
 export default function TravelDeskPage() {
   useSetPageTitle('Travel Desk');
   const { showToast } = useToast();
@@ -367,6 +192,8 @@ export default function TravelDeskPage() {
   const [queueSortBy, setQueueSortBy] = useState('');
 
   const [uploadsBySeq, setUploadsBySeq] = useState({});
+  const uploadsRef = useRef(uploadsBySeq);
+  uploadsRef.current = uploadsBySeq;
   // What reading each leg's chosen ticket found: { status, mismatch, filled, message, token }.
   const [ticketReads, setTicketReads] = useState({});
   const [activeSegSeq, setActiveSegSeq] = useState(null);
@@ -380,8 +207,19 @@ export default function TravelDeskPage() {
   const [allPage, setAllPage] = useState(1);
   const [expandedAllId, setExpandedAllId] = useState(null);
   const [preview, setPreview] = useState({ open: false, blob: null, name: '', type: '', title: '' });
+  // Whether Admin -> Company Profile has a travel agent email set — fetched once; "Send to agent"
+  // is disabled (with a tooltip) until it does.
+  const [agentEmailConfigured, setAgentEmailConfigured] = useState(false);
+  const [sendingToAgent, setSendingToAgent] = useState(false);
 
   const selectedRow = useMemo(() => queue.find((e) => e.request.id === selectedKey) || null, [queue, selectedKey]);
+
+  useEffect(() => {
+    reimbursementApi
+      .travelAgentEmailConfigured()
+      .then((r) => setAgentEmailConfigured(Boolean(r.data?.configured)))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!selectedRow) {
@@ -406,14 +244,27 @@ export default function TravelDeskPage() {
     setUploadsBySeq((prev) => ({ ...prev, [seq]: { ...(prev[seq] || EMPTY_UPLOAD_FIELDS), ...patch } }));
   }
 
-  // Choosing a ticket reads it: the PNR and provider fill in (unless already typed), and a
-  // warning shows if the ticket looks like it's for another leg.
+  // Choosing a ticket reads it: the PNR, provider and amount fill in, and a warning shows if the ticket
+  // looks like it's for another leg. Choosing another file reads that one instead: values the
+  // previous file filled in (unchanged since) are cleared and refilled from the new one, and so
+  // are values typed while the previous file was refused. Anything else typed by hand is kept.
   async function onTicketFile(seq, file) {
-    patchUploadFields(seq, { file });
+    const before = ticketReads[seq];
+    const fromLastFile = before?.status === 'done' ? before.values || {} : {};
+    const lastRefused = before?.status === 'failed';
+    const current = uploadsBySeq[seq] || EMPTY_UPLOAD_FIELDS;
+    const cleared = {};
+    for (const [field, value] of Object.entries(fromLastFile)) {
+      if (value && current[field] === value) cleared[field] = '';
+    }
+    patchUploadFields(seq, { ...cleared, file });
     if (!file || !selectedRow) {
       setTicketReads((prev) => ({ ...prev, [seq]: null }));
       return;
     }
+    // Typed while the last file was refused: the new ticket's values take over.
+    const replaceable = new Set(Object.keys(cleared));
+    if (lastRefused) ['pnr_or_booking_ref', 'provider', 'ticket_amount'].forEach((f) => replaceable.add(f));
     const token = `${seq}-${Date.now()}`;
     setTicketReads((prev) => ({ ...prev, [seq]: { status: 'reading', token } }));
     const fd = new FormData();
@@ -421,28 +272,27 @@ export default function TravelDeskPage() {
     fd.append('leg_sequence', String(seq));
     try {
       const { data } = await reimbursementApi.travelReadTicket(selectedRow.request.id, fd);
-      const filled = [];
-      setUploadsBySeq((prev) => {
-        const current = prev[seq] || EMPTY_UPLOAD_FIELDS;
-        if (current.file !== file) return prev;
-        const next = { ...current };
-        if (data.pnr && !current.pnr_or_booking_ref.trim()) {
-          next.pnr_or_booking_ref = data.pnr;
-          filled.push('pnr_or_booking_ref');
-        }
-        if (data.provider && !current.provider.trim()) {
-          next.provider = data.provider;
-          filled.push('provider');
-        }
-        return { ...prev, [seq]: next };
-      });
+      // What the form holds now (it may have been typed in while the ticket was being read).
+      const latest = uploadsRef.current[seq] || EMPTY_UPLOAD_FIELDS;
+      if (latest.file !== file) return;
+      const values = {};
+      for (const [field, value] of [
+        ['pnr_or_booking_ref', data.pnr],
+        ['provider', data.provider],
+        ['ticket_amount', data.amount],
+      ]) {
+        if (value && (!latest[field].trim() || replaceable.has(field))) values[field] = value;
+      }
+      setUploadsBySeq((prev) =>
+        (prev[seq] || EMPTY_UPLOAD_FIELDS).file !== file ? prev : { ...prev, [seq]: { ...prev[seq], ...values } },
+      );
       setTicketReads((prev) =>
         prev[seq]?.token !== token
           ? prev
           : {
               ...prev,
-              [seq]: data.pnr || data.provider || data.mismatch
-                ? { status: 'done', token, filled, mismatch: data.mismatch }
+              [seq]: data.pnr || data.provider || data.amount || data.mismatch
+                ? { status: 'done', token, filled: Object.keys(values), values, mismatch: data.mismatch }
                 : { status: 'failed', token, message: 'Couldn’t read this ticket — type it in.' },
             },
       );
@@ -580,11 +430,17 @@ export default function TravelDeskPage() {
       showToast('Choose a ticket file', 'error');
       return;
     }
+    // The fare goes into the travel spend reports, so the desk confirms it for every ticket.
+    if (!(Number(fields.ticket_amount) > 0)) {
+      showToast('Enter the ticket amount in rupees', 'error');
+      return;
+    }
     const fd = new FormData();
     fd.append('file', fields.file);
     fd.append('leg_sequence', String(seq));
     fd.append('pnr_or_booking_ref', fields.pnr_or_booking_ref || '');
     fd.append('provider', fields.provider || '');
+    fd.append('ticket_amount', String(fields.ticket_amount));
     fd.append('notes_for_employee', fields.notes_for_employee || '');
     setBusy(true);
     try {
@@ -613,6 +469,24 @@ export default function TravelDeskPage() {
       showToast(typeof d === 'string' ? d : 'Upload failed', 'error');
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function onSendToAgent() {
+    if (!selectedRow || !agentEmailConfigured || sendingToAgent) return;
+    setSendingToAgent(true);
+    try {
+      await reimbursementApi.sendRequestToAgent(selectedRow.request.id);
+      showToast(
+        selectedRow.request.sent_to_agent ? 'Link re-sent to the travel agent' : 'Sent to the travel agent',
+        'success',
+      );
+      await loadQueue();
+    } catch (err) {
+      const d = err.response?.data?.detail;
+      showToast(typeof d === 'string' ? d : 'Could not send this to the travel agent', 'error');
+    } finally {
+      setSendingToAgent(false);
     }
   }
 
@@ -786,9 +660,16 @@ export default function TravelDeskPage() {
                         </div>
                       </div>
 
-                      <span className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-[9px] font-bold tracking-tight uppercase ${statusDetails.bg}`}>
-                        {statusDetails.label}
-                      </span>
+                      <div className="flex flex-col items-end gap-1">
+                        <span className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-[9px] font-bold tracking-tight uppercase ${statusDetails.bg}`}>
+                          {statusDetails.label}
+                        </span>
+                        {withAgentPillVisible(row.request) ? (
+                          <span className="inline-flex items-center whitespace-nowrap rounded-full bg-violet-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-tight text-violet-700">
+                            With agent
+                          </span>
+                        ) : null}
+                      </div>
                     </div>
                   </button>
                 );
@@ -941,11 +822,28 @@ export default function TravelDeskPage() {
                       const segments = selectedRow.request.segments || [];
                       const doneCount = segments.filter((s) => s.ticket).length;
                       return (
-                        <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                          <UploadCloud size={14} className="text-brand" />
-                          <span>
-                            Upload Ticketing Confirmation
-                            {segments.length > 1 ? ` (${doneCount}/${segments.length} legs done)` : ''}
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                            <UploadCloud size={14} className="text-brand" />
+                            <span>
+                              Upload Ticketing Confirmation
+                              {segments.length > 1 ? ` (${doneCount}/${segments.length} legs done)` : ''}
+                            </span>
+                          </div>
+                          <span title={agentEmailConfigured ? undefined : 'Set a travel agent email in Admin → Company Profile first'}>
+                            <button
+                              type="button"
+                              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
+                              onClick={onSendToAgent}
+                              disabled={!agentEmailConfigured || sendingToAgent}
+                            >
+                              <Send size={12} />
+                              {sendingToAgent
+                                ? 'Sending…'
+                                : selectedRow.request.sent_to_agent
+                                  ? 'Resend to agent'
+                                  : 'Send to agent'}
+                            </button>
                           </span>
                         </div>
                       );
@@ -1199,9 +1097,16 @@ export default function TravelDeskPage() {
                           </span>
                         </td>
                         <td className="whitespace-nowrap px-5 py-3 text-center">
-                          <span className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-[9px] font-bold tracking-tight uppercase ${statusDetails.bg}`}>
-                            {statusDetails.label}
-                          </span>
+                          <div className="flex flex-col items-center gap-1">
+                            <span className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-[9px] font-bold tracking-tight uppercase ${statusDetails.bg}`}>
+                              {statusDetails.label}
+                            </span>
+                            {withAgentPillVisible(r) ? (
+                              <span className="inline-flex items-center whitespace-nowrap rounded-full bg-violet-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-tight text-violet-700">
+                                With agent
+                              </span>
+                            ) : null}
+                          </div>
                         </td>
                         <td className="px-2 py-3 text-center">
                           {SUPPORTING_DOC_STATUSES.includes(r.status) || r.supporting_documents?.length ? (

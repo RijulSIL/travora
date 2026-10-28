@@ -12,6 +12,7 @@ import ParticleBackground from './components/ui/ParticleBackground';
 import PublicIndex from './pages/PublicIndex';
 const LoginPage = lazy(() => import('./pages/auth/LoginPage'));
 const ForgotPasswordPage = lazy(() => import('./pages/auth/ForgotPasswordPage'));
+const AgentBookingPage = lazy(() => import('./pages/public/AgentBookingPage'));
 const AccessDenied = lazy(() => import('./pages/AccessDenied'));
 const ProfilePage = lazy(() => import('./pages/ProfilePage'));
 const ClaimReview = lazy(() => import('./pages/ClaimReview'));
@@ -63,6 +64,9 @@ export default function App() {
         <Route path="/" element={<PublicIndex />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+        {/* Public, unauthenticated travel-agent booking link — no app shell, no login; the token
+            in the URL is the only credential (see public_travel_booking.py). */}
+        <Route path="/book/:token" element={<AgentBookingPage />} />
         <Route path="/reset-password" element={<Navigate to="/forgot-password" replace />} />
         <Route path="/access-denied" element={<AccessDenied />} />
         <Route element={<ProtectedRoute />}>
@@ -160,14 +164,18 @@ export default function App() {
             />
 
             {/* Admin: generic read-only (workflow/policy viewers); bank details only with view_sensitive_admin */}
+            {/* Policy versions and what's in them: also open to whoever a submitted version is
+                waiting on (approver_scope.policy), so they can review and decide it. */}
+            <Route element={<RoleGuard anyOf={['configure_policy', 'view_admin_readonly']} orScope="policy" />}>
+              <Route path="admin/policy-versions" element={<PolicyVersionManager />} />
+              <Route path="admin/expense-limits" element={<ExpenseLimitsMatrix />} />
+              <Route path="admin/impact-levels" element={<ImpactLevelMaster />} />
+            </Route>
             <Route element={<RoleGuard anyOf={['configure_policy', 'view_admin_readonly']} />}>
               <Route path="admin" element={<Outlet />}>
                 {/* IT Admin's Home already shows the system snapshot this page used to. */}
                 <Route index element={<Navigate to="/dashboard" replace />} />
-                <Route path="policy-versions" element={<PolicyVersionManager />} />
-                <Route path="expense-limits" element={<ExpenseLimitsMatrix />} />
                 <Route path="expense-categories" element={<ExpenseCategoryManager />} />
-                <Route path="impact-levels" element={<ImpactLevelMaster />} />
                 <Route path="city-groups" element={<CityGroupClassification />} />
                 <Route path="travel-options" element={<TravelOptions />} />
               </Route>
@@ -218,11 +226,17 @@ export default function App() {
             <Route element={<RoleGuard anyOf={['view_reports', 'process_payments']} />}>
               <Route path="claims/all" element={<AllClaimsPage />} />
             </Route>
-            <Route element={<RoleGuard permission="view_reports" />}>
+            {/* Same permission its API needs to record a payment (claim_workflow.record_payment). */}
+            <Route element={<RoleGuard permission="process_payments" />}>
               <Route path="finance/payment-queue" element={<PaymentQueuePage />} />
-              <Route path="finance/gst-dashboard" element={<FinanceGstPage />} />
+            </Route>
+            <Route element={<RoleGuard permission="view_reports" />}>
               <Route path="reports" element={<ReportsPage />} />
               <Route path="finance/reports" element={<Navigate to="/reports" replace />} />
+            </Route>
+            {/* Finance's own tools; the server keeps their APIs to the Finance role too. */}
+            <Route element={<RoleGuard permission="view_reports" roles={['FINANCE']} />}>
+              <Route path="finance/gst-dashboard" element={<FinanceGstPage />} />
               <Route path="finance/erp-ledger" element={<ErpLedgerPage />} />
             </Route>
             {/* Advances are Finance-only, deliberately stricter than the other finance/

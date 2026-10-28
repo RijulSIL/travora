@@ -16,6 +16,7 @@ import {
 
 import ClaimStatusBadge from '../ui/ClaimStatusBadge';
 import ReimbursementCategoryBadge from '../ui/ReimbursementCategoryBadge';
+import ClaimExceptionList from './ClaimExceptionList';
 import ClaimTimeline from './ClaimTimeline';
 import { RelocationClaimPanel } from './ClaimRelocationSteps';
 import { claimRouteItems } from './claimRoute';
@@ -61,35 +62,6 @@ function PolicyPill({ status }) {
   return (
     <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ring-inset ${style}`}>
       {status === 'HARD_BLOCK' ? 'Hard Block' : status === 'SOFT_FLAG' ? 'Soft Flag' : 'OK'}
-    </span>
-  );
-}
-
-const ROLE_LABELS = {
-  REPORTING_MANAGER: 'Reporting Manager',
-  FUNCTION_HEAD: 'Function Head',
-  DEPARTMENT_HEAD: 'Department Head',
-  HRBP_HR: 'HRBP / HR',
-  PAYROLL: 'Payroll',
-  FINANCE: 'Finance',
-  GROUP_HEAD_HR: 'Group Head HR',
-  CEO: 'CEO',
-  RECRUITER: 'Recruiter',
-};
-
-function ExceptionStatusPill({ exception }) {
-  if (exception.status === 'APPROVED') {
-    return <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700 ring-1 ring-inset ring-emerald-200">Approved</span>;
-  }
-  if (exception.status === 'REJECTED') {
-    return <span className="inline-flex items-center rounded-full bg-rose-50 px-2 py-0.5 text-[10px] font-bold text-rose-700 ring-1 ring-inset ring-rose-200">Rejected</span>;
-  }
-  const who = exception.waiting_on_names?.length
-    ? exception.waiting_on_names.join(', ')
-    : ROLE_LABELS[exception.waiting_on_role] || exception.waiting_on_role;
-  return (
-    <span className="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-800 ring-1 ring-inset ring-amber-200">
-      Pending{who ? ` · ${who}` : ''}
     </span>
   );
 }
@@ -441,38 +413,10 @@ export default function ClaimReviewModal({ claimId, onClose }) {
                       </div>
                       {claimExceptions.awaiting ? (
                         <p className="border-b border-amber-100 bg-amber-50/40 px-3.5 py-2 text-[11px] font-medium text-amber-800">
-                          This claim goes to Finance once every exception below is approved.
+                          This claim goes to Finance once the last exception approver accepts every exception below.
                         </p>
                       ) : null}
-                      <div className="divide-y divide-line bg-white">
-                        {claimExceptions.items.map((exc) => (
-                          <div key={exc.exception_request_id} className="space-y-1 px-3.5 py-2.5">
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <span className="text-sm font-semibold text-slate-700">
-                                {exc.category_name || exc.exception_type_label}
-                                {exc.claimed_amount != null ? (
-                                  <span className="ml-1.5 font-mono text-xs font-medium text-slate-500">
-                                    ₹{Number(exc.claimed_amount).toLocaleString('en-IN')}
-                                  </span>
-                                ) : null}
-                              </span>
-                              <ExceptionStatusPill exception={exc} />
-                            </div>
-                            {exc.category_name ? (
-                              <p className="text-[11px] font-medium text-slate-500">{exc.exception_type_label}</p>
-                            ) : null}
-                            {exc.reason ? (
-                              <p className="rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs leading-relaxed text-slate-700">
-                                <span className="font-semibold text-slate-500">Reason: </span>
-                                {exc.reason}
-                              </p>
-                            ) : null}
-                            {exc.status === 'REJECTED' && exc.decision_comment ? (
-                              <p className="text-[11px] font-medium text-rose-700">Rejected: {exc.decision_comment}</p>
-                            ) : null}
-                          </div>
-                        ))}
-                      </div>
+                      <ClaimExceptionList exceptions={claimExceptions.items} />
                     </div>
                   ) : (
                     <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-xs font-semibold text-emerald-700">
@@ -663,8 +607,9 @@ export default function ClaimReviewModal({ claimId, onClose }) {
                 // A claim with policy exceptions has no normal approval stages — its exception
                 // approvers decide it (from Exception Requests), then it goes to Finance.
                 <NoticeBox tone="amber" title="Waiting on policy exceptions">
-                  This claim is approved by its exception approvers alone. They decide each exception from
-                  Exception Requests; once every one is approved, the claim goes to Finance for payment.
+                  This claim is approved by the exception approvers alone. Each of them accepts, rejects or sends back
+                  every exception from Exception Requests; once the last one accepts them all, the claim goes to Finance for
+                  payment.
                 </NoticeBox>
               ) : isApprover && claim.status === 'IN_APPROVAL' ? (
                 <DecisionBox
@@ -701,7 +646,7 @@ export default function ClaimReviewModal({ claimId, onClose }) {
                     </>
                   }
                 />
-              ) : readyForPayment && isApprover ? (
+              ) : readyForPayment && canProcessPayments ? (
                 <div className="rounded-xl border border-line bg-white p-4 shadow-sm">
                   <div className="space-y-1.5 text-sm">
                     <div className="flex justify-between text-slate-600">
@@ -806,7 +751,9 @@ export default function ClaimReviewModal({ claimId, onClose }) {
                       ? `This claim was rejected${claim.reject_reason ? `: “${claim.reject_reason}”` : '.'}`
                       : claim.status === 'SENT_BACK'
                         ? 'This claim was sent back to the employee to fix.'
-                        : 'Read-only view. Approvers manage this claim from queue actions.'}
+                        : readyForPayment
+                          ? 'Approved. Waiting for Finance to record the payment.'
+                          : 'Read-only view. Approvers manage this claim from queue actions.'}
                 </NoticeBox>
               )}
             </DetailColumn>

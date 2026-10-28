@@ -1,4 +1,8 @@
-import { Truck } from 'lucide-react';
+import { useState } from 'react';
+import { FileText, Truck } from 'lucide-react';
+
+import { reimbursementApi } from '../../services/reimbursementApi';
+import { showToast } from '../../store/toastStore';
 
 import {
   ApprovalDetailGrid,
@@ -26,7 +30,7 @@ function routeItems(row, slaLeft, decided) {
     {
       key: 'requested',
       state: 'done',
-      title: `Requested by ${row.employee_name || 'the employee'}`,
+      title: `${row.source === 'PRIOR_APPROVAL' ? 'Approval uploaded' : 'Requested'} by ${row.employee_name || 'the employee'}`,
       sub: row.created_at ? formatDatetime(row.created_at) : null,
     },
     ...stages.map((stage) => {
@@ -99,23 +103,61 @@ export default function RelocationApprovalPanel({
   const name = firstName(row.employee_name);
   const current = (row.stages || []).find((s) => s.stage_number === row.current_approval_stage);
   const next = (row.stages || []).find((s) => current && s.stage_number > current.stage_number);
+  // An approval given outside the app, uploaded by the employee: the approver checks the document.
+  const prior = row.source === 'PRIOR_APPROVAL';
+  const [opening, setOpening] = useState(false);
+  const openEvidence = async () => {
+    setOpening(true);
+    try {
+      const response = await reimbursementApi.relocationEvidenceBlob(row.id);
+      window.open(URL.createObjectURL(response.data), '_blank', 'noopener');
+    } catch {
+      showToast('Could not open the uploaded approval', 'error');
+    } finally {
+      setOpening(false);
+    }
+  };
 
   return (
     <ApprovalDetailGrid>
-      <DetailColumn first title="The move" label="Relocation details">
+      <DetailColumn first title={prior ? 'The uploaded approval' : 'The move'} label="Relocation details">
         <Journey from={row.origin_city} to={row.destination_city} icon={Truck} />
-        <FactGrid
-          facts={[
-            { label: 'Estimate', value: row.estimated_amount ? `₹${formatInr(row.estimated_amount)}` : '—' },
-            {
-              label: 'Planned move',
-              value: details.planned_move_date ? formatDate(details.planned_move_date) : '—',
-              hint: daysFromToday(details.planned_move_date),
-            },
-            { label: 'Family members', value: details.family_members != null ? String(details.family_members) : '—' },
-          ]}
-        />
-        <Quote title={`Notes from ${name}`} text={details.notes} />
+        {prior ? (
+          <>
+            <FactGrid
+              facts={[
+                { label: 'Approved amount', value: row.estimated_amount ? `₹${formatInr(row.estimated_amount)}` : 'Not given' },
+                { label: 'Uploaded', value: row.created_at ? formatDate(row.created_at) : '—' },
+              ]}
+            />
+            {row.has_evidence ? (
+              <button
+                type="button"
+                onClick={openEvidence}
+                disabled={opening}
+                className="inline-flex w-fit items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[12.5px] font-bold text-ink hover:bg-slate-50"
+              >
+                <FileText size={14} /> {opening ? 'Opening…' : `View ${row.evidence_filename || 'approval'}`}
+              </button>
+            ) : null}
+            <p className="text-[11.5px] text-slate-500">Check the document matches the move and amount before approving.</p>
+          </>
+        ) : (
+          <>
+            <FactGrid
+              facts={[
+                { label: 'Estimate', value: row.estimated_amount ? `₹${formatInr(row.estimated_amount)}` : '—' },
+                {
+                  label: 'Planned move',
+                  value: details.planned_move_date ? formatDate(details.planned_move_date) : '—',
+                  hint: daysFromToday(details.planned_move_date),
+                },
+                { label: 'Family members', value: details.family_members != null ? String(details.family_members) : '—' },
+              ]}
+            />
+            <Quote title={`Notes from ${name}`} text={details.notes} />
+          </>
+        )}
       </DetailColumn>
 
       <DetailColumn title="Approval route">

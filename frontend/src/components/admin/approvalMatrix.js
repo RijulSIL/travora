@@ -31,6 +31,24 @@ export const TRAVEL_EXCEPTIONS = {
 
 export const EXCEPTION_KEYS = [...Object.keys(CLAIM_EXCEPTIONS), ...Object.keys(TRAVEL_EXCEPTIONS)];
 
+// The two shared exception routes (workflow_service.CLAIM_EXCEPTIONS_ROUTE / TRAVEL_EXCEPTIONS_ROUTE):
+// every claim exception type goes through the first, every travel request one through the second.
+// Each type still has its own on/off switch (and Allow/Block on claims). Stored in exception_chains /
+// exception_sla_hours under these keys.
+export const CLAIM_EXCEPTION_FLOW = 'CLAIM_EXCEPTIONS';
+export const TRAVEL_EXCEPTION_FLOW = 'TRAVEL_EXCEPTIONS';
+export const EXCEPTION_FLOWS = {
+  [CLAIM_EXCEPTION_FLOW]: { name: 'Claim exceptions', types: CLAIM_EXCEPTIONS },
+  [TRAVEL_EXCEPTION_FLOW]: { name: 'Travel request exceptions', types: TRAVEL_EXCEPTIONS },
+};
+export const EXCEPTION_FLOW_KEYS = Object.keys(EXCEPTION_FLOWS);
+
+// What each shared route uses until someone sets their own (workflow_service.EXCEPTION_APPROVAL_CHAINS).
+export const EXCEPTION_FLOW_DEFAULTS = {
+  [CLAIM_EXCEPTION_FLOW]: ['REPORTING_MANAGER', 'HRBP_HR', 'CEO'],
+  [TRAVEL_EXCEPTION_FLOW]: ['REPORTING_MANAGER'],
+};
+
 // Exception types a claim expense can be flagged with at submission — the ones the
 // "When it's on a claim" Allow/Block setting applies to (workflow_service.DEFAULT_EXCEPTION_SUBMISSION_MODE).
 export const CLAIM_SUBMIT_EXCEPTIONS = new Set([
@@ -61,15 +79,18 @@ export const STANDALONE_DEFAULTS = {
     { number: 3, label: 'HRBP Review', route_role: 'HRBP_HR', sla_hours: 48 },
     { number: 4, label: 'Payroll Review', route_role: 'PAYROLL', sla_hours: 48 },
   ],
+  // Check of an approval the employee uploads (given outside the app) before they can claim on it.
+  RELOCATION_PRIOR_APPROVAL: [{ number: 1, label: 'HR check', route_role: 'HRBP_HR', sla_hours: 48 }],
 };
 
 export const FLOW_NAMES = {
   CLAIMS: 'Claims',
   TRAVEL_REQUEST: 'Travel requests',
   RELOCATION_REQUEST: 'Relocation requests',
+  RELOCATION_PRIOR_APPROVAL: 'Relocation prior-approval check',
   POLICY_APPROVAL: 'Policy versions',
-  ...CLAIM_EXCEPTIONS,
-  ...TRAVEL_EXCEPTIONS,
+  [CLAIM_EXCEPTION_FLOW]: EXCEPTION_FLOWS[CLAIM_EXCEPTION_FLOW].name,
+  [TRAVEL_EXCEPTION_FLOW]: EXCEPTION_FLOWS[TRAVEL_EXCEPTION_FLOW].name,
 };
 
 // "Department head" is resolved per person (the head of their department, set in the
@@ -130,13 +151,29 @@ export function sanitizeAutoApprove(raw) {
   return n.toFixed(2);
 }
 
-/** Every role token present anywhere in a config — diffed on save to warn before a role drops out entirely. */
+/** Whether any exception type that goes through this shared route is switched on. */
+export function exceptionFlowInUse(config, flow) {
+  return Object.keys(EXCEPTION_FLOWS[flow].types).some((type) => (config.exception_enabled || {})[type] !== false);
+}
+
+/** Every role a request could wait on in a config — diffed on save to warn before a role drops out
+ * entirely. A shared exception route counts while any one of its exception types is on, and a
+ * switched-off prior-approval check doesn't count (the server's "role with no active users" check
+ * does the same). */
 export function rolesCoveredByConfig(config) {
   const roles = new Set();
   const addStages = (list) => (list || []).forEach((s) => s?.route_role && roles.add(s.route_role));
   addStages(config.stages);
-  Object.values(config.category_overrides || {}).forEach((o) => addStages(o?.stages));
-  Object.values(config.exception_chains || {}).forEach((chain) => (chain || []).forEach((r) => roles.add(r)));
+  Object.entries(config.category_overrides || {}).forEach(([key, o]) => {
+    if (key === 'RELOCATION_PRIOR_APPROVAL' && o?.enabled === false) return;
+    addStages(o?.stages);
+  });
+  EXCEPTION_FLOW_KEYS.forEach((flow) => {
+    if (!exceptionFlowInUse(config, flow)) return;
+    const route = config.exception_chains?.[flow]?.length ? config.exception_chains[flow] : EXCEPTION_FLOW_DEFAULTS[flow];
+    route.forEach((r) => roles.add(r));
+  });
+  (config.exception_chains?.POLICY_APPROVAL || []).forEach((r) => roles.add(r));
   return roles;
 }
 

@@ -4,10 +4,14 @@ import { useEffect, useMemo, useState } from 'react';
 import { Pill } from '../../components/approvals/ApprovalQueueParts';
 import {
   CLAIM_CATEGORIES,
+  CLAIM_EXCEPTION_FLOW,
   CLAIM_EXCEPTIONS,
   CLAIM_SUBMIT_EXCEPTIONS,
   DEADLINE_MODES,
   DEPARTMENT_HEAD,
+  EXCEPTION_FLOW_DEFAULTS,
+  EXCEPTION_FLOW_KEYS,
+  EXCEPTION_FLOWS,
   EXCEPTION_KEYS,
   FLOW_NAMES,
   HEAD_FLOWS,
@@ -17,8 +21,8 @@ import {
   ROLES_WORTH_WARNING_ABOUT,
   STANDALONE_DEFAULTS,
   STEP_ROLES,
-  TRAVEL_EXCEPTIONS,
   errorMessage,
+  exceptionFlowInUse,
   rolesCoveredByConfig,
   sanitizeAutoApprove,
   sanitizeMaxDays,
@@ -34,12 +38,17 @@ import { canEditWorkflowConfig } from '../../services/permissions';
 import { useAuthStore } from '../../store/authStore';
 import { formatRole } from '../../utils/formatters';
 
-const STAGE_FLOWS = ['CLAIMS', 'TRAVEL_REQUEST', 'RELOCATION_REQUEST'];
+// The relocation prior-approval check: a step list like the others, plus an on/off switch.
+const PRIOR = 'RELOCATION_PRIOR_APPROVAL';
+const STAGE_FLOWS = ['CLAIMS', 'TRAVEL_REQUEST', 'RELOCATION_REQUEST', PRIOR];
 const FILTER = FIELD.replace('w-full', '');
 const j = (x) => JSON.stringify(x ?? null);
 
-// Which Department heads tick covers a flow: claims, travel requests, or any exception type.
-const headFlowOf = (key) => (key === 'CLAIMS' ? 'claims' : key === 'TRAVEL_REQUEST' ? 'travel_requests' : EXCEPTION_KEYS.includes(key) ? 'exceptions' : null);
+// Which Department heads tick covers a flow: claims, travel requests, or both exception flows.
+const headFlowOf = (key) =>
+  key === 'CLAIMS' ? 'claims' : key === 'TRAVEL_REQUEST' ? 'travel_requests' : EXCEPTION_FLOW_KEYS.includes(key) ? 'exceptions' : null;
+// The route keys kept in exception_chains: the two shared exception flows and Policy versions.
+const ROUTE_KEYS = [...EXCEPTION_FLOW_KEYS, 'POLICY_APPROVAL'];
 
 /** The config exactly as it will be saved: steps numbered, hours and amounts cleaned up, empty entries dropped. */
 function normalize(cfg) {
@@ -51,11 +60,19 @@ function normalize(cfg) {
       sla_hours: sanitizeSlaHours(s.sla_hours),
     }));
   const overrides = {};
-  for (const key of ['TRAVEL', 'GENERAL', 'RELOCATION', 'TRAVEL_REQUEST', 'RELOCATION_REQUEST']) {
+  for (const key of ['TRAVEL', 'GENERAL', 'RELOCATION', 'TRAVEL_REQUEST', 'RELOCATION_REQUEST', PRIOR]) {
     const list = cfg.category_overrides?.[key]?.stages;
     if (list?.length) overrides[key] = { stages: stageList(list) };
   }
-  const chains = cfg.exception_chains || {};
+  // Switched off is the only state worth storing; on is the default.
+  if (cfg.category_overrides?.[PRIOR]?.enabled === false) overrides[PRIOR] = { ...overrides[PRIOR], enabled: false };
+  // Only the shared exception routes and Policy versions are kept; per-type chains from before the
+  // shared routes are dropped (a config that still has them loads the shared defaults).
+  const stored = cfg.exception_chains || {};
+  const chains = {
+    ...Object.fromEntries(EXCEPTION_FLOW_KEYS.map((k) => [k, stored[k]?.length ? stored[k] : EXCEPTION_FLOW_DEFAULTS[k]])),
+    POLICY_APPROVAL: stored.POLICY_APPROVAL?.length ? stored.POLICY_APPROVAL : ['HRBP_HR'],
+  };
   const heads = {};
   for (const [dept, h] of Object.entries(cfg.department_heads || {})) {
     if (!h?.head_user_id) continue;
@@ -77,9 +94,9 @@ function normalize(cfg) {
     exception_chains: chains,
     exception_enabled: cfg.exception_enabled || {},
     exception_submission_mode: cfg.exception_submission_mode || {},
-    // One SLA per chain step, trimmed or padded to the chain's length.
+    // One SLA per route step, trimmed or padded to the route's length.
     exception_sla_hours: Object.fromEntries(
-      Object.entries(chains).map(([type, chain]) => [type, (chain || []).map((_, i) => sanitizeSlaHours(cfg.exception_sla_hours?.[type]?.[i] ?? 48))]),
+      Object.entries(chains).map(([key, chain]) => [key, (chain || []).map((_, i) => sanitizeSlaHours(cfg.exception_sla_hours?.[key]?.[i] ?? 48))]),
     ),
     department_heads: heads,
   };
@@ -89,17 +106,22 @@ function normalize(cfg) {
 function changedParts(a, b) {
   const out = [];
   if (j(a.stages) !== j(b.stages) || ['TRAVEL', 'GENERAL', 'RELOCATION'].some((k) => j(a.category_overrides[k]) !== j(b.category_overrides[k]))) out.push('CLAIMS');
-  // Ahead of the per-exception entries: ticking Exceptions changes all of them at once.
+  // Ahead of the exception flows: ticking Exceptions changes both at once.
   if (j(a.department_heads) !== j(b.department_heads)) out.push('DEPARTMENT_HEADS');
-  ['TRAVEL_REQUEST', 'RELOCATION_REQUEST'].forEach((k) => {
+  ['TRAVEL_REQUEST', 'RELOCATION_REQUEST', PRIOR].forEach((k) => {
     if (j(a.category_overrides[k]) !== j(b.category_overrides[k])) out.push(k);
   });
-  [...EXCEPTION_KEYS, 'POLICY_APPROVAL'].forEach((k) => {
+  ROUTE_KEYS.forEach((k) => {
+    // An exception flow also changes when one of its types is switched or set to Allow/Block.
+    const types = Object.keys(EXCEPTION_FLOWS[k]?.types || {});
     if (
       j(a.exception_chains[k]) !== j(b.exception_chains[k]) ||
       j(a.exception_sla_hours[k]) !== j(b.exception_sla_hours[k]) ||
-      (a.exception_enabled[k] !== false) !== (b.exception_enabled[k] !== false) ||
-      (a.exception_submission_mode[k] || 'ALLOW') !== (b.exception_submission_mode[k] || 'ALLOW')
+      types.some(
+        (t) =>
+          (a.exception_enabled[t] !== false) !== (b.exception_enabled[t] !== false) ||
+          (a.exception_submission_mode[t] || 'ALLOW') !== (b.exception_submission_mode[t] || 'ALLOW'),
+      )
     )
       out.push(k);
   });
@@ -244,6 +266,9 @@ export default function WorkflowConfig() {
   }
 
   const isOn = (k) => cfg.exception_enabled[k] !== false;
+  const typesOf = (flow) => Object.keys(EXCEPTION_FLOWS[flow].types);
+  const flowOn = (flow) => exceptionFlowInUse(cfg, flow);
+  const priorOn = cfg.category_overrides[PRIOR]?.enabled !== false;
   const modeOf = (k) => cfg.exception_submission_mode[k] || 'ALLOW';
   const chainOf = (k) => (cfg.exception_chains[k] || []).map((role, i) => ({ route_role: role, sla_hours: cfg.exception_sla_hours[k]?.[i] ?? 48 }));
   const stagesOf = (k, category = cat) =>
@@ -268,7 +293,7 @@ export default function WorkflowConfig() {
       if (cat === 'DEFAULT') draft.stages = next;
       else draft.category_overrides[cat] = { stages: next };
     } else if (STAGE_FLOWS.includes(key)) {
-      draft.category_overrides[key] = { stages: next };
+      draft.category_overrides[key] = { ...draft.category_overrides[key], stages: next };
     } else {
       draft.exception_chains[key] = next.map((s) => s.route_role);
       draft.exception_sla_hours[key] = next.map((s) => sanitizeSlaHours(s.sla_hours));
@@ -311,7 +336,8 @@ export default function WorkflowConfig() {
       const next = fix(current, false, 'Travel requests');
       if (next !== current) draft.category_overrides.TRAVEL_REQUEST = { stages: next };
     } else {
-      EXCEPTION_KEYS.forEach((k) => {
+      // Both shared exception flows.
+      EXCEPTION_FLOW_KEYS.forEach((k) => {
         const current = (draft.exception_chains[k] || []).map((role, i) => ({ route_role: role, sla_hours: draft.exception_sla_hours[k]?.[i] ?? 48 }));
         const next = fix(current, false, FLOW_NAMES[k]);
         if (next !== current) {
@@ -386,32 +412,36 @@ export default function WorkflowConfig() {
         ['CLAIMS', summary(cfg.stages), ['TRAVEL', 'GENERAL', 'RELOCATION'].some((c) => cfg.category_overrides[c]) ? <Pill tone="brand">Custom by category</Pill> : null],
         ['TRAVEL_REQUEST', summary(stagesOf('TRAVEL_REQUEST')), cfg.category_overrides.TRAVEL_REQUEST ? null : <Pill>Default</Pill>],
         ['RELOCATION_REQUEST', summary(stagesOf('RELOCATION_REQUEST')), cfg.category_overrides.RELOCATION_REQUEST ? null : <Pill>Default</Pill>],
+        [PRIOR, priorOn ? summary(stagesOf(PRIOR)) : 'Switched off', !priorOn ? <Pill>Off</Pill> : cfg.category_overrides[PRIOR]?.stages ? null : <Pill>Default</Pill>],
         ['POLICY_APPROVAL', summary(chainOf('POLICY_APPROVAL')), null],
       ],
     },
     {
-      title: 'Claim exceptions',
-      items: Object.keys(CLAIM_EXCEPTIONS).map((k) => [
-        k,
-        isOn(k) ? summary(chainOf(k)) : 'Switched off',
-        !isOn(k) ? <Pill>Off</Pill> : CLAIM_SUBMIT_EXCEPTIONS.has(k) && modeOf(k) === 'BLOCK' ? <Pill tone="rose">Blocks claim</Pill> : null,
-      ]),
-    },
-    {
-      title: 'Travel request exceptions',
-      items: Object.keys(TRAVEL_EXCEPTIONS).map((k) => [k, isOn(k) ? summary(chainOf(k)) : 'Switched off', !isOn(k) ? <Pill>Off</Pill> : null]),
+      title: 'Exception flows',
+      items: EXCEPTION_FLOW_KEYS.map((k) => {
+        const on = typesOf(k).filter(isOn).length;
+        return [
+          k,
+          on ? summary(chainOf(k)) : 'Every exception switched off',
+          !on ? <Pill>Off</Pill> : on < typesOf(k).length ? <Pill>{`${on}/${typesOf(k).length} on`}</Pill> : null,
+        ];
+      }),
     },
   ];
+  // A flow is found by its own name or by the name of any exception type it covers.
+  const matchesQuery = (k) =>
+    !q || FLOW_NAMES[k].toLowerCase().includes(q) || Object.values(EXCEPTION_FLOWS[k]?.types || {}).some((name) => name.toLowerCase().includes(q));
 
   // ---- Editor for the selected flow ----
   const stageBased = STAGE_FLOWS.includes(sel);
   const isPolicy = sel === 'POLICY_APPROVAL';
-  const isException = !stageBased && !isPolicy;
+  const isException = EXCEPTION_FLOW_KEYS.includes(sel);
+  const exceptionFlowOff = isException && !flowOn(sel);
   const list = listOf(sel);
-  const roleEligible = sel === 'RELOCATION_REQUEST' ? null : stageBased ? eligible.claim : isPolicy ? eligible.policy : eligible.exception;
+  const roleEligible = sel === 'RELOCATION_REQUEST' || sel === PRIOR ? null : stageBased ? eligible.claim : isPolicy ? eligible.policy : eligible.exception;
   const headFlow = headFlowOf(sel);
   const headDepts = headFlow ? headsFor(headFlow) : [];
-  const customRoute = sel === 'CLAIMS' ? cat !== 'DEFAULT' && Boolean(cfg.category_overrides[cat]) : stageBased && Boolean(cfg.category_overrides[sel]);
+  const customRoute = sel === 'CLAIMS' ? cat !== 'DEFAULT' && Boolean(cfg.category_overrides[cat]) : stageBased && Boolean(cfg.category_overrides[sel]?.stages);
   const catName = CLAIM_CATEGORIES.find(([v]) => v === cat)?.[1];
   const description =
     sel === 'CLAIMS'
@@ -420,11 +450,13 @@ export default function WorkflowConfig() {
         ? 'A trip request goes through these steps before the Travel Desk books it.'
         : sel === 'RELOCATION_REQUEST'
           ? 'Someone without relocation approval asks for it here; once the last step approves, they can raise relocation claims (which then follow Claims → Relocation).'
+          : sel === PRIOR
+            ? 'When an employee uploads a relocation approval given outside the app, these steps check the document before they can claim against it. Every approver on the route can open the upload.'
           : isPolicy
             ? 'A new policy version needs these approvals before it can take effect.'
-            : CLAIM_EXCEPTIONS[sel]
-              ? 'When a claim has this, an exception request goes to these approvers, in order.'
-              : 'When a travel request has this, an exception request goes to these approvers, in order.';
+            : sel === CLAIM_EXCEPTION_FLOW
+              ? 'A claim with any switched-on exception below goes to these approvers instead of the Claims route: one request listing every exception, and each approver accepts, rejects or sends back each one. After the last step it goes to Finance.'
+              : 'A travel request with any switched-on exception below goes to these approvers instead of the Travel requests route, with one approve or reject for the whole request. After the last step it goes to the Travel Desk.';
   const roleOptions = (current) =>
     STEP_ROLES.filter((r) => (r === DEPARTMENT_HEAD ? headFlow !== null || current === r : !roleEligible || roleEligible.has(r) || r === current));
   const noFinance = sel === 'CLAIMS' && !list.some((s) => s.route_role === 'FINANCE');
@@ -440,7 +472,7 @@ export default function WorkflowConfig() {
         </div>
         <div className="flex flex-wrap items-stretch gap-2">
           {[
-            ['Approval flows', 4],
+            ['Approval flows', groups.reduce((n, g) => n + g.items.length, 0)],
             ['Exceptions on', `${EXCEPTION_KEYS.filter(isOn).length} / ${EXCEPTION_KEYS.length}`],
             ['Block a claim', Object.keys(CLAIM_EXCEPTIONS).filter((k) => CLAIM_SUBMIT_EXCEPTIONS.has(k) && isOn(k) && modeOf(k) === 'BLOCK').length],
           ].map(([label, value]) => (
@@ -468,7 +500,7 @@ export default function WorkflowConfig() {
           </label>
           <div className="overflow-y-auto">
             {groups.map((group) => {
-              const items = group.items.filter(([k]) => !q || FLOW_NAMES[k].toLowerCase().includes(q));
+              const items = group.items.filter(([k]) => matchesQuery(k));
               if (!items.length) return null;
               return (
                 <div key={group.title}>
@@ -477,7 +509,7 @@ export default function WorkflowConfig() {
                     <span>{items.length}</span>
                   </div>
                   {items.map(([k, line, tag]) => {
-                    const off = EXCEPTION_KEYS.includes(k) && !isOn(k);
+                    const off = k === PRIOR ? !priorOn : EXCEPTION_FLOW_KEYS.includes(k) && !flowOn(k);
                     return (
                       <button
                         key={k}
@@ -510,7 +542,7 @@ export default function WorkflowConfig() {
                 <h2 className="text-base font-extrabold text-ink">{FLOW_NAMES[sel]}</h2>
                 <p className="mt-0.5 max-w-[70ch] text-[12.5px] leading-normal text-slate-500">{description}</p>
               </div>
-              <Pill tone={isException && !isOn(sel) ? 'slate' : 'brand'}>
+              <Pill tone={exceptionFlowOff || (sel === PRIOR && !priorOn) ? 'slate' : 'brand'}>
                 {list.length} step{list.length === 1 ? '' : 's'}
               </Pill>
             </div>
@@ -545,7 +577,33 @@ export default function WorkflowConfig() {
                       : `${catName} claims use the shared route. Change a step to give them their own.`}
                 </Option>
               ) : null}
-              {sel === 'TRAVEL_REQUEST' || sel === 'RELOCATION_REQUEST' ? (
+              {sel === PRIOR ? (
+                <Option
+                  title="Check uploaded approvals"
+                  control={
+                    <Switch
+                      label="Check uploaded relocation approvals"
+                      checked={priorOn}
+                      disabled={!canEdit}
+                      onChange={(on) =>
+                        update((d) => {
+                          const rest = { ...d.category_overrides[PRIOR] };
+                          if (on) delete rest.enabled;
+                          else rest.enabled = false;
+                          if (Object.keys(rest).length) d.category_overrides[PRIOR] = rest;
+                          else delete d.category_overrides[PRIOR];
+                          return d;
+                        })
+                      }
+                    />
+                  }
+                >
+                  {priorOn
+                    ? 'On: an uploaded approval waits for these steps before the employee can claim.'
+                    : 'Off: an uploaded approval counts straight away and the employee can claim at once.'}
+                </Option>
+              ) : null}
+              {sel === 'TRAVEL_REQUEST' || sel === 'RELOCATION_REQUEST' || sel === PRIOR ? (
                 <Option
                   title={customRoute ? 'Custom route' : 'Default route'}
                   control={
@@ -555,7 +613,9 @@ export default function WorkflowConfig() {
                         className={BTN_SM}
                         onClick={() =>
                           update((d) => {
-                            delete d.category_overrides[sel];
+                            const { enabled } = d.category_overrides[sel] || {};
+                            if (enabled === false) d.category_overrides[sel] = { enabled };
+                            else delete d.category_overrides[sel];
                             return d;
                           })
                         }
@@ -568,53 +628,8 @@ export default function WorkflowConfig() {
                   {customRoute ? 'Set up for this flow.' : 'The built-in steps. Change one to make your own.'}
                 </Option>
               ) : null}
-              {isException ? (
-                <Option
-                  title={isOn(sel) ? 'Switched on' : 'Switched off'}
-                  control={
-                    <Switch
-                      label="Switch this exception on or off"
-                      checked={isOn(sel)}
-                      disabled={!canEdit}
-                      onChange={(on) =>
-                        update((d) => {
-                          d.exception_enabled[sel] = on;
-                          return d;
-                        })
-                      }
-                    />
-                  }
-                >
-                  {isOn(sel)
-                    ? 'This is checked, and goes to the approvers below whenever it happens.'
-                    : 'Never flagged: anything that would trip it goes through without approval.'}
-                </Option>
-              ) : null}
-              {isException && CLAIM_SUBMIT_EXCEPTIONS.has(sel) && isOn(sel) ? (
-                <Option
-                  title="When it's on a claim"
-                  control={
-                    <Segmented
-                      label="When it's on a claim"
-                      disabled={!canEdit}
-                      options={[
-                        ['ALLOW', 'Allow with a reason'],
-                        ['BLOCK', 'Block the claim', true],
-                      ]}
-                      value={modeOf(sel)}
-                      onChange={(v) =>
-                        update((d) => {
-                          d.exception_submission_mode[sel] = v;
-                          return d;
-                        })
-                      }
-                    />
-                  }
-                >
-                  {modeOf(sel) === 'BLOCK'
-                    ? "The claim can't be submitted while it has this expense, even with a reason."
-                    : 'The employee gives a reason and submits; this exception goes to its approvers alongside the claim.'}
-                </Option>
+              {exceptionFlowOff ? (
+                <Warn>Every exception type below is switched off, so nothing goes through this route right now.</Warn>
               ) : null}
 
               <div>
@@ -629,7 +644,7 @@ export default function WorkflowConfig() {
                   <span className="text-right">Time to act</span>
                   <span />
                 </div>
-                <ol className={`flex flex-col ${isException && !isOn(sel) ? 'opacity-50' : ''}`}>
+                <ol className={`flex flex-col ${exceptionFlowOff || (sel === PRIOR && !priorOn) ? 'opacity-50' : ''}`}>
                   {list.map((step, i) => {
                     const head = step.route_role === DEPARTMENT_HEAD;
                     const dropLine = <span aria-hidden className="my-0.5 block h-[3px] rounded-full bg-brand" />;
@@ -831,6 +846,76 @@ export default function WorkflowConfig() {
             </div>
           </section>
 
+          {isException ? (
+            <section aria-label={`${FLOW_NAMES[sel]}: exception types`} className={CARD}>
+              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 px-4 py-3.5">
+                <div>
+                  <h2 className="text-[14.5px] font-extrabold text-ink">Exception types</h2>
+                  <p className="mt-0.5 max-w-[72ch] text-[12.5px] leading-normal text-slate-500">
+                    {sel === CLAIM_EXCEPTION_FLOW
+                      ? 'Each one is checked on every claim and, when it happens, goes through the route above. Switch one off to stop flagging it; Block stops the claim being submitted with it at all.'
+                      : 'Each one is checked on every travel request and, when it happens, goes through the route above. Switch one off to stop flagging it.'}
+                  </p>
+                </div>
+                <Pill tone={exceptionFlowOff ? 'slate' : 'brand'}>
+                  {typesOf(sel).filter(isOn).length}/{typesOf(sel).length} on
+                </Pill>
+              </div>
+              <div className="flex flex-col gap-2 px-4 py-3.5">
+                {typesOf(sel).map((type) => {
+                  const on = isOn(type);
+                  const allowBlock = CLAIM_SUBMIT_EXCEPTIONS.has(type) && on;
+                  return (
+                    <Option
+                      key={type}
+                      title={EXCEPTION_FLOWS[sel].types[type]}
+                      control={
+                        <span className="flex flex-wrap items-center gap-2.5">
+                          {allowBlock ? (
+                            <Segmented
+                              label={`${EXCEPTION_FLOWS[sel].types[type]}: when it's on a claim`}
+                              disabled={!canEdit}
+                              options={[
+                                ['ALLOW', 'Allow with a reason'],
+                                ['BLOCK', 'Block the claim', true],
+                              ]}
+                              value={modeOf(type)}
+                              onChange={(v) =>
+                                update((d) => {
+                                  d.exception_submission_mode[type] = v;
+                                  return d;
+                                })
+                              }
+                            />
+                          ) : null}
+                          <Switch
+                            label={`Switch ${EXCEPTION_FLOWS[sel].types[type]} on or off`}
+                            checked={on}
+                            disabled={!canEdit}
+                            onChange={(next) =>
+                              update((d) => {
+                                d.exception_enabled[type] = next;
+                                return d;
+                              })
+                            }
+                          />
+                        </span>
+                      }
+                    >
+                      {!on
+                        ? 'Off: never flagged — anything that would trip it goes through without approval.'
+                        : allowBlock && modeOf(type) === 'BLOCK'
+                          ? "Blocks the claim: it can't be submitted with this expense, even with a reason."
+                          : sel === CLAIM_EXCEPTION_FLOW
+                            ? 'On: the employee gives a reason and it goes through the route above with the claim.'
+                            : 'On: the request goes through the route above.'}
+                    </Option>
+                  );
+                })}
+              </div>
+            </section>
+          ) : null}
+
           <section aria-label="Department heads" className={CARD}>
             <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 px-4 py-3.5">
               <div>
@@ -958,7 +1043,7 @@ export default function WorkflowConfig() {
                 <span className="text-[11.5px] font-medium text-slate-500">Whether a late claim can still be submitted.</span>
               </label>
               <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700">
-                Auto-approve below
+                Auto-approve up to
                 <span className="relative block">
                   <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 font-bold text-slate-400">₹</span>
                   <input
@@ -983,7 +1068,7 @@ export default function WorkflowConfig() {
                   />
                 </span>
                 <span className="text-[11.5px] font-medium text-slate-500">
-                  {Number(cfg.auto_approve_below_amount) > 0 ? 'Claims under this skip the approval steps.' : 'Off: ₹0 means every claim goes through the steps.'}
+                  {Number(cfg.auto_approve_below_amount) > 0 ? 'Claims of this amount or less skip the approval steps.' : 'Off: ₹0 means every claim goes through the steps.'}
                 </span>
               </label>
             </div>

@@ -58,9 +58,8 @@ export const EXCEPTION_TYPE_LABELS = {
   HIRED_TAXI_UNAUTHORIZED: 'Hired Taxi (Unauthorized)',
   MODE_DEVIATION: 'Mode of Travel Deviation',
   DAY_VISIT_EXTERNAL_MEETING: 'Day Visit External Meeting',
-  // Catch-all for any expense category with no dedicated exception rule — see
-  // workflow_service._chain_for_type on the backend, which routes every generic
-  // f"{category}_DEVIATION" type through this same chain.
+  // Catch-all for any expense category with no dedicated exception rule (every generic
+  // f"{category}_DEVIATION" type on the backend follows its on/off and Allow/Block settings).
   POLICY_EXCEPTION_GENERAL: 'Other Category Deviation',
 };
 
@@ -105,7 +104,7 @@ export const EXCEPTION_TYPE_DESCRIPTIONS = {
   DAY_VISIT_EXTERNAL_MEETING:
     'Expense is being claimed for a day visit / external meeting outside standard travel policy parameters.',
   POLICY_EXCEPTION_GENERAL:
-    'An expense category with no dedicated policy rule exceeded its cap — this is the default approval route for any such deviation.',
+    'An expense category with no dedicated policy rule exceeded its cap.',
 };
 
 export const describeExceptionType = (type) =>

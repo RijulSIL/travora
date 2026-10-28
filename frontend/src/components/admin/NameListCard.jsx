@@ -37,7 +37,8 @@ export function UsedIn({ items, note }) {
   );
 }
 
-export default function NameListCard({ title, sub, noun, items, onChange, counts, moves, usedIn, placeholder, children }) {
+// `peopleMustMove`: one people are still in can't be removed (the server refuses the save).
+export default function NameListCard({ title, sub, noun, items, onChange, counts, moves, usedIn, placeholder, peopleMustMove = false, children }) {
   const [editing, setEditing] = useState(null);
   const [draft, setDraft] = useState('');
   const [newName, setNewName] = useState('');
@@ -87,11 +88,15 @@ export default function NameListCard({ title, sub, noun, items, onChange, counts
     const n = peopleIn(item);
     onChange(items.filter((_, i) => i !== index));
     setEditing(null);
+    let text = `${item.name} will be removed when you save.`;
+    if (n && peopleMustMove) {
+      text = `${item.name} still has ${people(n)}. Move them to another ${noun} in User management first — saving won't go through while anyone is still in it.`;
+    } else if (n) {
+      text = `${item.name} will be taken off the list when you save. The ${people(n)} in it keep it on their record until you change them in User management.`;
+    }
     setMessage({
-      tone: 'amber',
-      text: n
-        ? `${item.name} will be taken off the list when you save. The ${people(n)} in it keep it on their record until you change them in User management.`
-        : `${item.name} will be removed when you save.`,
+      tone: n && peopleMustMove ? 'rose' : 'amber',
+      text,
       undo: () => {
         onChange((current) => [...current.slice(0, index), item, ...current.slice(index)]);
         setMessage(null);

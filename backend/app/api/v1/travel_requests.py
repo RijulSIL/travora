@@ -280,6 +280,16 @@ async def desk_all_requests(
 
 
 @router.get(
+    "/agent-email-configured",
+    dependencies=[Depends(require_permission("view_travel_desk"))],
+)
+async def agent_email_configured(db: AsyncSession = Depends(get_db)) -> dict:
+    """Whether Admin -> Company Profile has a travel agent email set, so the Travel Desk can
+    enable/disable its "Send to agent" button without needing admin-only permissions itself."""
+    return {"configured": await svc.is_travel_agent_email_configured(db)}
+
+
+@router.get(
     "/entitlement-note",
     response_model=EntitlementNoteOut,
     dependencies=[Depends(require_permission("submit_claim"))],
@@ -529,6 +539,8 @@ async def upload_ticket(
     pnr_or_booking_ref: Annotated[str | None, Form()] = None,
     provider: Annotated[str | None, Form()] = None,
     notes_for_employee: Annotated[str | None, Form()] = None,
+    # Required (checked in the service, so a missing one gets the same plain message as ₹0).
+    ticket_amount: Annotated[str | None, Form()] = None,
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -536,6 +548,7 @@ async def upload_ticket(
         "pnr_or_booking_ref": pnr_or_booking_ref,
         "provider": provider,
         "notes_for_employee": notes_for_employee,
+        "ticket_amount": ticket_amount,
     }
     req, ticket, trip = await svc.upload_ticket_for_request(
         request_id=request_id,
@@ -565,6 +578,24 @@ async def read_ticket(
     """Reads a ticket before it's uploaded: PNR, provider, route and date, plus a warning if it
     looks like it's for another leg. Nothing is stored."""
     return await svc.read_ticket_for_leg(request_id=request_id, leg_sequence=leg_sequence, file=file, db=db)
+
+
+@router.post(
+    "/{request_id}/send-to-agent",
+    response_model=TravelRequestOut,
+    dependencies=[Depends(require_permission("view_travel_desk"))],
+)
+async def send_to_agent(
+    request_id: int,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> TravelRequestOut:
+    """Emails the company's configured travel agent a one-time /book/{token} link for this
+    request (see svc.send_travel_request_to_agent). Same button sends the first link and any
+    later resend — a resend overwrites the previous token, so an older emailed link stops
+    working immediately."""
+    row = await svc.send_travel_request_to_agent(request_id=request_id, sent_by_user_id=int(claims["sub"]), db=db)
+    return _build_request_out(row)
 
 
 @router.post(
