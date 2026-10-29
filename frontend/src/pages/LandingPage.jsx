@@ -464,7 +464,7 @@ export default function LandingPage() {
                         <div className={`h-2 w-2 rounded-full ${f.accent}`} />
                         <h3 className="text-[15px] font-bold text-ink">{f.title}</h3>
                       </div>
-                      <p className="text-[13px] leading-[1.7] text-slate-400">{f.body}</p>
+                      <p className="text-[13px] leading-[1.7] text-ink">{f.body}</p>
                     </div>
                   </Reveal>
                 );
