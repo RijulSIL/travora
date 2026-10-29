@@ -24,7 +24,12 @@ def upgrade() -> None:
         "UPDATE exception_requests SET exception_types = JSON_ARRAY(exception_type) "
         "WHERE exception_types IS NULL"
     )
-    op.alter_column("exception_requests", "exception_types", nullable=False)
+    op.alter_column(
+        "exception_requests",
+        "exception_types",
+        existing_type=sa.JSON(),
+        nullable=False,
+    )
 
 
 def downgrade() -> None:
