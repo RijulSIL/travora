@@ -3,6 +3,7 @@ import smtplib
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import formataddr
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
@@ -40,7 +41,7 @@ def send_email_sync(
     # Real SMTP send — "mixed" so attachments and the text/html alternative can coexist.
     msg = MIMEMultipart("mixed")
     msg["Subject"] = subject
-    msg["From"] = settings.smtp_from_email
+    msg["From"] = formataddr((settings.smtp_from_name, settings.smtp_from_email))
     msg["To"] = to_email
 
     alt = MIMEMultipart("alternative")

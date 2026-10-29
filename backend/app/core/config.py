@@ -74,6 +74,8 @@ class Settings(BaseSettings):
     smtp_user: str | None = None
     smtp_password: str | None = None
     smtp_from_email: str = "noreply@trp.sil.com"
+    # Display name shown next to the From address (e.g. "TRAVORA SI"). Leave empty for none.
+    smtp_from_name: str = ""
     # Pause after each email when sending a batch (e.g. a CSV import's welcome emails), so the
     # mail server doesn't cut the connection. Set EMAIL_SEND_DELAY_SECONDS to change it.
     email_send_delay_seconds: float = 2.0
