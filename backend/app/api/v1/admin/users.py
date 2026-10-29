@@ -4,7 +4,7 @@ import json
 import re
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -184,6 +184,56 @@ def _email_problem(email: str) -> str | None:
     if len(email) > 255 or not _EMAIL_PATTERN.match(email):
         return f"{email} isn't a valid email address"
     return None
+
+
+async def _assert_email_free(email: str, exclude_user_id: int, db: AsyncSession) -> None:
+    taken = (
+        await db.execute(select(User.id).where(User.email == email, User.id != exclude_user_id))
+    ).scalar_one_or_none()
+    if taken is not None:
+        raise HTTPException(status_code=409, detail="A user with this email already exists")
+
+
+async def _rename_employee_id(old_id: str, new_id: str, db: AsyncSession) -> None:
+    """Changes the employee's own ID (their record's primary key), without ever disabling foreign
+    key enforcement: employees.employee_id is referenced by users, claim_drafts, travel_trips and
+    (self-referencing) employees.reporting_manager_id, and InnoDB can't cascade an UPDATE back
+    into the same table the statement itself runs against, so a single UPDATE can't do this.
+
+    Instead: insert a twin employee row under the new id, repoint every dependent row at it (now
+    valid, since the new row already exists), then delete the old row — by which point nothing
+    references it any more.
+
+    erp_ledger_entries.employee_id is a historical snapshot and deliberately does not follow."""
+    from app.models.reimbursement import ClaimDraft
+    from app.models.travel_booking import TravelTrip
+
+    taken = (
+        await db.execute(select(Employee.employee_id).where(Employee.employee_id == new_id))
+    ).scalar_one_or_none()
+    if taken is not None:
+        raise HTTPException(status_code=409, detail="An employee with this ID already exists")
+
+    employee = await db.get(Employee, old_id)
+    columns = {
+        column.name: getattr(employee, column.name)
+        for column in Employee.__table__.columns
+        if column.name != "employee_id"
+    }
+    db.expunge(employee)
+
+    await db.execute(insert(Employee).values(employee_id=new_id, **columns))
+    await db.execute(
+        update(Employee).where(Employee.reporting_manager_id == old_id).values(reporting_manager_id=new_id)
+    )
+    await db.execute(update(User).where(User.employee_id == old_id).values(employee_id=new_id))
+    await db.execute(update(ClaimDraft).where(ClaimDraft.employee_id == old_id).values(employee_id=new_id))
+    await db.execute(
+        update(TravelTrip)
+        .where(TravelTrip.assigned_to_employee_id == old_id)
+        .values(assigned_to_employee_id=new_id)
+    )
+    await db.execute(delete(Employee).where(Employee.employee_id == old_id))
 
 
 async def _assert_impact_level(level_id: int | None, db: AsyncSession) -> None:
@@ -716,8 +766,27 @@ async def admin_update_user(
     if payload.reporting_manager_id is not None:
         await _assert_can_report_to(payload.reporting_manager_id.strip() or None, user.employee_id, db)
 
+    new_email = None
+    if payload.email is not None:
+        new_email = payload.email.strip().lower()
+        problem = _email_problem(new_email)
+        if problem:
+            raise HTTPException(status_code=422, detail=problem)
+        if new_email != user.email:
+            await _assert_email_free(new_email, user.id, db)
+
+    new_employee_id = None
+    if payload.employee_id is not None:
+        new_employee_id = payload.employee_id.strip()
+        if not new_employee_id:
+            raise HTTPException(status_code=422, detail="Employee ID can't be blank")
+        if not user.employee_id:
+            raise HTTPException(status_code=422, detail="This user has no employee record to rename")
+
     if payload.full_name is not None:
         user.full_name = payload.full_name
+    if new_email is not None:
+        user.email = new_email
     user.role = role
     user.is_manager = manager
 
@@ -737,6 +806,21 @@ async def admin_update_user(
             if payload.reporting_manager_id is not None:
                 # Blank clears it (no manager).
                 employee.reporting_manager_id = payload.reporting_manager_id.strip() or None
+
+    # Last: renaming the employee's own id. Everything above is keyed by the OLD id and must be
+    # written first — see _rename_employee_id's docstring for why this one statement is enough.
+    if new_employee_id and new_employee_id != user.employee_id:
+        old_employee_id = user.employee_id
+        await _rename_employee_id(old_employee_id, new_employee_id, db)
+        await log_event(
+            entity_type="user",
+            entity_id=str(user.id),
+            action="employee_id_renamed",
+            actor_id=int(claims["sub"]),
+            old={"employee_id": old_employee_id},
+            new={"employee_id": new_employee_id},
+            db=db,
+        )
 
     await db.commit()
     await db.refresh(user)

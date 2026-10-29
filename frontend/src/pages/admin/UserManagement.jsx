@@ -276,6 +276,8 @@ export default function UserManagement() {
   const startEdit = () => {
     setEditForm({
       full_name: selected.full_name || '',
+      email: selected.email || '',
+      employee_id: selected.employee_id || '',
       role: selected.role || 'EMPLOYEE',
       impact_level_id: selected.impact_level_id || '',
       department: selected.department || '',
@@ -347,6 +349,8 @@ export default function UserManagement() {
       if (editForm.role !== selected.role) await adminApi.changeUserRole(selected.user_id, editForm.role);
       await adminApi.updateUser(selected.user_id, {
         full_name: editForm.full_name.trim() || null,
+        email: editForm.email.trim() || null,
+        employee_id: editForm.employee_id.trim() || null,
         impact_level_id: editForm.impact_level_id ? Number(editForm.impact_level_id) : null,
         department: editForm.department.trim() || null,
         office_location: editForm.office_location.trim() || null,
@@ -579,6 +583,23 @@ export default function UserManagement() {
           <label className="col-span-full block">
             <span className={LABEL}>Full name</span>
             <input className={FIELD} value={editForm.full_name} onChange={(e) => setEditForm({ ...editForm, full_name: e.target.value })} />
+          </label>
+          <label className="block">
+            <span className={LABEL}>Email</span>
+            <input type="email" className={FIELD} value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} />
+            <span className="mt-1 block text-[11px] text-slate-400">Also their login and where password resets go.</span>
+          </label>
+          <label className="block">
+            <span className={LABEL}>Employee ID</span>
+            <input
+              className={FIELD}
+              disabled={noProfile}
+              value={editForm.employee_id}
+              onChange={(e) => setEditForm({ ...editForm, employee_id: e.target.value })}
+            />
+            <span className="mt-1 block text-[11px] text-slate-400">
+              Used everywhere as their identifier (manager, claims, trips) — everything follows if you change it. Only do this to fix a genuine mistake.
+            </span>
           </label>
           <Group>Role &amp; level</Group>
           <label className="block">

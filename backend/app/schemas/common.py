@@ -145,6 +145,10 @@ class AdminUserUpdateIn(BaseModel):
     office_location: str | None = None
     reporting_manager_id: str | None = None
     is_manager: bool | None = None
+    # Both identity fields: null leaves them as they are, so every other field stays patchable
+    # without having to resend these two.
+    email: str | None = None
+    employee_id: str | None = None
 
 
 class AdminTeamMoveIn(BaseModel):

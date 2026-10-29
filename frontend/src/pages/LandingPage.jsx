@@ -331,7 +331,7 @@ export default function LandingPage() {
                     Claims, travel, and payouts — <span className="bg-gradient-to-r from-brand to-emerald-600 bg-clip-text text-transparent">without the chaos</span>.
                   </h1>
 
-                  <p className="max-w-lg text-[15px] leading-[1.7] text-slate-500">
+                  <p className="max-w-lg text-[15px] leading-[1.7] text-ink">
                     One secure portal for your entire organization. Policy validation, multi-stage approvals, and full audit trails — from draft to payment.
                   </p>
 
@@ -373,7 +373,7 @@ export default function LandingPage() {
                           </span>
                           <div className="min-w-0">
                             <p className="text-[13px] font-bold text-ink">{item.title}</p>
-                            <p className="mt-0.5 text-[12px] leading-relaxed text-slate-400">{item.desc}</p>
+                            <p className="mt-0.5 text-[12px] leading-relaxed text-ink">{item.desc}</p>
                           </div>
                         </li>
                       ))}
@@ -437,7 +437,7 @@ export default function LandingPage() {
                         <IconComponent className="h-5 w-5" />
                       </div>
                       <h3 className="text-[15px] font-bold text-ink">{item.label}</h3>
-                      <p className="mt-2 text-[13px] leading-relaxed text-slate-400">{item.detail}</p>
+                      <p className="mt-2 text-[13px] leading-relaxed text-ink">{item.detail}</p>
                     </div>
                   </Reveal>
                 );
