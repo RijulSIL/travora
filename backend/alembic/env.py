@@ -33,6 +33,17 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection: Connection) -> None:
+    # Alembic would create version_num as VARCHAR(32), but some revision ids are longer
+    # (e.g. 0005_expense_categories_company_profile); non-strict MySQL silently truncates them
+    # and the next upgrade can't find its row. Create the table wide enough up front.
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS alembic_version ("
+        "version_num VARCHAR(255) NOT NULL, "
+        "CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))"
+    )
+    # Commit so Alembic starts (and later commits) its own transaction.
+    connection.commit()
+
     context.configure(connection=connection, target_metadata=target_metadata)
 
     with context.begin_transaction():
