@@ -2491,13 +2491,9 @@ def agent_leg_pick(req: TravelRequest, seq: int) -> dict | None:
 async def send_travel_request_to_agent(
     *, request_id: int, sent_by_user_id: int, db: AsyncSession
 ) -> TravelRequest:
-    """Issues a fresh agent_token for this request (overwriting any previous one — see the
-    model's docstring) and emails the configured travel agent a /book/{token} link. Requires the
-    request to be APPROVED/PARTIALLY_BOOKED and a travel agent email to already be configured."""
-    from app.models.expense_category import CompanyProfile
-    from app.services.audit_service import log_event
-    from app.services.notification_service import send_email_async
-
+    """The Travel Desk's "Resend to agent" (or "Send to agent" when the automatic send on approval
+    couldn't happen): issues a fresh link — see issue_agent_booking_link. Requires the request to
+    be APPROVED/PARTIALLY_BOOKED and a travel agent email to already be configured."""
     req = (
         await db.execute(
             select(TravelRequest).options(selectinload(TravelRequest.legs)).where(TravelRequest.id == request_id)
@@ -2509,11 +2505,40 @@ async def send_travel_request_to_agent(
         raise HTTPException(
             status_code=409, detail="Only approved or partially booked requests can be sent to the travel agent"
         )
+    if not await issue_agent_booking_link(req, sent_by_user_id=sent_by_user_id, db=db):
+        raise HTTPException(status_code=422, detail="Set a travel agent email in Company Profile first")
+
+    await db.commit()
+    # Re-read with everything the response is built from: after the commit the request's
+    # relationships are expired, and lazy-loading them while building the response fails.
+    return (
+        await db.execute(
+            select(TravelRequest)
+            .options(
+                selectinload(TravelRequest.legs),
+                selectinload(TravelRequest.tickets),
+                selectinload(TravelRequest.supporting_documents),
+            )
+            .where(TravelRequest.id == req.id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+
+
+async def issue_agent_booking_link(req: TravelRequest, *, sent_by_user_id: int, db: AsyncSession) -> bool:
+    """Issues a fresh agent_token for `req` (overwriting any previous one — see the model's
+    docstring) and emails the configured travel agent a /book/{token} link. Doesn't commit.
+    Returns False, changing nothing, when no travel agent email is configured. Used both when a
+    request is fully approved (it goes to the agent automatically) and by the desk's resend.
+    `req.legs` must already be loaded."""
+    from app.models.expense_category import CompanyProfile
+    from app.services.audit_service import log_event
+    from app.services.notification_service import send_email_async
 
     profile = (await db.execute(select(CompanyProfile))).scalar_one_or_none()
     agent_email = (profile.travel_agent_email or "").strip() if profile else ""
     if not agent_email:
-        raise HTTPException(status_code=422, detail="Set a travel agent email in Company Profile first")
+        return False
 
     had_token_before = req.agent_token is not None
     token = secrets.token_urlsafe(32)
@@ -2562,21 +2587,7 @@ async def send_travel_request_to_agent(
         new={"agent_link_sent_before": True, "agent_email": agent_email},
         db=db,
     )
-    await db.commit()
-    # Re-read with everything the response is built from: after the commit the request's
-    # relationships are expired, and lazy-loading them while building the response fails.
-    return (
-        await db.execute(
-            select(TravelRequest)
-            .options(
-                selectinload(TravelRequest.legs),
-                selectinload(TravelRequest.tickets),
-                selectinload(TravelRequest.supporting_documents),
-            )
-            .where(TravelRequest.id == req.id)
-            .execution_options(populate_existing=True)
-        )
-    ).scalar_one()
+    return True
 
 
 async def resolve_agent_booking_request(token: str, db: AsyncSession) -> TravelRequest:

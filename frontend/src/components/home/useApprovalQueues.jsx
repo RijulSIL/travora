@@ -153,7 +153,7 @@ export function useApprovalQueues(profile, role) {
                 relocationRef(one),
                 one.employee_name,
                 `${one.origin_city} → ${one.destination_city}`,
-                one.details?.planned_move_date ? `moving ${shortDate(dayOf(one.details.planned_move_date))}` : null,
+                one.details?.travel_date ? `travelling ${shortDate(dayOf(one.details.travel_date))}` : null,
                 one.estimated_amount ? `est. ${inr(one.estimated_amount)}` : null,
               ]
                 .filter(Boolean)

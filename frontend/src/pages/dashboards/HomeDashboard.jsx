@@ -167,14 +167,14 @@ export default function HomeDashboard() {
 
   /* ---- One-line summary under the greeting ---- */
   const waitingTotal = queues.items.reduce((a, q) => a + q.count, 0);
-  const nextClaim = own.loading ? null : own.toClaim.find((t) => !t.late);
+  const nextClaim = own.loading ? null : own.toClaim[0];
   const bits = [];
   if (waitingTotal) bits.push(<b key="w">{plural(waitingTotal, 'thing')} waiting on you</b>);
   if (!own.loading) {
     if (own.sentBack.length) bits.push(<b key="sb">{plural(own.sentBack.length, 'claim')} sent back</b>);
     if (own.drafts.length) bits.push(<span key="d">{plural(own.drafts.length, 'draft')}</span>);
     if (nextClaim) {
-      const n = own.toClaim.filter((t) => !t.late).length;
+      const n = own.toClaim.length;
       bits.push(
         <b key="tc">
           {plural(n, 'trip')} to claim{nextClaim.soon ? ` by ${nextClaim.when.includes('today') ? 'today' : 'tomorrow'}` : ''}

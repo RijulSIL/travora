@@ -291,7 +291,10 @@ export default function ClaimDetail() {
         <div className="flex items-center gap-2.5 rounded-[10px] border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-900">
           <AlertTriangle size={15} className="shrink-0 text-amber-600" />
           <span>
-            <b>Late submission:</b> sent {report.late_by_days} day(s) after the deadline, so it may get extra scrutiny.
+            <b>Late claim:</b>{' '}
+            {report.days_since_trip != null
+              ? `submitted ${report.days_since_trip} days after the trip ended, so it needed a late-claim exception.`
+              : `sent ${report.late_by_days} day(s) after the deadline, so it may get extra scrutiny.`}
           </span>
         </div>
       ) : null}

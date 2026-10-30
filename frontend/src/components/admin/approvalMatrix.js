@@ -2,8 +2,10 @@
 // approver roles a step can use, built-in defaults, and the same input clean-up the page has
 // always applied before saving.
 
-export const DEADLINE_MODES = ['hard_block', 'soft_warning'];
-export const DEFAULT_MAX_DAYS = 5;
+// A trip's claim window, in calendar days after its to date (claim_submission_rules on the server):
+// a claim after the first needs a late-claim exception; after the second the trip is archived.
+export const DEFAULT_LATE_DAYS = 7;
+export const DEFAULT_ARCHIVE_DAYS = 15;
 export const MAX_STEPS = 6;
 
 // Claim exception types, in plain words. Keys are the server's exception types.
@@ -19,6 +21,7 @@ export const CLAIM_EXCEPTIONS = {
   HIRED_TAXI_UNAUTHORIZED: 'Hired taxi not allowed',
   FLIGHT_COST_DELTA: 'Flight cost difference',
   MODE_DEVIATION: 'Different travel mode',
+  LATE_CLAIM: 'Claim raised late',
 };
 
 // Exception types raised against a travel request rather than a claim.
@@ -72,22 +75,24 @@ export const CLAIM_CATEGORIES = [
 // Travel and relocation requests have their own approval steps (no payment, so no Finance step);
 // these are what they use until someone sets their own (workflow_service defaults).
 export const STANDALONE_DEFAULTS = {
-  TRAVEL_REQUEST: [{ number: 1, label: 'Manager Review', route_role: 'REPORTING_MANAGER', sla_hours: 48 }],
+  TRAVEL_REQUEST: [
+    { number: 1, label: 'Manager Review', route_role: 'REPORTING_MANAGER', sla_hours: 48 },
+    { number: 2, label: 'HRBP Review', route_role: 'HRBP_HR', sla_hours: 48 },
+    { number: 3, label: 'CEO Approval', route_role: 'CEO', sla_hours: 48 },
+    { number: 4, label: 'Admin Approval', route_role: 'ADMIN', sla_hours: 48 },
+  ],
   RELOCATION_REQUEST: [
     { number: 1, label: 'Recruiter Review', route_role: 'RECRUITER', sla_hours: 48 },
     { number: 2, label: 'CEO Approval', route_role: 'CEO', sla_hours: 48 },
     { number: 3, label: 'HRBP Review', route_role: 'HRBP_HR', sla_hours: 48 },
     { number: 4, label: 'Payroll Review', route_role: 'PAYROLL', sla_hours: 48 },
   ],
-  // Check of an approval the employee uploads (given outside the app) before they can claim on it.
-  RELOCATION_PRIOR_APPROVAL: [{ number: 1, label: 'HR check', route_role: 'HRBP_HR', sla_hours: 48 }],
 };
 
 export const FLOW_NAMES = {
   CLAIMS: 'Claims',
   TRAVEL_REQUEST: 'Travel requests',
   RELOCATION_REQUEST: 'Relocation requests',
-  RELOCATION_PRIOR_APPROVAL: 'Relocation prior-approval check',
   POLICY_APPROVAL: 'Policy versions',
   [CLAIM_EXCEPTION_FLOW]: EXCEPTION_FLOWS[CLAIM_EXCEPTION_FLOW].name,
   [TRAVEL_EXCEPTION_FLOW]: EXCEPTION_FLOWS[TRAVEL_EXCEPTION_FLOW].name,
@@ -96,7 +101,7 @@ export const FLOW_NAMES = {
 // "Department head" is resolved per person (the head of their department, set in the
 // Department heads card), like Reporting manager.
 export const DEPARTMENT_HEAD = 'DEPARTMENT_HEAD';
-export const STEP_ROLES = ['REPORTING_MANAGER', DEPARTMENT_HEAD, 'HRBP_HR', 'PAYROLL', 'FINANCE', 'CEO', 'GROUP_HEAD_HR', 'IT_ADMIN', 'RECRUITER'];
+export const STEP_ROLES = ['REPORTING_MANAGER', DEPARTMENT_HEAD, 'HRBP_HR', 'PAYROLL', 'FINANCE', 'CEO', 'GROUP_HEAD_HR', 'IT_ADMIN', 'RECRUITER', 'ADMIN'];
 export const ROLE_NAMES = {
   REPORTING_MANAGER: 'Reporting manager',
   DEPARTMENT_HEAD: 'Department head',
@@ -107,6 +112,7 @@ export const ROLE_NAMES = {
   GROUP_HEAD_HR: 'Group head HR',
   IT_ADMIN: 'IT admin',
   RECRUITER: 'Recruiter',
+  ADMIN: 'Admin',
 };
 export const ROLE_SHORT = {
   REPORTING_MANAGER: 'Manager',
@@ -118,10 +124,11 @@ export const ROLE_SHORT = {
   GROUP_HEAD_HR: 'Group HR',
   IT_ADMIN: 'IT',
   RECRUITER: 'Recruiter',
+  ADMIN: 'Admin',
 };
 
 // Every role a "this role is about to lose its approval queue" warning is worth raising for.
-export const ROLES_WORTH_WARNING_ABOUT = ['REPORTING_MANAGER', 'HRBP_HR', 'PAYROLL', 'FINANCE', 'CEO', 'GROUP_HEAD_HR', 'RECRUITER'];
+export const ROLES_WORTH_WARNING_ABOUT = ['REPORTING_MANAGER', 'HRBP_HR', 'PAYROLL', 'FINANCE', 'CEO', 'GROUP_HEAD_HR', 'RECRUITER', 'ADMIN'];
 
 // The three things a department head can be asked to approve, and which flows each one covers.
 export const HEAD_FLOWS = [
@@ -130,11 +137,12 @@ export const HEAD_FLOWS = [
   ['exceptions', 'Exceptions'],
 ];
 
-export function sanitizeMaxDays(raw) {
-  if (raw === '' || raw === undefined || raw === null) return DEFAULT_MAX_DAYS;
+/** A whole number of days from 1 to 365, or `fallback`. */
+export function sanitizeDays(raw, fallback) {
+  if (raw === '' || raw === undefined || raw === null) return fallback;
   const n = typeof raw === 'number' ? raw : parseInt(String(raw).trim(), 10);
-  if (!Number.isFinite(n) || n < 1) return DEFAULT_MAX_DAYS;
-  return Math.floor(n);
+  if (!Number.isFinite(n) || n < 1) return fallback;
+  return Math.min(Math.floor(n), 365);
 }
 
 export function sanitizeSlaHours(raw) {
@@ -157,17 +165,13 @@ export function exceptionFlowInUse(config, flow) {
 }
 
 /** Every role a request could wait on in a config — diffed on save to warn before a role drops out
- * entirely. A shared exception route counts while any one of its exception types is on, and a
- * switched-off prior-approval check doesn't count (the server's "role with no active users" check
- * does the same). */
+ * entirely. A shared exception route counts while any one of its exception types is on (the
+ * server's "role with no active users" check does the same). */
 export function rolesCoveredByConfig(config) {
   const roles = new Set();
   const addStages = (list) => (list || []).forEach((s) => s?.route_role && roles.add(s.route_role));
   addStages(config.stages);
-  Object.entries(config.category_overrides || {}).forEach(([key, o]) => {
-    if (key === 'RELOCATION_PRIOR_APPROVAL' && o?.enabled === false) return;
-    addStages(o?.stages);
-  });
+  Object.values(config.category_overrides || {}).forEach((o) => addStages(o?.stages));
   EXCEPTION_FLOW_KEYS.forEach((flow) => {
     if (!exceptionFlowInUse(config, flow)) return;
     const route = config.exception_chains?.[flow]?.length ? config.exception_chains[flow] : EXCEPTION_FLOW_DEFAULTS[flow];

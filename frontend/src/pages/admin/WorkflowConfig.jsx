@@ -7,7 +7,8 @@ import {
   CLAIM_EXCEPTION_FLOW,
   CLAIM_EXCEPTIONS,
   CLAIM_SUBMIT_EXCEPTIONS,
-  DEADLINE_MODES,
+  DEFAULT_ARCHIVE_DAYS,
+  DEFAULT_LATE_DAYS,
   DEPARTMENT_HEAD,
   EXCEPTION_FLOW_DEFAULTS,
   EXCEPTION_FLOW_KEYS,
@@ -25,7 +26,7 @@ import {
   exceptionFlowInUse,
   rolesCoveredByConfig,
   sanitizeAutoApprove,
-  sanitizeMaxDays,
+  sanitizeDays,
   sanitizeSlaHours,
 } from '../../components/admin/approvalMatrix';
 import { BTN_GHOST, BTN_SM, CARD, EYEBROW, FIELD } from '../../components/policy/PolicyAdminParts';
@@ -38,9 +39,7 @@ import { canEditWorkflowConfig } from '../../services/permissions';
 import { useAuthStore } from '../../store/authStore';
 import { formatRole } from '../../utils/formatters';
 
-// The relocation prior-approval check: a step list like the others, plus an on/off switch.
-const PRIOR = 'RELOCATION_PRIOR_APPROVAL';
-const STAGE_FLOWS = ['CLAIMS', 'TRAVEL_REQUEST', 'RELOCATION_REQUEST', PRIOR];
+const STAGE_FLOWS = ['CLAIMS', 'TRAVEL_REQUEST', 'RELOCATION_REQUEST'];
 const FILTER = FIELD.replace('w-full', '');
 const j = (x) => JSON.stringify(x ?? null);
 
@@ -60,12 +59,10 @@ function normalize(cfg) {
       sla_hours: sanitizeSlaHours(s.sla_hours),
     }));
   const overrides = {};
-  for (const key of ['TRAVEL', 'GENERAL', 'RELOCATION', 'TRAVEL_REQUEST', 'RELOCATION_REQUEST', PRIOR]) {
+  for (const key of ['TRAVEL', 'GENERAL', 'RELOCATION', 'TRAVEL_REQUEST', 'RELOCATION_REQUEST']) {
     const list = cfg.category_overrides?.[key]?.stages;
     if (list?.length) overrides[key] = { stages: stageList(list) };
   }
-  // Switched off is the only state worth storing; on is the default.
-  if (cfg.category_overrides?.[PRIOR]?.enabled === false) overrides[PRIOR] = { ...overrides[PRIOR], enabled: false };
   // Only the shared exception routes and Policy versions are kept; per-type chains from before the
   // shared routes are dropped (a config that still has them loads the shared defaults).
   const stored = cfg.exception_chains || {};
@@ -87,8 +84,8 @@ function normalize(cfg) {
     stages: stageList(cfg.stages),
     category_overrides: overrides,
     submission: {
-      max_working_days_after_return: sanitizeMaxDays(cfg.submission?.max_working_days_after_return),
-      deadline_mode: DEADLINE_MODES.includes(cfg.submission?.deadline_mode) ? cfg.submission.deadline_mode : 'hard_block',
+      late_after_days: sanitizeDays(cfg.submission?.late_after_days, DEFAULT_LATE_DAYS),
+      archive_after_days: sanitizeDays(cfg.submission?.archive_after_days, DEFAULT_ARCHIVE_DAYS),
     },
     auto_approve_below_amount: sanitizeAutoApprove(cfg.auto_approve_below_amount ?? '2000.00'),
     exception_chains: chains,
@@ -108,7 +105,7 @@ function changedParts(a, b) {
   if (j(a.stages) !== j(b.stages) || ['TRAVEL', 'GENERAL', 'RELOCATION'].some((k) => j(a.category_overrides[k]) !== j(b.category_overrides[k]))) out.push('CLAIMS');
   // Ahead of the exception flows: ticking Exceptions changes both at once.
   if (j(a.department_heads) !== j(b.department_heads)) out.push('DEPARTMENT_HEADS');
-  ['TRAVEL_REQUEST', 'RELOCATION_REQUEST', PRIOR].forEach((k) => {
+  ['TRAVEL_REQUEST', 'RELOCATION_REQUEST'].forEach((k) => {
     if (j(a.category_overrides[k]) !== j(b.category_overrides[k])) out.push(k);
   });
   ROUTE_KEYS.forEach((k) => {
@@ -268,7 +265,6 @@ export default function WorkflowConfig() {
   const isOn = (k) => cfg.exception_enabled[k] !== false;
   const typesOf = (flow) => Object.keys(EXCEPTION_FLOWS[flow].types);
   const flowOn = (flow) => exceptionFlowInUse(cfg, flow);
-  const priorOn = cfg.category_overrides[PRIOR]?.enabled !== false;
   const modeOf = (k) => cfg.exception_submission_mode[k] || 'ALLOW';
   const chainOf = (k) => (cfg.exception_chains[k] || []).map((role, i) => ({ route_role: role, sla_hours: cfg.exception_sla_hours[k]?.[i] ?? 48 }));
   const stagesOf = (k, category = cat) =>
@@ -412,7 +408,6 @@ export default function WorkflowConfig() {
         ['CLAIMS', summary(cfg.stages), ['TRAVEL', 'GENERAL', 'RELOCATION'].some((c) => cfg.category_overrides[c]) ? <Pill tone="brand">Custom by category</Pill> : null],
         ['TRAVEL_REQUEST', summary(stagesOf('TRAVEL_REQUEST')), cfg.category_overrides.TRAVEL_REQUEST ? null : <Pill>Default</Pill>],
         ['RELOCATION_REQUEST', summary(stagesOf('RELOCATION_REQUEST')), cfg.category_overrides.RELOCATION_REQUEST ? null : <Pill>Default</Pill>],
-        [PRIOR, priorOn ? summary(stagesOf(PRIOR)) : 'Switched off', !priorOn ? <Pill>Off</Pill> : cfg.category_overrides[PRIOR]?.stages ? null : <Pill>Default</Pill>],
         ['POLICY_APPROVAL', summary(chainOf('POLICY_APPROVAL')), null],
       ],
     },
@@ -438,7 +433,7 @@ export default function WorkflowConfig() {
   const isException = EXCEPTION_FLOW_KEYS.includes(sel);
   const exceptionFlowOff = isException && !flowOn(sel);
   const list = listOf(sel);
-  const roleEligible = sel === 'RELOCATION_REQUEST' || sel === PRIOR ? null : stageBased ? eligible.claim : isPolicy ? eligible.policy : eligible.exception;
+  const roleEligible = sel === 'RELOCATION_REQUEST' ? null : stageBased ? eligible.claim : isPolicy ? eligible.policy : eligible.exception;
   const headFlow = headFlowOf(sel);
   const headDepts = headFlow ? headsFor(headFlow) : [];
   const customRoute = sel === 'CLAIMS' ? cat !== 'DEFAULT' && Boolean(cfg.category_overrides[cat]) : stageBased && Boolean(cfg.category_overrides[sel]?.stages);
@@ -447,16 +442,14 @@ export default function WorkflowConfig() {
     sel === 'CLAIMS'
       ? 'Every claim goes through these steps in order. There must be a Finance step.'
       : sel === 'TRAVEL_REQUEST'
-        ? 'A trip request goes through these steps before the Travel Desk books it.'
+        ? 'A trip request goes through these steps. Once the last one approves, it goes to the travel agent for booking.'
         : sel === 'RELOCATION_REQUEST'
-          ? 'Someone without relocation approval asks for it here; once the last step approves, they can raise relocation claims (which then follow Claims → Relocation).'
-          : sel === PRIOR
-            ? 'When an employee uploads a relocation approval given outside the app, these steps check the document before they can claim against it. Every approver on the route can open the upload.'
+          ? 'Someone without relocation approval asks for it here; once the last step approves, they can raise relocation claims (which then follow Claims → Relocation). Someone who already has approval uploads it and needs no approval here.'
           : isPolicy
             ? 'A new policy version needs these approvals before it can take effect.'
             : sel === CLAIM_EXCEPTION_FLOW
               ? 'A claim with any switched-on exception below goes to these approvers instead of the Claims route: one request listing every exception, and each approver accepts, rejects or sends back each one. After the last step it goes to Finance.'
-              : 'A travel request with any switched-on exception below goes to these approvers instead of the Travel requests route, with one approve or reject for the whole request. After the last step it goes to the Travel Desk.';
+              : 'A travel request with any switched-on exception below goes to these approvers instead of the Travel requests route, with one approve or reject for the whole request. After the last step it goes to the travel agent for booking.';
   const roleOptions = (current) =>
     STEP_ROLES.filter((r) => (r === DEPARTMENT_HEAD ? headFlow !== null || current === r : !roleEligible || roleEligible.has(r) || r === current));
   const noFinance = sel === 'CLAIMS' && !list.some((s) => s.route_role === 'FINANCE');
@@ -509,7 +502,7 @@ export default function WorkflowConfig() {
                     <span>{items.length}</span>
                   </div>
                   {items.map(([k, line, tag]) => {
-                    const off = k === PRIOR ? !priorOn : EXCEPTION_FLOW_KEYS.includes(k) && !flowOn(k);
+                    const off = EXCEPTION_FLOW_KEYS.includes(k) && !flowOn(k);
                     return (
                       <button
                         key={k}
@@ -542,7 +535,7 @@ export default function WorkflowConfig() {
                 <h2 className="text-base font-extrabold text-ink">{FLOW_NAMES[sel]}</h2>
                 <p className="mt-0.5 max-w-[70ch] text-[12.5px] leading-normal text-slate-500">{description}</p>
               </div>
-              <Pill tone={exceptionFlowOff || (sel === PRIOR && !priorOn) ? 'slate' : 'brand'}>
+              <Pill tone={exceptionFlowOff ? 'slate' : 'brand'}>
                 {list.length} step{list.length === 1 ? '' : 's'}
               </Pill>
             </div>
@@ -577,33 +570,7 @@ export default function WorkflowConfig() {
                       : `${catName} claims use the shared route. Change a step to give them their own.`}
                 </Option>
               ) : null}
-              {sel === PRIOR ? (
-                <Option
-                  title="Check uploaded approvals"
-                  control={
-                    <Switch
-                      label="Check uploaded relocation approvals"
-                      checked={priorOn}
-                      disabled={!canEdit}
-                      onChange={(on) =>
-                        update((d) => {
-                          const rest = { ...d.category_overrides[PRIOR] };
-                          if (on) delete rest.enabled;
-                          else rest.enabled = false;
-                          if (Object.keys(rest).length) d.category_overrides[PRIOR] = rest;
-                          else delete d.category_overrides[PRIOR];
-                          return d;
-                        })
-                      }
-                    />
-                  }
-                >
-                  {priorOn
-                    ? 'On: an uploaded approval waits for these steps before the employee can claim.'
-                    : 'Off: an uploaded approval counts straight away and the employee can claim at once.'}
-                </Option>
-              ) : null}
-              {sel === 'TRAVEL_REQUEST' || sel === 'RELOCATION_REQUEST' || sel === PRIOR ? (
+              {sel === 'TRAVEL_REQUEST' || sel === 'RELOCATION_REQUEST' ? (
                 <Option
                   title={customRoute ? 'Custom route' : 'Default route'}
                   control={
@@ -613,9 +580,7 @@ export default function WorkflowConfig() {
                         className={BTN_SM}
                         onClick={() =>
                           update((d) => {
-                            const { enabled } = d.category_overrides[sel] || {};
-                            if (enabled === false) d.category_overrides[sel] = { enabled };
-                            else delete d.category_overrides[sel];
+                            delete d.category_overrides[sel];
                             return d;
                           })
                         }
@@ -644,7 +609,7 @@ export default function WorkflowConfig() {
                   <span className="text-right">Time to act</span>
                   <span />
                 </div>
-                <ol className={`flex flex-col ${exceptionFlowOff || (sel === PRIOR && !priorOn) ? 'opacity-50' : ''}`}>
+                <ol className={`flex flex-col ${exceptionFlowOff ? 'opacity-50' : ''}`}>
                   {list.map((step, i) => {
                     const head = step.route_role === DEPARTMENT_HEAD;
                     const dropLine = <span aria-hidden className="my-0.5 block h-[3px] rounded-full bg-brand" />;
@@ -1008,39 +973,50 @@ export default function WorkflowConfig() {
             </div>
             <div className="grid grid-cols-1 gap-3 px-4 py-3.5 md:grid-cols-3">
               <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700">
-                Submit within
+                Late claim after
                 <input
                   type="number"
                   min="1"
+                  max="365"
                   className={FIELD}
                   disabled={!canEdit}
-                  value={cfg.submission.max_working_days_after_return}
+                  value={cfg.submission.late_after_days}
                   onChange={(e) =>
                     update((d) => {
-                      d.submission.max_working_days_after_return = sanitizeMaxDays(e.target.value);
+                      d.submission.late_after_days = sanitizeDays(e.target.value, DEFAULT_LATE_DAYS);
                       return d;
                     })
                   }
                 />
-                <span className="text-[11.5px] font-medium text-slate-500">Working days after the trip ends.</span>
+                <span className="text-[11.5px] font-medium text-slate-500">
+                  Days after the trip&apos;s to date. Later than this, a travel claim needs a late-claim exception (Claim exceptions).
+                </span>
               </label>
               <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700">
-                After the deadline
-                <select
+                Archive trips after
+                <input
+                  type="number"
+                  min="2"
+                  max="365"
                   className={FIELD}
                   disabled={!canEdit}
-                  value={cfg.submission.deadline_mode}
+                  value={cfg.submission.archive_after_days}
                   onChange={(e) =>
                     update((d) => {
-                      d.submission.deadline_mode = e.target.value;
+                      d.submission.archive_after_days = sanitizeDays(e.target.value, DEFAULT_ARCHIVE_DAYS);
                       return d;
                     })
                   }
+                />
+                <span
+                  className={`text-[11.5px] font-medium ${
+                    cfg.submission.archive_after_days <= cfg.submission.late_after_days ? 'text-rose-600' : 'text-slate-500'
+                  }`}
                 >
-                  <option value="hard_block">Block the claim</option>
-                  <option value="soft_warning">Allow, with a warning</option>
-                </select>
-                <span className="text-[11.5px] font-medium text-slate-500">Whether a late claim can still be submitted.</span>
+                  {cfg.submission.archive_after_days <= cfg.submission.late_after_days
+                    ? 'Must be more than the late-claim days.'
+                    : "Days after the trip's to date. After this the trip is archived and can't be claimed."}
+                </span>
               </label>
               <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700">
                 Auto-approve up to

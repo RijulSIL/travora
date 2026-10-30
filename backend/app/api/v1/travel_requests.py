@@ -186,6 +186,7 @@ async def my_requests(
                 Role.FINANCE,
                 Role.CEO,
                 Role.GROUP_HEAD_HR,
+                Role.ADMIN,
                 # Anyone with the Manager setting, whatever their role (see rbac.is_manager).
                 allow_managers=True,
             )
@@ -481,6 +482,7 @@ async def approval_chain(
                 Role.FINANCE,
                 Role.CEO,
                 Role.GROUP_HEAD_HR,
+                Role.ADMIN,
                 # Anyone with the Manager setting, whatever their role (see rbac.is_manager).
                 allow_managers=True,
             )
@@ -511,6 +513,7 @@ async def approve_request(
                 Role.FINANCE,
                 Role.CEO,
                 Role.GROUP_HEAD_HR,
+                Role.ADMIN,
                 # Anyone with the Manager setting, whatever their role (see rbac.is_manager).
                 allow_managers=True,
             )

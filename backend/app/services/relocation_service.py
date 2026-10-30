@@ -4,6 +4,7 @@ Approval runs through the configurable Relocation Approval workflow (Approval Ma
 category_overrides.RELOCATION_REQUEST; default Recruiter -> CEO -> HRBP -> Payroll) with the same
 stage mechanics and SLA rules as travel requests. Every stage is decided by whoever holds that
 stage's role (pooled, e.g. any Recruiter), or relative to the employee for REPORTING_MANAGER.
+An approval the employee already has (uploaded evidence) needs no approval in the app.
 """
 
 import hashlib
@@ -31,9 +32,12 @@ from app.services.audit_service import log_event
 from app.services.notification_service import create_notification
 from app.services.working_time import sla_deadline
 
-# The trip purpose (Travel Claim form) that starts the relocation flow — seeded by migration
-# f4c1a7e2b905; kept out of the Travel Request form, where it means nothing.
+# The trip purpose every relocation claim carries — seeded by migration f4c1a7e2b905. Relocation
+# claims have their own form (New Claim -> Relocation Claim); the purpose is kept out of the Travel
+# Claim and Travel Request forms.
 RELOCATION_TRIP_PURPOSE = "Relocation"
+# Where a relocation claim is started — the link in relocation notifications.
+RELOCATION_CLAIM_LINK = "/claims/relocation/new"
 
 _EVIDENCE_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".heic"}
 _EVIDENCE_CONTENT_TYPES = {"application/pdf", "image/jpeg", "image/png", "image/heic", "image/heif"}
@@ -117,6 +121,63 @@ def _amount(value, field: str, *, required: bool) -> Decimal | None:
     return amount
 
 
+async def _relocation_details(payload: dict, db: AsyncSession, *, allow_past: bool) -> dict:
+    """The relocation form's fields beyond cities and amount, checked and cleaned: travel type and
+    project code (same admin-managed options as travel claims), travel date, family members and
+    notes. A requested relocation's date can't be in the past; an approval the employee already
+    has may be for a move that's already happened."""
+    from app.models.travel_request import TravelOptionType, TravelRequestTravelType
+    from app.services.travel_request_service import _require_active_option
+
+    travel_type = str(payload.get("travel_type") or "").strip().upper()
+    if travel_type not in {t.value for t in TravelRequestTravelType}:
+        raise HTTPException(status_code=422, detail="Choose a travel type")
+    project_code = None
+    if travel_type == TravelRequestTravelType.PROJECT.value:
+        code = _clean(payload.get("project_code"), "Project code")
+        project_code = await _require_active_option(TravelOptionType.PROJECT_CODE, code, "Project code", db)
+
+    travel_date = payload.get("travel_date")
+    if isinstance(travel_date, str) and travel_date.strip():
+        try:
+            travel_date = date.fromisoformat(travel_date.strip())
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Travel date must be a date") from exc
+    if not isinstance(travel_date, date):
+        raise HTTPException(status_code=422, detail="Travel date is required")
+    if not allow_past and travel_date < now_ist().date():
+        raise HTTPException(status_code=422, detail="Travel date can't be in the past")
+
+    family = payload.get("family_members")
+    if family in (None, ""):
+        raise HTTPException(status_code=422, detail="Number of family members is required")
+    try:
+        family = int(family)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="Family members must be a number") from exc
+    if family < 0 or family > 50:
+        raise HTTPException(status_code=422, detail="Family members must be between 0 and 50")
+
+    return {
+        "travel_type": travel_type,
+        "project_code": project_code,
+        "travel_date": travel_date.isoformat(),
+        "family_members": family,
+        "notes": _clean(payload.get("notes"), "Notes", required=False, max_len=2000),
+    }
+
+
+def _details_out(details: dict | None) -> dict:
+    """A request's details as the app reads them. Requests made before the relocation form had a
+    travel date stored a "planned move date" instead, and had no travel type (Non-Project)."""
+    out = dict(details or {})
+    if not out.get("travel_date") and out.get("planned_move_date"):
+        out["travel_date"] = out["planned_move_date"]
+    out.setdefault("travel_type", "NON_PROJECT")
+    out.setdefault("project_code", None)
+    return out
+
+
 async def _employee(user_id: int, db: AsyncSession) -> User:
     user = await db.get(User, user_id)
     if user is None:
@@ -139,17 +200,10 @@ async def _stages(request_id: int, db: AsyncSession) -> list[RelocationApprovalS
 async def _notify_stage_approvers(row: RelocationRequest, stage_def: dict, owner: User, db: AsyncSession,
                                   note: str | None = None) -> None:
     recipients = await ws._user_ids_for_role(str(stage_def.get("route_role") or ""), owner.employee_id, db)
-    if row.source == RelocationSource.PRIOR_APPROVAL.value:
-        body = (
-            f"{owner.full_name or owner.email} uploaded a relocation approval given outside the app "
-            f"({row.origin_city} → {row.destination_city}). Check the document and amount — it's waiting on "
-            f"you at {stage_def.get('label')}."
-        )
-    else:
-        body = (
-            f"{owner.full_name or owner.email} has requested relocation approval "
-            f"({row.origin_city} → {row.destination_city}). It's waiting on you at {stage_def.get('label')}."
-        )
+    body = (
+        f"{owner.full_name or owner.email} has requested relocation approval "
+        f"({row.origin_city} → {row.destination_city}). It's waiting on you at {stage_def.get('label')}."
+    )
     if note:
         body += f" {note}"
     for user_id in dict.fromkeys(recipients):
@@ -192,27 +246,8 @@ async def create_relocation_request(user_id: int, payload: dict, db: AsyncSessio
     origin = _clean(payload.get("origin_city"), "Moving from")
     destination = _clean(payload.get("destination_city"), "Moving to")
     _assert_different_cities(origin, destination)
-    amount = _amount(payload.get("estimated_amount"), "Estimated amount", required=True)
-    move_date = payload.get("planned_move_date")
-    if isinstance(move_date, str):
-        try:
-            move_date = date.fromisoformat(move_date)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail="Planned move date must be a date") from exc
-    if not isinstance(move_date, date):
-        raise HTTPException(status_code=422, detail="Planned move date is required")
-    if move_date < now_ist().date():
-        raise HTTPException(status_code=422, detail="Planned move date can't be in the past")
-    family = payload.get("family_members")
-    if family not in (None, ""):
-        try:
-            family = int(family)
-        except (TypeError, ValueError) as exc:
-            raise HTTPException(status_code=422, detail="Family members must be a number") from exc
-        if family < 0 or family > 50:
-            raise HTTPException(status_code=422, detail="Family members must be between 0 and 50")
-    else:
-        family = None
+    amount = _amount(payload.get("estimated_amount"), "Amount to be approved", required=True)
+    details = await _relocation_details(payload, db, allow_past=False)
 
     row = RelocationRequest(
         employee_user_id=user_id,
@@ -221,11 +256,7 @@ async def create_relocation_request(user_id: int, payload: dict, db: AsyncSessio
         origin_city=origin,
         destination_city=destination,
         estimated_amount=amount,
-        details={
-            "planned_move_date": move_date.isoformat(),
-            "family_members": family,
-            "notes": _clean(payload.get("notes"), "Notes", required=False, max_len=2000),
-        },
+        details=details,
     )
     db.add(row)
     await db.flush()
@@ -249,7 +280,7 @@ async def create_relocation_request(user_id: int, payload: dict, db: AsyncSessio
         user_id=user_id,
         title=f"Relocation request submitted: {relocation_ref(row)}",
         body="It's been sent for approval. We'll let you know as soon as it's approved so you can raise your claim.",
-        link="/claims/travel/new?purpose=Relocation",
+        link=RELOCATION_CLAIM_LINK,
         category=NotificationCategory.CLAIM_UPDATE.value,
         db=db,
     )
@@ -262,17 +293,16 @@ async def create_relocation_request(user_id: int, payload: dict, db: AsyncSessio
     return row
 
 
-async def create_prior_approval(user_id: int, origin_city: str, destination_city: str,
-                                approved_amount, file: UploadFile, db: AsyncSession) -> RelocationRequest:
+async def create_prior_approval(user_id: int, payload: dict, file: UploadFile, db: AsyncSession) -> RelocationRequest:
     """Employee who already has approval (given outside the app): record it with the uploaded
-    evidence. With the Approval Matrix's "Relocation prior-approval check" on (the default), the
-    upload goes to that check's approvers first and can be claimed against only once they approve
-    it; switched off, it's usable for a claim straight away."""
+    evidence and the same details as a request. It's approved straight away — no approval in the
+    app — so they can go on to claim against it; the claim's approvers and Finance see the evidence."""
     await _employee(user_id, db)
-    origin = _clean(origin_city, "Moving from")
-    destination = _clean(destination_city, "Moving to")
+    origin = _clean(payload.get("origin_city"), "Moving from")
+    destination = _clean(payload.get("destination_city"), "Moving to")
     _assert_different_cities(origin, destination)
-    amount = _amount(approved_amount, "Approved amount", required=False)
+    amount = _amount(payload.get("approved_amount"), "Approved amount", required=True)
+    details = await _relocation_details(payload, db, allow_past=True)
     content = await file.read()
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in _EVIDENCE_EXTENSIONS or (file.content_type or "") not in _EVIDENCE_CONTENT_TYPES:
@@ -287,51 +317,26 @@ async def create_prior_approval(user_id: int, origin_city: str, destination_city
     path = folder / f"{hashlib.sha256(content).hexdigest()}{suffix}"
     path.write_bytes(content)
 
-    now = now_ist()
-    check_on, check_stages = ws.relocation_prior_approval_check(await ws.get_workflow_config(db))
     row = RelocationRequest(
         employee_user_id=user_id,
         source=RelocationSource.PRIOR_APPROVAL.value,
-        status=(RelocationRequestStatus.PENDING if check_on else RelocationRequestStatus.APPROVED).value,
+        status=RelocationRequestStatus.APPROVED.value,
         origin_city=origin,
         destination_city=destination,
         estimated_amount=amount,
-        details={},
+        details=details,
         evidence_path=str(path),
         evidence_filename=(file.filename or f"approval{suffix}")[:255],
         evidence_content_type=(file.content_type or "application/octet-stream")[:128],
-        decided_at=None if check_on else now,
+        decided_at=now_ist(),
     )
     db.add(row)
     await db.flush()
-    if check_on:
-        stages = [
-            RelocationApprovalStage(
-                relocation_request_id=row.id,
-                stage_number=int(s["number"]),
-                stage_label=str(s["label"]),
-                required_role=str(s["route_role"]),
-                status=ws.STAGE_STATUS_NOT_STARTED,
-            )
-            for s in check_stages
-        ]
-        db.add_all(stages)
-        await db.flush()
-        await activate_stage(row, stages, check_stages, min(int(s["number"]) for s in check_stages), db)
-        await create_notification(
-            user_id=user_id,
-            title=f"Prior approval sent for checking: {relocation_ref(row)}",
-            body="Your uploaded approval is being checked. We'll let you know as soon as it's confirmed so you "
-                 "can raise your relocation claim.",
-            link="/claims/travel/new?purpose=Relocation",
-            category=NotificationCategory.CLAIM_UPDATE.value,
-            db=db,
-        )
     await log_event(
         entity_type="relocation_request", entity_id=str(row.id), action="prior_approval_uploaded", actor_id=user_id,
         old=None,
-        new={"origin": origin, "destination": destination, "file": row.evidence_filename,
-             "status": row.status, "checked": check_on},
+        new={"origin": origin, "destination": destination, "approved_amount": str(amount),
+             "file": row.evidence_filename, "status": row.status},
         db=db,
     )
     await db.commit()
@@ -433,7 +438,7 @@ async def relocation_summary(row: RelocationRequest, db: AsyncSession) -> dict:
         "origin_city": row.origin_city,
         "destination_city": row.destination_city,
         "estimated_amount": str(row.estimated_amount) if row.estimated_amount is not None else None,
-        "details": row.details or {},
+        "details": _details_out(row.details),
         "has_evidence": bool(row.evidence_path),
         "evidence_filename": row.evidence_filename,
         "current_approval_stage": row.current_approval_stage,
@@ -514,7 +519,7 @@ async def list_pending_for_approver(user_id: int, db: AsyncSession) -> list[dict
     return out
 
 
-async def _active_stage_for(request_id: int, user_id: int, db: AsyncSession):
+async def _active_stage_for(request_id: int, user_id: int, db: AsyncSession, *, override: bool = False):
     row = await db.get(RelocationRequest, request_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Relocation request not found")
@@ -527,13 +532,21 @@ async def _active_stage_for(request_id: int, user_id: int, db: AsyncSession):
     if stage is None:
         raise HTTPException(status_code=409, detail="No approval stage is waiting on anyone")
     user = await _employee(user_id, db)
-    if not await _can_act(user, row, stage, db):
+    if override:
+        # An admin override (override_service) acts in place of whoever the stage waits on.
+        if row.employee_user_id == user.id:
+            raise HTTPException(status_code=403, detail="You can't override your own item")
+    elif not await _can_act(user, row, stage, db):
         raise HTTPException(status_code=403, detail="This relocation request isn't waiting on you")
     return row, stages, stage
 
 
-async def approve_relocation(request_id: int, user_id: int, comment: str | None, db: AsyncSession) -> dict:
-    row, stages, stage = await _active_stage_for(request_id, user_id, db)
+async def approve_relocation(
+    request_id: int, user_id: int, comment: str | None, db: AsyncSession, *, override_reason: str | None = None
+) -> dict:
+    row, stages, stage = await _active_stage_for(request_id, user_id, db, override=bool(override_reason))
+    if override_reason:
+        comment = ws.override_note(await _employee(user_id, db), override_reason)
     now = now_ist()
     stage.status = "APPROVED"
     stage.decided_at = now
@@ -541,37 +554,43 @@ async def approve_relocation(request_id: int, user_id: int, comment: str | None,
     stage.comment = (comment or "").strip() or None
     later = sorted({s.stage_number for s in stages if s.stage_number > stage.stage_number})
     if later:
-        stage_defs = ws.relocation_stage_defs_for(await ws.get_workflow_config(db), row.source)
+        stage_defs = ws.relocation_request_stage_defs(await ws.get_workflow_config(db))
         await activate_stage(row, stages, stage_defs, later[0], db)
     else:
         row.status = RelocationRequestStatus.APPROVED.value
         row.current_approval_stage = None
         row.decided_at = now
-        what = "prior approval" if row.source == RelocationSource.PRIOR_APPROVAL.value else "relocation"
         await create_notification(
             user_id=row.employee_user_id,
             title=f"Relocation approved: {relocation_ref(row)}",
             body=(
-                f"Your {what} ({row.origin_city} → {row.destination_city}) has been approved. You can now "
-                "raise your relocation claim from New Claim → Travel Claim, with Relocation as the trip purpose."
+                f"Your relocation ({row.origin_city} → {row.destination_city}) has been approved. You can now "
+                "raise your claim from New Claim → Relocation Claim."
             ),
-            link="/claims/travel/new?purpose=Relocation",
+            link=RELOCATION_CLAIM_LINK,
             category=NotificationCategory.CLAIM_UPDATE.value,
             db=db,
         )
     await log_event(
         entity_type="relocation_request", entity_id=str(row.id), action="approve_stage", actor_id=user_id,
-        old=None, new={"stage_number": stage.stage_number, "status": row.status, "comment": stage.comment}, db=db,
+        old=None,
+        new={"stage_number": stage.stage_number, "status": row.status, "comment": stage.comment,
+             "override_reason": override_reason},
+        db=db,
     )
     await db.commit()
     return await relocation_summary(row, db)
 
 
-async def reject_relocation(request_id: int, user_id: int, reason: str, db: AsyncSession) -> dict:
-    reason = (reason or "").strip()
+async def reject_relocation(
+    request_id: int, user_id: int, reason: str, db: AsyncSession, *, override_reason: str | None = None
+) -> dict:
+    reason = (override_reason or reason or "").strip()
     if not reason:
         raise HTTPException(status_code=422, detail="A reason is required to reject a relocation request")
-    row, _stages_list, stage = await _active_stage_for(request_id, user_id, db)
+    row, _stages_list, stage = await _active_stage_for(request_id, user_id, db, override=bool(override_reason))
+    if override_reason:
+        reason = ws.override_note(await _employee(user_id, db), override_reason)
     now = now_ist()
     stage.status = "REJECTED"
     stage.decided_at = now
@@ -586,13 +605,13 @@ async def reject_relocation(request_id: int, user_id: int, reason: str, db: Asyn
         title=f"Relocation request rejected: {relocation_ref(row)}",
         body=f"Your relocation request ({row.origin_city} → {row.destination_city}) was rejected at "
              f"{stage.stage_label}. Reason: {reason}",
-        link="/claims/travel/new?purpose=Relocation",
+        link=RELOCATION_CLAIM_LINK,
         category=NotificationCategory.CLAIM_UPDATE.value,
         db=db,
     )
     await log_event(
         entity_type="relocation_request", entity_id=str(row.id), action="reject", actor_id=user_id,
-        old=None, new={"stage_number": stage.stage_number, "reason": reason}, db=db,
+        old=None, new={"stage_number": stage.stage_number, "reason": reason, "override_reason": override_reason}, db=db,
     )
     await db.commit()
     return await relocation_summary(row, db)
@@ -602,6 +621,7 @@ async def reject_relocation(request_id: int, user_id: int, reason: str, db: Asyn
 
 _EVIDENCE_VIEWER_ROLES = {
     Role.HRBP_HR, Role.PAYROLL, Role.FINANCE, Role.CEO, Role.GROUP_HEAD_HR, Role.IT_ADMIN, Role.RECRUITER,
+    Role.ADMIN,
 }
 
 

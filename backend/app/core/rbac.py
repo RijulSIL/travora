@@ -95,6 +95,10 @@ PERMISSION_MATRIX: dict[Role, set[str]] = {
     # Relocation approval isn't a permission — it comes from being a stage in the Relocation
     # Approval workflow (Approval Matrix), like travel-request approval.
     Role.RECRUITER: {"submit_claim", "view_self"},
+    # A pure approver: can be assigned to any stage (claims, travel requests, relocation,
+    # exceptions) via the Approval Matrix. No system/user-management permissions — those stay on
+    # IT_ADMIN.
+    Role.ADMIN: {"submit_claim", "view_self", "approve_claims", "approve_exception"},
 }
 
 SENSITIVE_MFA_ROLES = {Role.HRBP_HR, Role.FINANCE, Role.IT_ADMIN}
@@ -114,6 +118,7 @@ DELEGATABLE_PERMISSIONS: dict[Role, set[str]] = {
     Role.CEO: {"approve_claims", "approve_exception"},
     Role.GROUP_HEAD_HR: {"approve_exception"},
     Role.RECRUITER: set(),
+    Role.ADMIN: {"approve_claims", "approve_exception"},
 }
 
 

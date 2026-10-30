@@ -1,13 +1,11 @@
-import { ChevronDown, ClipboardList, Plane, Plus } from 'lucide-react';
+import { ChevronDown, ClipboardList, Plane, Plus, Truck } from 'lucide-react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { hasAnyPermission } from '../../services/permissions';
 import { selectResolvedRole, useAuthStore } from '../../store/authStore';
-import { formatRole, showsManager } from '../../utils/formatters';
 import { getNavConfig } from './navConfig';
 import { NAV_ICON_MAP } from './navIcons';
-import { roleAccent } from './roleAccent';
 
 function NavBadge({ children, variant = 'red' }) {
   if (children == null || children === '' || children === 0) return null;
@@ -175,9 +173,10 @@ function toGroups(section) {
 const NEW_CLAIM_HINTS = {
   '/claims/travel/new': { icon: Plane, hint: 'Expenses from a business trip' },
   '/claims/general/new': { icon: ClipboardList, hint: "Anything that isn't a trip" },
+  '/claims/relocation/new': { icon: Truck, hint: 'Moving to a new posting' },
 };
 
-/** "New claim" as a button with a small menu (Travel claim / General reimbursement). */
+/** "New claim" as a button with a small menu (Travel claim / General reimbursement / Relocation claim). */
 function NewClaimButton({ options, onNavigate }) {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
@@ -298,33 +297,6 @@ function SidebarBody({ onNavigate }) {
   );
 }
 
-/** Who's signed in — name and role (plus impact level for employees). */
-function SidebarUser() {
-  const profile = useAuthStore((state) => state.profile);
-  const user = useAuthStore((state) => state.user);
-  const role = useAuthStore(selectResolvedRole);
-  const name = profile?.full_name || user?.full_name || user?.email || '';
-  if (!name) return null;
-  const initial = name.trim().charAt(0).toUpperCase();
-  const detail = [formatRole(role), showsManager(role, profile?.is_manager) ? 'Manager' : null, profile?.impact_level_code]
-    .filter(Boolean)
-    .join(' · ');
-  return (
-    <NavLink
-      to="/profile"
-      className="mx-2.5 mb-3 mt-2 flex flex-none items-center gap-2.5 rounded-xl bg-slate-50 p-2.5 transition-colors hover:bg-slate-100"
-    >
-      <span className={`flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-full text-[13px] font-extrabold text-white ${roleAccent(role)}`}>
-        {initial}
-      </span>
-      <span className="min-w-0">
-        <span className="block truncate text-[12.5px] font-bold text-ink">{name}</span>
-        <span className="block truncate text-[11px] text-slate-500">{detail}</span>
-      </span>
-    </NavLink>
-  );
-}
-
 export default function AppSidebar({ mobileOpen, onClose }) {
   const onNavigate = () => onClose();
 
@@ -349,7 +321,6 @@ export default function AppSidebar({ mobileOpen, onClose }) {
         <div className="min-h-0 flex-1 overflow-y-auto">
           <SidebarBody onNavigate={() => {}} />
         </div>
-        <SidebarUser />
       </aside>
 
       {mobileOpen ? (
@@ -359,8 +330,7 @@ export default function AppSidebar({ mobileOpen, onClose }) {
             <div className="min-h-0 flex-1 overflow-y-auto pt-3">
               <SidebarBody onNavigate={onNavigate} />
             </div>
-            <SidebarUser />
-          </aside>
+              </aside>
         </>
       ) : null}
     </>

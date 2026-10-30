@@ -31,6 +31,8 @@ from app.models.reimbursement import ClaimDraft, ClaimStatus, ReimbursementCateg
 from app.services.advance_service import get_outstanding_advance
 from app.services.audit_service import log_event
 from app.services.claim_submission_rules import (
+    DEFAULT_ARCHIVE_AFTER_DAYS,
+    DEFAULT_LATE_AFTER_DAYS,
     parse_auto_approve_threshold,
     total_claimed_from_report,
 )
@@ -46,6 +48,8 @@ STAGE_STATUS_SLA_SKIPPED = "SLA_SKIPPED"
 # A pooled-role stage whose only possible approver was the claimant themselves (see
 # _activate_stage_rows) — passed over, not missed.
 STAGE_STATUS_SKIPPED_OWN = "SKIPPED_OWN"
+# A step passed on by an admin override without a decision (override_service.skip_step).
+STAGE_STATUS_OVERRIDE_SKIPPED = "OVERRIDE_SKIPPED"
 DEFAULT_SLA_HOURS = 48
 
 # The two shared exception routes (Approval Matrix -> Exception flows). Every claim exception type
@@ -76,6 +80,9 @@ CLAIM_EXCEPTION_TYPES = (
     "HIRED_TAXI_UNAUTHORIZED",
     "FLIGHT_COST_DELTA",
     "MODE_DEVIATION",
+    # The whole claim, not one expense: raised more than submission.late_after_days after the
+    # trip's to date (claim_submission_rules.claim_lateness).
+    "LATE_CLAIM",
 )
 TRAVEL_EXCEPTION_TYPES = (
     "AIR_TRAVEL_UNLOCK",
@@ -187,6 +194,7 @@ DEFAULT_EXCEPTION_SUBMISSION_MODE: dict[str, str] = {
     "TRAIN_TATKAL": EXCEPTION_SUBMISSION_BLOCK,
     "AIR_TRAVEL_L5_L6": EXCEPTION_SUBMISSION_BLOCK,
     "HIRED_TAXI_UNAUTHORIZED": EXCEPTION_SUBMISSION_BLOCK,
+    "LATE_CLAIM": EXCEPTION_SUBMISSION_ALLOW,
 }
 
 
@@ -613,6 +621,7 @@ async def _user_ids_for_role(route_role: str, employee_id: str | None, db: Async
         Role.CEO.value,
         Role.GROUP_HEAD_HR.value,
         Role.RECRUITER.value,
+        Role.ADMIN.value,
     }:
         result = await db.execute(select(User.id).where(User.role == Role(route_role)))
         return [int(user_id) for user_id in result.scalars().all()]
@@ -713,7 +722,7 @@ DEFAULT_WORKFLOW_CONFIG: dict = {
     ],
     "exception_chains": dict(EXCEPTION_APPROVAL_CHAINS),
     "exception_submission_mode": dict(DEFAULT_EXCEPTION_SUBMISSION_MODE),
-    "submission": {"max_working_days_after_return": 5, "deadline_mode": "hard_block"},
+    "submission": {"late_after_days": DEFAULT_LATE_AFTER_DAYS, "archive_after_days": DEFAULT_ARCHIVE_AFTER_DAYS},
     "auto_approve_below_amount": "2000.00",
 }
 
@@ -727,13 +736,14 @@ _ALLOWED_WORKFLOW_ROLES = {
     Role.GROUP_HEAD_HR.value,
     Role.IT_ADMIN.value,
     Role.RECRUITER.value,
+    Role.ADMIN.value,
     "FUNCTION_HEAD",
     DEPARTMENT_HEAD,
 }
 
 # Non-claim approval workflows stored alongside the claim category overrides (same stage shape,
 # no Finance stage): travel requests, and relocation approval requests.
-_NON_CLAIM_WORKFLOWS = {"TRAVEL_REQUEST", "RELOCATION_REQUEST", "RELOCATION_PRIOR_APPROVAL"}
+_NON_CLAIM_WORKFLOWS = {"TRAVEL_REQUEST", "RELOCATION_REQUEST"}
 _CATEGORY_OVERRIDE_KEYS = {c.value for c in ReimbursementCategory} | _NON_CLAIM_WORKFLOWS
 
 
@@ -788,12 +798,12 @@ def _validate_workflow_config(config: dict) -> None:
                     require_finance_stage=category not in _NON_CLAIM_WORKFLOWS,
                 )
                 # Department heads cover claims, travel requests and exceptions only.
-                if category in ("RELOCATION_REQUEST", "RELOCATION_PRIOR_APPROVAL") and any(
+                if category == "RELOCATION_REQUEST" and any(
                     isinstance(s, dict) and s.get("route_role") == DEPARTMENT_HEAD for s in override["stages"]
                 ):
-                    raise HTTPException(status_code=422, detail="Relocation approvals can't have a Department head step")
-            if "enabled" in override and not isinstance(override["enabled"], bool):
-                raise HTTPException(status_code=422, detail=f"category_overrides['{category}'].enabled must be true or false")
+                    raise HTTPException(
+                        status_code=422, detail="Relocation approvals can't have a Department head step"
+                    )
 
     if DEPARTMENT_HEAD in ((config.get("exception_chains") or {}).get("POLICY_APPROVAL") or []):
         raise HTTPException(status_code=422, detail="Policy approval can't have a Department head step")
@@ -820,30 +830,21 @@ def _validate_workflow_config(config: dict) -> None:
     if submission is None or not isinstance(submission, dict):
         raise HTTPException(status_code=422, detail="submission must be an object")
 
-    raw_max = submission.get("max_working_days_after_return")
-    if isinstance(raw_max, bool):
+    # How long after a trip ends it can be claimed (claim_submission_rules.claim_windows). A config
+    # saved before these settings existed has neither; the defaults apply.
+    windows = {}
+    for key, label in (("late_after_days", "Late claim after"), ("archive_after_days", "Archive after")):
+        raw = submission.get(key)
+        if raw is None:
+            continue
+        if isinstance(raw, bool) or not isinstance(raw, int) or not 1 <= raw <= 365:
+            raise HTTPException(status_code=422, detail=f"{label} must be a whole number of days from 1 to 365")
+        windows[key] = raw
+    if windows.get("archive_after_days", DEFAULT_ARCHIVE_AFTER_DAYS) <= windows.get(
+        "late_after_days", DEFAULT_LATE_AFTER_DAYS
+    ):
         raise HTTPException(
-            status_code=422,
-            detail="max_working_days_after_return must be an integer >= 1",
-        )
-    try:
-        max_days_val = int(raw_max)
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(
-            status_code=422,
-            detail="max_working_days_after_return must be an integer >= 1",
-        ) from exc
-    if max_days_val < 1:
-        raise HTTPException(
-            status_code=422,
-            detail="max_working_days_after_return must be an integer >= 1",
-        )
-
-    deadline_mode = submission.get("deadline_mode", "hard_block")
-    if deadline_mode not in ("hard_block", "soft_warning"):
-        raise HTTPException(
-            status_code=422,
-            detail="deadline_mode must be one of: hard_block, soft_warning",
+            status_code=422, detail="Trips must be archived later than a claim becomes late"
         )
 
     raw_auto = config.get("auto_approve_below_amount")
@@ -1038,9 +1039,6 @@ async def get_approver_scope(role: Role, db: AsyncSession) -> dict:
     for types in legacy_waiting:
         exceptions += [t for t in (types or []) if t not in exceptions]
     relocation_roles = {str(s.get("route_role") or "") for s in relocation_request_stage_defs(base_cfg)}
-    check_on, check_stages = relocation_prior_approval_check(base_cfg)
-    if check_on:
-        relocation_roles |= {str(s.get("route_role") or "") for s in check_stages}
 
     return {
         "claims": bool(claim_categories),
@@ -1105,14 +1103,12 @@ async def _assert_department_heads_valid(config: dict, db: AsyncSession) -> None
 
 async def _assert_roles_have_active_users(config: dict, db: AsyncSession) -> None:
     """Every absolute role a request could wait on — in a stage list (claims, travel and
-    relocation requests, the prior-approval check while it's on), in a shared exception route
+    relocation requests), in a shared exception route
     while at least one of its exception types is switched on, or in Policy approval — needs at
     least one active person holding it."""
     route_roles: set[str] = {s.get("route_role") for s in config.get("stages") or [] if isinstance(s, dict)}
-    for category, override in (config.get("category_overrides") or {}).items():
+    for override in (config.get("category_overrides") or {}).values():
         if not isinstance(override, dict):
-            continue
-        if category == "RELOCATION_PRIOR_APPROVAL" and override.get("enabled", True) is False:
             continue
         route_roles |= {s.get("route_role") for s in override.get("stages") or [] if isinstance(s, dict)}
     chain_roles: dict[str, str] = {}
@@ -1423,9 +1419,19 @@ def already_decided_by(stages: list[ClaimApprovalStage], user_id: int, before_st
 # department-head steps never land on the claimant themselves.
 _SELF_SKIPPABLE_ROLES = {
     Role.HRBP_HR.value, Role.PAYROLL.value, Role.CEO.value, Role.GROUP_HEAD_HR.value,
-    Role.RECRUITER.value, Role.IT_ADMIN.value,
+    Role.RECRUITER.value, Role.IT_ADMIN.value, Role.ADMIN.value,
 }
 SELF_SKIP_NOTE = "Skipped — the claimant can't approve their own claim and is the only approver for this step."
+
+
+def override_note(user: User, reason: str) -> str:
+    """What an admin override records as the step's comment (see override_service)."""
+    return f"Admin override by {user.full_name or user.email}: {reason.strip()}"
+
+
+def _assert_can_override(user: User, subject_user_id: int | None) -> None:
+    if is_own_item(user, subject_user_id):
+        raise HTTPException(status_code=403, detail="You can't override your own item")
 
 
 def is_own_item(user: User, subject_user_id: int | None) -> bool:
@@ -1751,6 +1757,8 @@ async def _can_user_act_on_claim_stage(
     if route_role == Role.RECRUITER.value:
         return has_role
     if route_role == Role.IT_ADMIN.value:
+        return has_role
+    if route_role == Role.ADMIN.value:
         return has_role
     if route_role == "FUNCTION_HEAD":
         if not claim.employee_id:
@@ -2215,7 +2223,11 @@ async def get_claim_timeline(claim: ClaimDraft, db: AsyncSession) -> list[dict]:
     return ordered
 
 
-async def approve_claim_stage(claim_id: int, user_id: int, comment: str | None, db: AsyncSession) -> ClaimDraft:
+async def approve_claim_stage(
+    claim_id: int, user_id: int, comment: str | None, db: AsyncSession, *, override_reason: str | None = None
+) -> ClaimDraft:
+    """`override_reason`: an admin override (override_service) — decides the current step in place
+    of whoever it's waiting on, every parallel branch of it at once; never the Finance step."""
     # Locked (SELECT ... FOR UPDATE) so parallel clicks queue up: the first one decides the stage
     # and opens the next; the rest re-read the committed result below and are refused, instead of
     # each opening (and notifying) the next stage again. Stages are locked too — a locking read
@@ -2263,25 +2275,37 @@ async def approve_claim_stage(claim_id: int, user_id: int, comment: str | None, 
             detail="Finance stage is completed via payment initiation endpoint",
         )
 
-    active_delegator_ids = await _active_delegator_ids(user_id, db)
-    if not await _can_user_act_on_claim_stage(
-        user, claim, stage_def, db, stage_row=pending, active_delegator_ids=active_delegator_ids
-    ):
-        if already_decided_by(stages, user_id, pending.stage_number):
-            raise HTTPException(
-                status_code=409,
-                detail="Already decided — you've approved this claim and it has moved to the next approver.",
-            )
-        raise HTTPException(status_code=403, detail="Not allowed to approve this stage")
+    if override_reason:
+        _assert_can_override(user, claim.employee_user_id)
+        comment = override_note(user, override_reason)
+    else:
+        active_delegator_ids = await _active_delegator_ids(user_id, db)
+        if not await _can_user_act_on_claim_stage(
+            user, claim, stage_def, db, stage_row=pending, active_delegator_ids=active_delegator_ids
+        ):
+            if already_decided_by(stages, user_id, pending.stage_number):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Already decided — you've approved this claim and it has moved to the next approver.",
+                )
+            raise HTTPException(status_code=403, detail="Not allowed to approve this stage")
     now = _now()
     previous_status = claim.status.value
     previous_stage = claim.current_approval_stage
 
-    pending.status = ClaimApprovalStageStatus.APPROVED.value
-    pending.decided_at = now
-    pending.decided_by_user_id = user_id
-    if comment:
-        pending.comment = (pending.comment or "") + ("\n" if pending.comment else "") + comment
+    decided_rows = [pending]
+    if override_reason:
+        decided_rows += [
+            s for s in stages
+            if s.stage_number == pending.stage_number and s.status == ClaimApprovalStageStatus.PENDING.value
+            and s.id != pending.id
+        ]
+    for decided in decided_rows:
+        decided.status = ClaimApprovalStageStatus.APPROVED.value
+        decided.decided_at = now
+        decided.decided_by_user_id = user_id
+        if comment:
+            decided.comment = (decided.comment or "") + ("\n" if decided.comment else "") + comment
 
     # Check if other parallel branches are still pending for THIS stage number
     still_pending = any(
@@ -2345,6 +2369,7 @@ async def approve_claim_stage(claim_id: int, user_id: int, comment: str | None, 
                 "current_approval_stage": claim.current_approval_stage,
                 "approved_stage_number": pending.stage_number,
                 "comment": comment,
+                "override_reason": override_reason,
             },
             db=db,
         )
@@ -2353,7 +2378,11 @@ async def approve_claim_stage(claim_id: int, user_id: int, comment: str | None, 
     return claim
 
 
-async def send_back_claim(claim_id: int, user_id: int, comment: str, db: AsyncSession) -> ClaimDraft:
+async def send_back_claim(
+    claim_id: int, user_id: int, comment: str, db: AsyncSession, *, override_reason: str | None = None
+) -> ClaimDraft:
+    if override_reason:
+        comment = override_reason
     if not comment or not comment.strip():
         raise HTTPException(status_code=422, detail="Comment is required when sending back a claim")
 
@@ -2379,11 +2408,15 @@ async def send_back_claim(claim_id: int, user_id: int, comment: str, db: AsyncSe
         raise HTTPException(status_code=500, detail="Approval chain is misconfigured")
     if str(stage_def["route_role"]) == Role.FINANCE.value:
         raise HTTPException(status_code=409, detail="No send-back allowed at finance stage")
-    active_delegator_ids = await _active_delegator_ids(user_id, db)
-    if not await _can_user_act_on_claim_stage(
-        user, claim, stage_def, db, stage_row=pending, active_delegator_ids=active_delegator_ids
-    ):
-        raise HTTPException(status_code=403, detail="Not allowed to send back this claim")
+    if override_reason:
+        _assert_can_override(user, claim.employee_user_id)
+        comment = override_note(user, override_reason)
+    else:
+        active_delegator_ids = await _active_delegator_ids(user_id, db)
+        if not await _can_user_act_on_claim_stage(
+            user, claim, stage_def, db, stage_row=pending, active_delegator_ids=active_delegator_ids
+        ):
+            raise HTTPException(status_code=403, detail="Not allowed to send back this claim")
 
     now = _now()
     previous_status = claim.status.value
@@ -2411,6 +2444,7 @@ async def send_back_claim(claim_id: int, user_id: int, comment: str, db: AsyncSe
             "current_approval_stage": claim.current_approval_stage,
             "comment": comment,
             "stage_number": previous_stage,
+            "override_reason": override_reason,
         },
         db=db,
     )
@@ -2426,7 +2460,11 @@ async def send_back_claim(claim_id: int, user_id: int, comment: str, db: AsyncSe
     return claim
 
 
-async def reject_claim(claim_id: int, user_id: int, reason: str, db: AsyncSession) -> ClaimDraft:
+async def reject_claim(
+    claim_id: int, user_id: int, reason: str, db: AsyncSession, *, override_reason: str | None = None
+) -> ClaimDraft:
+    if override_reason:
+        reason = override_reason
     if not reason or not reason.strip():
         raise HTTPException(status_code=422, detail="Rejection reason is mandatory")
 
@@ -2450,11 +2488,17 @@ async def reject_claim(claim_id: int, user_id: int, reason: str, db: AsyncSessio
     stage_def = next((s for s in stage_defs if int(s["number"]) == pending.stage_number), None)
     if stage_def is None:
         raise HTTPException(status_code=500, detail="Approval chain is misconfigured")
-    active_delegator_ids = await _active_delegator_ids(user_id, db)
-    if not await _can_user_act_on_claim_stage(
-        user, claim, stage_def, db, stage_row=pending, active_delegator_ids=active_delegator_ids
-    ):
-        raise HTTPException(status_code=403, detail="Not allowed to reject at this stage")
+    if override_reason:
+        if str(stage_def["route_role"]) == Role.FINANCE.value:
+            raise HTTPException(status_code=409, detail="This claim is with Finance — only Finance can act on it")
+        _assert_can_override(user, claim.employee_user_id)
+        reason = override_note(user, override_reason)
+    else:
+        active_delegator_ids = await _active_delegator_ids(user_id, db)
+        if not await _can_user_act_on_claim_stage(
+            user, claim, stage_def, db, stage_row=pending, active_delegator_ids=active_delegator_ids
+        ):
+            raise HTTPException(status_code=403, detail="Not allowed to reject at this stage")
 
     now = _now()
     previous_status = claim.status.value
@@ -2473,7 +2517,12 @@ async def reject_claim(claim_id: int, user_id: int, reason: str, db: AsyncSessio
         action="reject_claim",
         actor_id=user_id,
         old={"status": previous_status, "reject_reason": None},
-        new={"status": claim.status.value, "reject_reason": claim.reject_reason, "stage_number": pending.stage_number},
+        new={
+            "status": claim.status.value,
+            "reject_reason": claim.reject_reason,
+            "stage_number": pending.stage_number,
+            "override_reason": override_reason,
+        },
         db=db,
     )
     await _notify_employee_update(
@@ -2887,6 +2936,9 @@ async def _notify_travel_exception_approver(
 # claims) — this is deliberately the simple sequential subset of the claim-stage machinery.
 TRAVEL_REQUEST_DEFAULT_STAGES: list[dict] = [
     {"number": 1, "label": "Manager Review", "sla_hours": 48, "route_role": Role.REPORTING_MANAGER.value},
+    {"number": 2, "label": "HRBP Review", "sla_hours": 48, "route_role": Role.HRBP_HR.value},
+    {"number": 3, "label": "CEO Approval", "sla_hours": 48, "route_role": Role.CEO.value},
+    {"number": 4, "label": "Admin Approval", "sla_hours": 48, "route_role": Role.ADMIN.value},
 ]
 
 
@@ -2904,30 +2956,6 @@ def relocation_request_stage_defs(config: dict) -> list[dict]:
     override = (config.get("category_overrides") or {}).get("RELOCATION_REQUEST")
     raw_stages = override.get("stages") if isinstance(override, dict) else None
     return _normalize_stage_defs({"stages": raw_stages or RELOCATION_REQUEST_DEFAULT_STAGES})
-
-
-# Check of an uploaded relocation "prior approval" (approval given outside the app) before the
-# employee can claim against it (Approval Matrix -> "Relocation prior-approval check", stored as
-# category_overrides.RELOCATION_PRIOR_APPROVAL). On by default; switched off, uploads are
-# approved immediately as before.
-RELOCATION_PRIOR_APPROVAL_DEFAULT_STAGES: list[dict] = [
-    {"number": 1, "label": "HR check", "sla_hours": 48, "route_role": Role.HRBP_HR.value},
-]
-
-
-def relocation_prior_approval_check(config: dict) -> tuple[bool, list[dict]]:
-    """(is the check on, its stages)."""
-    override = (config.get("category_overrides") or {}).get("RELOCATION_PRIOR_APPROVAL")
-    override = override if isinstance(override, dict) else {}
-    stages = _normalize_stage_defs({"stages": override.get("stages") or RELOCATION_PRIOR_APPROVAL_DEFAULT_STAGES})
-    return override.get("enabled", True) is not False, stages
-
-
-def relocation_stage_defs_for(config: dict, source: str) -> list[dict]:
-    """The route a relocation item follows: a prior-approval upload's check, or a request's chain."""
-    if source == "PRIOR_APPROVAL":
-        return relocation_prior_approval_check(config)[1]
-    return relocation_request_stage_defs(config)
 
 
 def _travel_request_stage_defs(config: dict) -> list[dict]:
@@ -3050,7 +3078,15 @@ def _active_pending_travel_stage(travel_request, stages: list):
     return row
 
 
-async def _finalize_travel_request_approval(travel_request, db: AsyncSession) -> None:
+async def _finalize_travel_request_approval(
+    travel_request, approver_id: int, db: AsyncSession, stages: list | None = None
+) -> None:
+    """A fully approved request goes straight to the travel agent for booking. The link is sent
+    in the name of the HRBP who approved it (they're told when the agent books), or the final
+    approver when no HRBP stage was involved. With no agent email configured it waits on the
+    Travel Desk for a manual send instead."""
+    from app.services.travel_request_service import issue_agent_booking_link
+
     await create_notification(
         user_id=travel_request.employee_user_id,
         title="Travel Request Approved",
@@ -3059,24 +3095,38 @@ async def _finalize_travel_request_approval(travel_request, db: AsyncSession) ->
         category=NotificationCategory.CLAIM_UPDATE.value,
         db=db,
     )
+    hrbp_stage = next(
+        (s for s in stages or [] if s.required_role == Role.HRBP_HR.value and s.decided_by_user_id),
+        None,
+    )
+    sender_id = hrbp_stage.decided_by_user_id if hrbp_stage else approver_id
+    await db.refresh(travel_request, ["legs"])
+    sent = await issue_agent_booking_link(travel_request, sent_by_user_id=sender_id, db=db)
+
     hrbps = (await db.execute(select(User).where(User.role == Role.HRBP_HR))).scalars().all()
     for hrbp in hrbps:
         await create_notification(
             user_id=hrbp.id,
-            title="Pending Travel Booking",
+            title="Sent to travel agent" if sent else "Pending Travel Booking",
             body=(
                 f"A travel request from {travel_request.from_city} -> {travel_request.to_city} "
-                "was approved and is pending ticketing."
+                + (
+                    "was approved and sent to the travel agent for booking."
+                    if sent
+                    else "was approved, but no travel agent email is set — send it from the Travel Desk."
+                )
             ),
             link="/travel-desk",
-            category="ACTION_REQUIRED",
+            category=NotificationCategory.CLAIM_UPDATE.value if sent else "ACTION_REQUIRED",
             db=db,
         )
     # Project stakeholders (site visit email) are told later, once the Travel Desk has actually
     # booked the trip — see travel_request_service._notify_stakeholders_once_booked.
 
 
-async def approve_travel_request_stage(request_id: int, user_id: int, comment: str | None, db: AsyncSession):
+async def approve_travel_request_stage(
+    request_id: int, user_id: int, comment: str | None, db: AsyncSession, *, override_reason: str | None = None
+):
     from app.models.travel_request import TravelRequest, TravelRequestStatus
 
     stmt = (
@@ -3109,7 +3159,9 @@ async def approve_travel_request_stage(request_id: int, user_id: int, comment: s
         raise HTTPException(status_code=403, detail="You can't approve your own travel request")
     subject_user = await db.get(User, req.employee_user_id)
     subject_employee_id = subject_user.employee_id if subject_user else None
-    if not await _user_matches_required_role(user, pending.required_role, subject_employee_id, db):
+    if override_reason:
+        comment = override_note(user, override_reason)
+    elif not await _user_matches_required_role(user, pending.required_role, subject_employee_id, db):
         raise HTTPException(status_code=403, detail="Not allowed to approve this stage")
 
     now = _now()
@@ -3126,7 +3178,7 @@ async def approve_travel_request_stage(request_id: int, user_id: int, comment: s
     if next_stage_number is None:
         req.status = TravelRequestStatus.APPROVED.value
         req.current_approval_stage = None
-        await _finalize_travel_request_approval(req, db)
+        await _finalize_travel_request_approval(req, user_id, db, stages)
     else:
         req.current_approval_stage = next_stage_number
         await _activate_travel_stage_rows(req, stages, stage_defs, next_stage_number, now, db)
@@ -3142,6 +3194,7 @@ async def approve_travel_request_stage(request_id: int, user_id: int, comment: s
             "current_approval_stage": req.current_approval_stage,
             "approved_stage_number": pending.stage_number,
             "comment": comment,
+            "override_reason": override_reason,
         },
         db=db,
     )
@@ -3150,7 +3203,9 @@ async def approve_travel_request_stage(request_id: int, user_id: int, comment: s
     return req
 
 
-async def reject_travel_request_stage(request_id: int, user_id: int, reason: str, db: AsyncSession):
+async def reject_travel_request_stage(
+    request_id: int, user_id: int, reason: str, db: AsyncSession, *, override_reason: str | None = None
+):
     from app.models.travel_request import TravelRequest, TravelRequestStatus
 
     stmt = (
@@ -3177,7 +3232,9 @@ async def reject_travel_request_stage(request_id: int, user_id: int, reason: str
         raise HTTPException(status_code=403, detail="You can't reject your own travel request")
     subject_user = await db.get(User, req.employee_user_id)
     subject_employee_id = subject_user.employee_id if subject_user else None
-    if not await _user_matches_required_role(user, pending.required_role, subject_employee_id, db):
+    if override_reason:
+        reason = override_note(user, override_reason)
+    elif not await _user_matches_required_role(user, pending.required_role, subject_employee_id, db):
         raise HTTPException(status_code=403, detail="Not allowed to reject this stage")
 
     now = _now()
@@ -3207,7 +3264,7 @@ async def reject_travel_request_stage(request_id: int, user_id: int, reason: str
         action="reject_stage",
         actor_id=user_id,
         old={"status": TravelRequestStatus.PENDING.value, "current_approval_stage": previous_stage},
-        new={"status": req.status, "reason": reason},
+        new={"status": req.status, "reason": reason, "override_reason": override_reason},
         db=db,
     )
     await db.commit()
@@ -3778,6 +3835,7 @@ async def decide_claim_exception_items(
     db: AsyncSession,
     *,
     same_for_all: tuple[str, str | None] | None = None,
+    override_reason: str | None = None,
 ) -> ExceptionRequest:
     """One approver's decisions on every exception their step of a claim's exception request
     still has to decide — Accept, Reject (reason required) or Send back (comment required) each,
@@ -3809,7 +3867,11 @@ async def decide_claim_exception_items(
         raise HTTPException(status_code=409, detail=ALREADY_DECIDED_DETAIL)
     if is_own_item(approver, claim.employee_user_id):
         raise HTTPException(status_code=403, detail="You can't decide the exceptions on your own claim")
-    if not await _user_matches_required_role(approver, step.required_role, claim.employee_id, db):
+    if override_reason:
+        # An admin override decides every exception at this step the same way (override_service).
+        same_for_all = (same_for_all[0] if same_for_all else ExceptionItemDecisionValue.ACCEPTED.value,
+                        override_note(approver, override_reason))
+    elif not await _user_matches_required_role(approver, step.required_role, claim.employee_id, db):
         if any(a.acted_by_user_id == approver_id and a.id < step.id for a in approvals):
             raise HTTPException(status_code=409, detail=ALREADY_DECIDED_DETAIL)
         raise HTTPException(status_code=403, detail="This step of the exception route isn't yours to decide")
@@ -3959,6 +4021,7 @@ async def decide_claim_exception_items(
             "decisions": [
                 {"item_id": i.id, "decision": parsed[i.id][0], "comment": parsed[i.id][1]} for i in needing
             ],
+            "override_reason": override_reason,
         },
         db=db,
     )
@@ -3986,8 +4049,11 @@ async def get_exception_request(exc_id: int, db: AsyncSession) -> ExceptionReque
 
 
 async def decide_exception_request(
-    exc_id: int, approver_id: int, approve: bool, comment: str | None, db: AsyncSession
+    exc_id: int, approver_id: int, approve: bool, comment: str | None, db: AsyncSession,
+    *, override_reason: str | None = None,
 ) -> ExceptionRequest:
+    if override_reason:
+        comment = override_reason
     # Same rule as rejecting a claim: the employee is always told why.
     if not approve and not (comment or "").strip():
         raise HTTPException(status_code=422, detail="Rejection reason is mandatory")
@@ -3998,7 +4064,8 @@ async def decide_exception_request(
         # exception this step still has to decide.
         decision = ExceptionItemDecisionValue.ACCEPTED.value if approve else ExceptionItemDecisionValue.REJECTED.value
         return await decide_claim_exception_items(
-            exc_id, approver_id, None, db, same_for_all=(decision, (comment or "").strip() or None)
+            exc_id, approver_id, None, db, same_for_all=(decision, (comment or "").strip() or None),
+            override_reason=override_reason,
         )
     if row.status != ExceptionRequestStatus.PENDING.value:
         raise HTTPException(status_code=409, detail=ALREADY_DECIDED_DETAIL)
@@ -4045,8 +4112,12 @@ async def decide_exception_request(
         raise HTTPException(status_code=403, detail="You can't decide your own exception request")
 
     # Check if approver matches active_stage — directly, or via an active delegation from
-    # whoever holds that role (see _user_matches_required_role).
-    is_match = await _user_matches_required_role(approver, active_stage.required_role, subject_employee_id, db)
+    # whoever holds that role (see _user_matches_required_role). An admin override skips this.
+    if override_reason:
+        is_match = True
+        comment = override_note(approver, override_reason)
+    else:
+        is_match = await _user_matches_required_role(approver, active_stage.required_role, subject_employee_id, db)
 
     if not is_match:
         # A repeat click arriving after this approver's own decision moved it to the next step.
@@ -4160,12 +4231,12 @@ async def decide_exception_request(
                 other_active = (await db.execute(active_exceptions_stmt)).scalars().first()
                 if not other_active:
                     # The exception chain IS this request's approval: once every exception
-                    # approver has signed off it goes straight to the Travel Desk, without also
+                    # approver has signed off it goes straight to the travel agent, without also
                     # going back through the normal approval stages (which only apply to
                     # requests that never needed an exception).
                     travel_request.status = TravelRequestStatus.APPROVED.value
                     travel_request.current_approval_stage = None
-                    await _finalize_travel_request_approval(travel_request, db)
+                    await _finalize_travel_request_approval(travel_request, approver_id, db)
                     await log_event(
                         entity_type="travel_request",
                         entity_id=str(travel_request.id),

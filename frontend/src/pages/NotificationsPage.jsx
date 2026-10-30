@@ -14,7 +14,7 @@ import { reimbursementApi } from '../services/reimbursementApi';
 // Where opening the notification takes you, from its link.
 function destination(link) {
   if (!link) return 'Open';
-  if (link.startsWith('/claims/travel/new') || link.startsWith('/claims/general/new')) return 'New claim';
+  if (/^\/claims\/(travel|general|relocation)\/new/.test(link)) return 'New claim';
   if (link.startsWith('/claims/pending')) return 'Open approvals';
   if (link.startsWith('/claims')) return 'Open claim';
   if (link.startsWith('/travel-requests')) return 'Open travel request';

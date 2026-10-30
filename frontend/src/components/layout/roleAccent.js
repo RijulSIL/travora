@@ -9,6 +9,7 @@ export const ROLE_ACCENT = {
   CEO: 'bg-indigo-500',
   GROUP_HEAD_HR: 'bg-purple-500',
   RECRUITER: 'bg-teal-500',
+  ADMIN: 'bg-rose-500',
 };
 
 export const roleAccent = (role) => ROLE_ACCENT[role] || 'bg-slate-400';
@@ -24,6 +25,7 @@ const ROLE_CHIP = {
   CEO: 'bg-indigo-50 text-indigo-700',
   GROUP_HEAD_HR: 'bg-purple-50 text-purple-700',
   RECRUITER: 'bg-teal-50 text-teal-700',
+  ADMIN: 'bg-rose-50 text-rose-700',
 };
 
 export const roleChip = (role) => ROLE_CHIP[role] || 'bg-slate-100 text-slate-600';

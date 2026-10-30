@@ -188,7 +188,11 @@ export default function ClaimWizardStepTripInfo({
         title="Trip details"
         sub={fromRef.length ? `Filled in from ${fromRef.join(', ')}; change anything that's different.` : 'Where you went, when, and why.'}
       >
-        {deadlineWarning ? <Note tone="rose" title="Past the claim deadline">{deadlineWarning}</Note> : null}
+        {deadlineWarning ? (
+          <Note tone={deadlineWarning.tone} title={deadlineWarning.title}>
+            {deadlineWarning.text}
+          </Note>
+        ) : null}
 
         <p className={EYEBROW}>Where and when</p>
         <div className="grid gap-3 sm:grid-cols-2">

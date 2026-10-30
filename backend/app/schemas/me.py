@@ -49,8 +49,10 @@ class MeOut(BaseModel):
     travel_desk_queue_count: int = 0
     # From company profile (allowed for all authenticated users — no bank / GSTIN payload).
     company_office_locations: list[str] = Field(default_factory=list)
-    workflow_submission_deadline_mode: str = "hard_block"
-    workflow_submission_max_working_days: int = 5
+    # A trip's claim window, in days after its to date: late (needs a late-claim exception) after
+    # the first, archived (can't be claimed) after the second — claim_submission_rules.claim_windows.
+    workflow_claim_late_after_days: int = 7
+    workflow_claim_archive_after_days: int = 15
     is_acting_delegate: bool = False
     # Roles of everyone currently delegating to this user — must match frontend's
     # navConfig.js DELEGATABLE_NAV_BY_ROLE keys exactly, since the frontend uses this to decide

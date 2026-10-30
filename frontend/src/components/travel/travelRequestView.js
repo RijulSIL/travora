@@ -1,4 +1,4 @@
-import { addWorkingDays, dayOf, daysBetween, shortDate, today, weekdayDate } from '../home/HomeParts';
+import { dayOf, daysBetween, shortDate, today, weekdayDate } from '../home/HomeParts';
 import { formatRole } from '../../utils/formatters';
 
 /*
@@ -39,6 +39,44 @@ export const leaveWindowsText = (codes) =>
 
 const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
+const addDays = (date, days) => {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+};
+
+/** The claim window settings from the profile (Approval Matrix): late after, archived after. */
+export function claimWindowDays(profile) {
+  return {
+    lateDays: profile?.workflow_claim_late_after_days || 7,
+    archiveDays: profile?.workflow_claim_archive_after_days || 15,
+  };
+}
+
+/**
+ * Where a trip that ended on `end` (its to date) stands for claiming, in calendar days — same rule
+ * as the server's claim_submission_rules.claim_lateness: an ordinary claim for `lateDays` days, then
+ * a late claim (needs a late-claim exception) until `archiveDays`, then archived (can't be claimed).
+ */
+export function claimWindow(end, { lateDays = 7, archiveDays = 15 } = {}, now = today()) {
+  const onTimeUntil = addDays(end, lateDays);
+  const lastDay = addDays(end, archiveDays);
+  if (now > lastDay) {
+    return { state: 'archived', lastDay, text: `Archived ${shortDate(addDays(lastDay, 1))}: too late to claim` };
+  }
+  if (now > onTimeUntil) {
+    return { state: 'late', lastDay, text: `Late claim: needs an exception · archived after ${shortDate(lastDay)}` };
+  }
+  const left = daysBetween(now, onTimeUntil);
+  return {
+    state: 'on_time',
+    lastDay,
+    deadline: onTimeUntil,
+    left,
+    text: `Claim by ${weekdayDate(onTimeUntil)} · ${left === 0 ? 'today' : left === 1 ? 'tomorrow' : `${left} days left`}`,
+  };
+}
+
 /** First and last travel dates (multi-city requests keep them on the legs / segments). */
 export function requestDates(request) {
   const dates = [request.travel_date, ...(request.legs || []).map((l) => l.travel_date), ...(request.segments || []).map((s) => s.travel_date)]
@@ -64,9 +102,9 @@ export function requestModes(request) {
 /**
  * Everything the row and its opened view need. `chain` is the request's approval chain (may be
  * null while loading); `trips` = the employee's booked trips; `unclaimedIds` = ids of those not
- * on a claim yet; `claimDays` / `claimMode` = the claim deadline settings from the profile.
+ * on a claim yet; `windowDays` = the claim window settings (claimWindowDays).
  */
-export function describeRequest(request, chain, { trips = [], unclaimedIds = new Set(), claimDays = 5, claimMode = 'hard_block' } = {}) {
+export function describeRequest(request, chain, { trips = [], unclaimedIds = new Set(), windowDays } = {}) {
   const now = today();
   const { start, end } = requestDates(request);
   const status = request.status;
@@ -76,7 +114,10 @@ export function describeRequest(request, chain, { trips = [], unclaimedIds = new
   const excStages = (chain?.exception_stages || []).filter((s) => !exc || s.exception_request_id === exc.id);
   const stages = chain?.stages || [];
   const past = Boolean(end && end < now);
-  const bucket = status === 'CANCELLED' || status === 'REJECTED' ? 'cancelled' : past ? 'past' : 'upcoming';
+  // A trip more than the archive window past its to date is archived: it can no longer be claimed.
+  const claimState = past ? claimWindow(end, windowDays, now) : null;
+  const bucket =
+    status === 'CANCELLED' || status === 'REJECTED' ? 'cancelled' : claimState?.state === 'archived' ? 'archived' : past ? 'past' : 'upcoming';
 
   let pill = cap(String(status || '').replace(/_/g, ' ').toLowerCase());
   let tone = 'slate';
@@ -103,7 +144,7 @@ export function describeRequest(request, chain, { trips = [], unclaimedIds = new
   } else if (status === 'APPROVED') {
     pill = 'Approved';
     tone = 'sky';
-    note = 'Waiting for the travel desk to book';
+    note = 'Sent to the travel agent to book';
   } else if (status === 'PARTIALLY_BOOKED') {
     pill = 'Partly booked';
     tone = 'sky';
@@ -122,20 +163,16 @@ export function describeRequest(request, chain, { trips = [], unclaimedIds = new
   }
   const stale = past && ['PENDING', 'PENDING_EXCEPTION', 'APPROVED', 'PARTIALLY_BOOKED'].includes(status);
 
-  // Booked trips from this request that aren't on a claim yet, with the claim deadline.
+  // Booked trips from this request that aren't on a claim yet, with where the claim window stands.
   let claim = null;
   const mine = trips.filter((t) => t.travel_request_id === request.id && !['CANCELLED', 'REFUNDED'].includes(t.status));
   const open = mine.filter((t) => unclaimedIds.has(t.id));
-  if (past && open.length) {
-    const deadline = addWorkingDays(end, claimDays);
-    const left = daysBetween(now, deadline);
-    const closed = now > deadline;
+  if (claimState && open.length) {
     claim = {
       ids: open.map((t) => t.id),
-      closed: closed && claimMode === 'hard_block',
-      text: closed
-        ? `Claim window closed ${shortDate(deadline)}`
-        : `Claim by ${weekdayDate(deadline)} · ${left === 0 ? 'today' : left === 1 ? 'tomorrow' : `${left} days left`}`,
+      closed: claimState.state === 'archived',
+      late: claimState.state === 'late',
+      text: claimState.text,
     };
   }
 
@@ -167,7 +204,10 @@ export function requestBanner(request, view) {
   }
   if (view.stale) return { tone: 'amber', title: 'The trip date has passed', text: `${view.pill}: ${view.note.toLowerCase()}. Check with the travel desk.` };
   if (request.status === 'BOOKED') {
-    if (view.claim) return { tone: 'ok', title: view.claim.closed ? 'Booked. The claim window has closed' : 'Booked. Now claim it', text: view.claim.text };
+    if (view.claim) {
+      const title = view.claim.closed ? 'Booked. Archived: too late to claim' : view.claim.late ? 'Booked. Claim it now (late)' : 'Booked. Now claim it';
+      return { tone: view.claim.closed ? 'slate' : view.claim.late ? 'amber' : 'ok', title, text: view.claim.text };
+    }
     return { tone: 'ok', title: 'Booked', text: `${view.ticketed.length} ticket${view.ticketed.length === 1 ? '' : 's'} uploaded by the travel desk.` };
   }
   if (request.status === 'REJECTED') return { tone: 'rose', title: 'Rejected', text: view.note || request.rejection_reason || '' };

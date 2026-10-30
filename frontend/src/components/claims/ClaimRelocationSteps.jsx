@@ -3,9 +3,19 @@ import { useState } from 'react';
 
 import { formatDate, formatDatetime, formatRole } from '../../utils/formatters';
 
-/** Trip purpose (Travel Claim form) that switches the wizard into the relocation flow — seeded by
- * backend migration f4c1a7e2b905, see relocation_service.RELOCATION_TRIP_PURPOSE. */
+/** The trip purpose every relocation claim carries — seeded by backend migration f4c1a7e2b905, see
+ * relocation_service.RELOCATION_TRIP_PURPOSE. Relocation has its own form, so the Travel Claim and
+ * Travel Request forms leave it out of their purposes. */
 export const RELOCATION_PURPOSE = 'Relocation';
+
+export const TRAVEL_TYPE_LABEL = { NON_PROJECT: 'Non-project', PROJECT: 'Project' };
+
+/** "Project · PRJ-12" or "Non-project" — a relocation's travel type, with its project code. */
+export function relocationTravelType(details) {
+  const type = details?.travel_type || 'NON_PROJECT';
+  const label = TRAVEL_TYPE_LABEL[type] || type;
+  return type === 'PROJECT' && details?.project_code ? `${label} · ${details.project_code}` : label;
+}
 
 const INPUT =
   'w-full h-10 px-3 rounded-lg border border-slate-250 bg-white text-slate-800 text-sm outline-none transition-all duration-200 focus:border-slate-400 focus:ring-2 focus:ring-slate-150';
@@ -110,117 +120,27 @@ function ChoiceButton({ active, title, text, onClick }) {
   );
 }
 
-function RequestForm({ routeText, busy, onSubmit }) {
-  const [values, setValues] = useState({
-    origin_city: '',
-    destination_city: '',
-    estimated_amount: '',
-    planned_move_date: '',
-    family_members: '',
-    notes: '',
-  });
+const EMPTY_RELOCATION = {
+  travel_type: 'NON_PROJECT',
+  project_code: '',
+  origin_city: '',
+  destination_city: '',
+  travel_date: '',
+  family_members: '',
+  amount: '',
+  notes: '',
+};
+
+/** The relocation form. Without approval yet (`hasApproval` false) it's a request that goes to the
+ * relocation approvers; with approval already given it also takes the approval document and is
+ * saved as approved, so the claim goes straight on to its invoices. */
+function RelocationForm({ hasApproval, travelOptions, routeText, busy, onSubmit }) {
+  const [values, setValues] = useState(EMPTY_RELOCATION);
+  const [file, setFile] = useState(null);
   const [errors, setErrors] = useState({});
   const set = (key) => (e) => setValues((prev) => ({ ...prev, [key]: e.target.value }));
   const today = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD, local
-
-  const submit = () => {
-    const next = {};
-    if (!values.origin_city.trim()) next.origin_city = 'Required';
-    if (!values.destination_city.trim()) next.destination_city = 'Required';
-    else if (values.destination_city.trim().toLowerCase() === values.origin_city.trim().toLowerCase()) {
-      next.destination_city = "Can't be the same as Moving from";
-    }
-    if (!(Number(values.estimated_amount) > 0)) next.estimated_amount = 'Enter the estimated amount';
-    if (!values.planned_move_date) next.planned_move_date = 'Required';
-    else if (values.planned_move_date < today) next.planned_move_date = "Can't be in the past";
-    if (values.family_members !== '' && !(Number(values.family_members) >= 0 && Number(values.family_members) <= 50)) {
-      next.family_members = 'Enter a number from 0 to 50';
-    }
-    setErrors(next);
-    if (Object.keys(next).length) return;
-    onSubmit({
-      origin_city: values.origin_city.trim(),
-      destination_city: values.destination_city.trim(),
-      estimated_amount: String(values.estimated_amount),
-      planned_move_date: values.planned_move_date,
-      family_members: values.family_members === '' ? null : Number(values.family_members),
-      notes: values.notes.trim() || null,
-    });
-  };
-
-  const err = (key) => (errors[key] ? <p className="text-xs font-semibold text-rose-600">{errors[key]}</p> : null);
-
-  return (
-    <div className={`${CARD} space-y-4`}>
-      <h2 className="text-sm font-bold text-slate-800">Relocation request</h2>
-      <div className="grid gap-4 md:grid-cols-2">
-        <label className="space-y-1">
-          <span className={LABEL}>Moving from *</span>
-          <input className={INPUT} value={values.origin_city} onChange={set('origin_city')} placeholder="Current city" />
-          {err('origin_city')}
-        </label>
-        <label className="space-y-1">
-          <span className={LABEL}>Moving to *</span>
-          <input className={INPUT} value={values.destination_city} onChange={set('destination_city')} placeholder="New city" />
-          {err('destination_city')}
-        </label>
-        <label className="space-y-1">
-          <span className={LABEL}>Estimated amount (₹) *</span>
-          <input
-            className={INPUT}
-            type="number"
-            min="1"
-            step="0.01"
-            value={values.estimated_amount}
-            onChange={set('estimated_amount')}
-            placeholder="e.g. 85000"
-          />
-          {err('estimated_amount')}
-        </label>
-        <label className="space-y-1">
-          <span className={LABEL}>Planned move date *</span>
-          <input className={INPUT} type="date" min={today} value={values.planned_move_date} onChange={set('planned_move_date')} />
-          {err('planned_move_date')}
-        </label>
-        <label className="space-y-1">
-          <span className={LABEL}>Family members relocating</span>
-          <input
-            className={INPUT}
-            type="number"
-            min="0"
-            max="50"
-            value={values.family_members}
-            onChange={set('family_members')}
-            placeholder="Optional"
-          />
-          {err('family_members')}
-        </label>
-      </div>
-      <label className="block space-y-1">
-        <span className={LABEL}>Notes</span>
-        <textarea
-          className={`${INPUT} h-20 resize-none py-2`}
-          value={values.notes}
-          onChange={set('notes')}
-          maxLength={2000}
-          placeholder="Anything the approvers should know (optional)"
-        />
-      </label>
-      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4">
-        <span className="text-xs text-slate-500">Goes to {routeText} for approval.</span>
-        <button type="button" className={PRIMARY} onClick={submit} disabled={busy}>
-          <Send size={14} /> {busy ? 'Sending...' : 'Submit for approval'}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function PriorApprovalForm({ busy, onSubmit }) {
-  const [file, setFile] = useState(null);
-  const [values, setValues] = useState({ origin_city: '', destination_city: '', approved_amount: '' });
-  const [errors, setErrors] = useState({});
-  const set = (key) => (e) => setValues((prev) => ({ ...prev, [key]: e.target.value }));
+  const projectCodes = travelOptions?.project_codes || [];
 
   const pickFile = () => {
     const input = document.createElement('input');
@@ -241,19 +161,41 @@ function PriorApprovalForm({ busy, onSubmit }) {
 
   const submit = () => {
     const next = {};
-    if (!file) next.file = 'Upload the approval';
+    if (hasApproval && !file) next.file = 'Upload the approval';
+    if (values.travel_type === 'PROJECT' && !values.project_code) next.project_code = 'Choose the project code';
     if (!values.origin_city.trim()) next.origin_city = 'Required';
     if (!values.destination_city.trim()) next.destination_city = 'Required';
-    if (values.approved_amount !== '' && !(Number(values.approved_amount) > 0)) {
-      next.approved_amount = 'Enter an amount greater than zero, or leave it blank';
+    else if (values.destination_city.trim().toLowerCase() === values.origin_city.trim().toLowerCase()) {
+      next.destination_city = "Can't be the same as Moving from";
     }
+    if (!values.travel_date) next.travel_date = 'Required';
+    else if (!hasApproval && values.travel_date < today) next.travel_date = "Can't be in the past";
+    if (values.family_members === '') next.family_members = 'Required (0 if moving alone)';
+    else if (!(Number.isInteger(Number(values.family_members)) && Number(values.family_members) >= 0 && Number(values.family_members) <= 50)) {
+      next.family_members = 'Enter a number from 0 to 50';
+    }
+    if (!(Number(values.amount) > 0)) next.amount = 'Enter the amount';
     setErrors(next);
     if (Object.keys(next).length) return;
+
+    const fields = {
+      travel_type: values.travel_type,
+      project_code: values.travel_type === 'PROJECT' ? values.project_code : null,
+      origin_city: values.origin_city.trim(),
+      destination_city: values.destination_city.trim(),
+      travel_date: values.travel_date,
+      family_members: Number(values.family_members),
+      notes: values.notes.trim() || null,
+    };
+    if (!hasApproval) {
+      onSubmit({ ...fields, estimated_amount: String(values.amount) });
+      return;
+    }
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('origin_city', values.origin_city.trim());
-    formData.append('destination_city', values.destination_city.trim());
-    if (values.approved_amount !== '') formData.append('approved_amount', String(values.approved_amount));
+    Object.entries({ ...fields, approved_amount: String(values.amount) }).forEach(([key, value]) => {
+      if (value != null) formData.append(key, String(value));
+    });
     onSubmit(formData);
   };
 
@@ -261,30 +203,69 @@ function PriorApprovalForm({ busy, onSubmit }) {
 
   return (
     <div className={`${CARD} space-y-4`}>
-      <h2 className="text-sm font-bold text-slate-800">Approval evidence</h2>
-      <div>
-        <button
-          type="button"
-          onClick={pickFile}
-          className={`w-full rounded-xl border-2 px-4 py-5 text-center text-xs font-semibold transition-colors ${
-            file
-              ? 'border-solid border-emerald-200 bg-emerald-50 text-emerald-800'
-              : 'border-dashed border-slate-200 bg-slate-50/60 text-slate-500 hover:border-brand/40'
-          }`}
-        >
-          {file ? (
-            <span className="inline-flex items-center gap-1.5">
-              <FileCheck2 size={15} /> {file.name} · {Math.max(1, Math.round(file.size / 1024))} KB (click to replace)
-            </span>
-          ) : (
-            <span className="inline-flex items-center gap-1.5">
-              <UploadCloud size={15} /> Click to upload the approval: PDF, JPG, PNG or HEIC, up to 10 MB
-            </span>
-          )}
-        </button>
-        {err('file')}
-      </div>
+      <h2 className="text-sm font-bold text-slate-800">{hasApproval ? 'Your relocation approval' : 'Relocation request'}</h2>
+      {hasApproval ? (
+        <div>
+          <button
+            type="button"
+            onClick={pickFile}
+            className={`w-full rounded-xl border-2 px-4 py-5 text-center text-xs font-semibold transition-colors ${
+              file
+                ? 'border-solid border-emerald-200 bg-emerald-50 text-emerald-800'
+                : 'border-dashed border-slate-200 bg-slate-50/60 text-slate-500 hover:border-brand/40'
+            }`}
+          >
+            {file ? (
+              <span className="inline-flex items-center gap-1.5">
+                <FileCheck2 size={15} /> {file.name} · {Math.max(1, Math.round(file.size / 1024))} KB (click to replace)
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5">
+                <UploadCloud size={15} /> Click to upload the approval: PDF, JPG, PNG or HEIC, up to 10 MB
+              </span>
+            )}
+          </button>
+          {err('file')}
+        </div>
+      ) : null}
       <div className="grid gap-4 md:grid-cols-2">
+        <div className="space-y-1">
+          <span className={LABEL}>Travel type *</span>
+          <div role="group" aria-label="Travel type" className="flex w-full gap-0.5 rounded-[11px] bg-slate-100 p-[3px]">
+            {Object.entries(TRAVEL_TYPE_LABEL).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={values.travel_type === value}
+                onClick={() => setValues((prev) => ({ ...prev, travel_type: value, project_code: value === 'PROJECT' ? prev.project_code : '' }))}
+                className={`flex-1 rounded-lg px-3 py-[7px] text-[12.5px] font-bold ${
+                  values.travel_type === value ? 'bg-white text-ink shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        {values.travel_type === 'PROJECT' ? (
+          <label className="space-y-1">
+            <span className={LABEL}>Project code *</span>
+            <select className={INPUT} value={values.project_code} onChange={set('project_code')}>
+              <option value="">Select project code</option>
+              {projectCodes.map((o) => (
+                <option key={o.id} value={o.value}>
+                  {o.label || o.value}
+                </option>
+              ))}
+            </select>
+            {projectCodes.length === 0 ? (
+              <p className="text-[11px] font-bold text-amber-700">No project codes are configured yet. Ask an admin to add them.</p>
+            ) : null}
+            {err('project_code')}
+          </label>
+        ) : (
+          <div className="hidden md:block" aria-hidden="true" />
+        )}
         <label className="space-y-1">
           <span className={LABEL}>Moving from *</span>
           <input className={INPUT} value={values.origin_city} onChange={set('origin_city')} placeholder="Current city" />
@@ -296,34 +277,80 @@ function PriorApprovalForm({ busy, onSubmit }) {
           {err('destination_city')}
         </label>
         <label className="space-y-1">
-          <span className={LABEL}>Approved amount (₹, if stated)</span>
+          <span className={LABEL}>Travel date *</span>
+          <input
+            className={INPUT}
+            type="date"
+            min={hasApproval ? undefined : today}
+            value={values.travel_date}
+            onChange={set('travel_date')}
+          />
+          {err('travel_date')}
+        </label>
+        <label className="space-y-1">
+          <span className={LABEL}>Family members relocating *</span>
+          <input
+            className={INPUT}
+            type="number"
+            min="0"
+            max="50"
+            step="1"
+            value={values.family_members}
+            onChange={set('family_members')}
+            placeholder="0 if moving alone"
+          />
+          {err('family_members')}
+        </label>
+        <label className="space-y-1">
+          <span className={LABEL}>{hasApproval ? 'Approved amount (₹) *' : 'Amount to be approved (₹) *'}</span>
           <input
             className={INPUT}
             type="number"
             min="1"
             step="0.01"
-            value={values.approved_amount}
-            onChange={set('approved_amount')}
-            placeholder="Optional"
+            value={values.amount}
+            onChange={set('amount')}
+            placeholder="e.g. 85000"
           />
-          {err('approved_amount')}
+          {err('amount')}
         </label>
       </div>
+      <label className="block space-y-1">
+        <span className={LABEL}>Notes</span>
+        <textarea
+          className={`${INPUT} h-20 resize-none py-2`}
+          value={values.notes}
+          onChange={set('notes')}
+          maxLength={2000}
+          placeholder={hasApproval ? 'Anything your claim approvers should know (optional)' : 'Anything the approvers should know (optional)'}
+        />
+      </label>
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4">
-        <span className="text-xs text-slate-500">Your claim&apos;s approvers and Finance will see this evidence.</span>
+        <span className="text-xs text-slate-500">
+          {hasApproval
+            ? "No further approval needed. Your claim's approvers and Finance will see the approval document."
+            : `Goes to ${routeText} for approval.`}
+        </span>
         <button type="button" className={PRIMARY} onClick={submit} disabled={busy}>
-          <UploadCloud size={14} /> {busy ? 'Uploading...' : 'Save approval'}
+          {hasApproval ? (
+            <>
+              {busy ? 'Saving...' : 'Save and add invoices'} <ArrowRight size={14} />
+            </>
+          ) : (
+            <>
+              <Send size={14} /> {busy ? 'Sending...' : 'Submit for approval'}
+            </>
+          )}
         </button>
       </div>
     </div>
   );
 }
 
-/** Step 1 of a relocation claim: pick the approved relocation it's raised against — or upload an
- * approval the employee already has, or request one (Recruiter → CEO → HRBP → Payroll by default). */
+/** Step 1 of a relocation claim: pick the approved relocation it's raised against — or record an
+ * approval the employee already has (no approval needed here), or request one (the Relocation
+ * Approval route in the Approval Matrix). */
 export function RelocationApprovalStep({
-  form,
-  onChange,
   travelOptions,
   relocations,
   loading,
@@ -350,32 +377,6 @@ export function RelocationApprovalStep({
 
   return (
     <div className="space-y-6">
-      <div className={CARD}>
-        <h2 className="mb-4 text-sm font-bold text-slate-800">Trip Information</h2>
-        <div className="grid gap-5 md:grid-cols-2">
-          <div className="space-y-1">
-            <span className={LABEL}>Travel Type *</span>
-            <select className={`${INPUT} bg-slate-50 text-slate-500`} value="NON_PROJECT" disabled>
-              <option value="NON_PROJECT">Non-Project</option>
-            </select>
-          </div>
-          <div className="space-y-1">
-            <span className={LABEL}>Trip Purpose *</span>
-            <select className={INPUT} value={form.trip_purpose} onChange={(e) => onChange('trip_purpose', e.target.value)}>
-              <option value="">Select trip purpose</option>
-              {(travelOptions?.trip_purposes || []).map((o) => (
-                <option key={o.id} value={o.value}>
-                  {o.label || o.value}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-        <p className="mt-3 text-xs text-slate-500">
-          Relocation claims are raised against an approved relocation, using invoices tagged Relocation.
-        </p>
-      </div>
-
       {relocations.length ? (
         <div className={CARD}>
           <h2 className="text-sm font-bold text-slate-800">Your relocations</h2>
@@ -416,7 +417,8 @@ export function RelocationApprovalStep({
                     <div className="mt-0.5 text-[11px] text-slate-500">
                       {row.origin_city} → {row.destination_city}
                       {row.estimated_amount ? ` · ₹${formatInr(row.estimated_amount)}` : ''}
-                      {row.details?.planned_move_date ? ` · moving ${formatDate(row.details.planned_move_date)}` : ''}
+                      {row.details?.travel_date ? ` · travelling ${formatDate(row.details.travel_date)}` : ''}
+                      {row.details?.travel_type === 'PROJECT' ? ` · ${relocationTravelType(row.details)}` : ''}
                       {row.claim_count ? ` · ₹${formatInr(row.total_claimed)} claimed so far` : ''}
                     </div>
                     {row.status === 'REJECTED' && row.rejection_reason ? (
@@ -443,7 +445,7 @@ export function RelocationApprovalStep({
           </div>
           {relocations.some((row) => row.status === 'PENDING') ? (
             <p className="mt-3 rounded-lg border border-slate-150 bg-slate-50 p-3 text-xs text-slate-500">
-              You&apos;ll get a notification when a pending request is approved, and can continue from New Claim → Travel Claim → Relocation.
+              You&apos;ll get a notification when a pending request is approved, and can continue from New Claim → Relocation Claim.
             </p>
           ) : null}
         </div>
@@ -458,7 +460,7 @@ export function RelocationApprovalStep({
           <ChoiceButton
             active={hasApproval === true}
             title="Yes, I have approval"
-            text="Upload the approval (PDF or screenshot). It goes with your claim for approvers and Finance to see."
+            text="Fill in the details and upload the approval (PDF or screenshot). No further approval: go straight on to your invoices."
             onClick={() => setHasApproval(hasApproval === true ? null : true)}
           />
           <ChoiceButton
@@ -470,14 +472,14 @@ export function RelocationApprovalStep({
         </div>
       </div>
 
-      {hasApproval === true ? (
-        <PriorApprovalForm busy={busy} onSubmit={(formData) => run(onUploadPriorApproval, formData)} />
-      ) : null}
-      {hasApproval === false ? (
-        <RequestForm
-          routeText="the relocation approvers (Recruiter → CEO → HRBP → Payroll by default)"
+      {hasApproval !== null ? (
+        <RelocationForm
+          key={hasApproval ? 'approved' : 'request'}
+          hasApproval={hasApproval}
+          travelOptions={travelOptions}
+          routeText="the relocation approvers"
           busy={busy}
-          onSubmit={(payload) => run(onCreateRequest, payload)}
+          onSubmit={(payload) => run(hasApproval ? onUploadPriorApproval : onCreateRequest, payload)}
         />
       ) : null}
 
@@ -514,6 +516,8 @@ export function RelocationSummaryStep({ claim, relocation, onBack, onNext }) {
             {relocation ? `${relocation.origin_city} → ${relocation.destination_city} · ${relocationRef(relocation)}` : '—'}
             {relocation?.source === 'PRIOR_APPROVAL' ? ' (approval evidence attached)' : ''}
           </dd>
+          <dt className="text-slate-500">Travel type</dt>
+          <dd className="font-bold text-slate-800">{relocationTravelType(relocation?.details)}</dd>
           <dt className="text-slate-500">Claim amount</dt>
           <dd className="font-bold text-slate-800">₹{formatInr(total)}</dd>
           {earlier > 0 ? (
@@ -638,6 +642,13 @@ export function RelocationClaimPanel({ relocation, onPreviewEvidence }) {
               {isPrior
                 ? 'approval the employee already had (evidence uploaded)'
                 : `approved${relocation.decided_at ? ` ${formatDate(relocation.decided_at)}` : ''}`}
+            </div>
+            <div className="mt-0.5 text-[11px] text-slate-500">
+              {relocationTravelType(relocation.details)}
+              {relocation.details?.travel_date ? ` · travelling ${formatDate(relocation.details.travel_date)}` : ''}
+              {relocation.details?.family_members != null
+                ? ` · ${relocation.details.family_members} family member${Number(relocation.details.family_members) === 1 ? '' : 's'}`
+                : ''}
             </div>
           </div>
           {isPrior && relocation.has_evidence ? (

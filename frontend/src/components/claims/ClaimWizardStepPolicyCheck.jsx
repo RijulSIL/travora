@@ -165,6 +165,24 @@ export default function ClaimWizardStepPolicyCheck({ claim, isGeneral, onBack, o
     );
   }
 
+  // The claim window (days after the trip's to date): late needs an exception, archived can't be claimed.
+  const claimWindow = claim?.claim_window;
+  let windowNote = null;
+  if (claimWindow?.status === 'ARCHIVED') {
+    windowNote = (
+      <Note tone="rose" icon={AlertCircle} title="This trip is archived">
+        It ended {claimWindow.days_since_trip} days ago, more than {claimWindow.archive_after_days} days, so it can no longer be claimed.
+      </Note>
+    );
+  } else if (claimWindow?.status === 'LATE' && claim?.late_claim?.exception_reason_required) {
+    windowNote = (
+      <Note tone="amber" title="Late claim">
+        The trip ended {claimWindow.days_since_trip} days ago, more than {claimWindow.late_after_days} days. You&apos;ll give a reason when you submit,
+        and the claim goes to the exception approvers.
+      </Note>
+    );
+  }
+
   const taxTiles = [
     ['Taxable value', gst.total_taxable_value ?? gst.taxable_value],
     ['CGST + SGST', Number(gst.cgst || 0) + Number(gst.sgst || 0)],
@@ -174,6 +192,7 @@ export default function ClaimWizardStepPolicyCheck({ claim, isGeneral, onBack, o
 
   return (
     <>
+      {windowNote}
       {verdict}
       <Card title="Expenses" sub="Grouped by category from the invoices you ticked" bodyClass="space-y-2.5">
         {expenses.length ? (

@@ -96,15 +96,15 @@ function policyAdminItems() {
 
 /** "New Claim" expands in place to let the employee pick which claim flow to start —
  * see AppSidebar's NavRow, which renders `children` as an expandable group instead of a
- * plain link when present. `getFlatNavItems` below flattens this to two rows for mobile,
- * where there's no room to expand inline. Relocation isn't a separate entry point here —
- * it's a Travel Claim with trip purpose Relocation (see ClaimRelocationSteps.jsx). */
+ * plain link when present. `getFlatNavItems` below flattens this to one row per flow for mobile,
+ * where there's no room to expand inline. */
 const NEW_CLAIM_ITEM = {
   label: 'New Claim',
   icon: 'add',
   children: [
     { to: '/claims/travel/new', label: 'Travel Claim', icon: 'plane' },
     { to: '/claims/general/new', label: 'General Reimbursement', icon: 'clipboard' },
+    { to: '/claims/relocation/new', label: 'Relocation Claim', icon: 'relocation' },
   ],
 };
 
@@ -291,6 +291,20 @@ export const navByRole = {
     ],
     mobile: ['/dashboard', '/claims/pending?tab=relocation', '/claims/my', '/travel-requests'],
   },
+
+  // A pure approver: assignable to any stage in the Approval Matrix (claims, travel requests,
+  // relocation, exceptions) — nothing admin/config beyond that.
+  ADMIN: {
+    sections: [
+      ...S([
+        { to: '/dashboard', label: 'Home', icon: 'home', end: true },
+        pendingApprovalsItem('Pending Approvals'),
+        exceptionRequestsItem(),
+      ]),
+      { title: 'My Claims & Travel', items: SELF_SERVICE_ITEMS },
+    ],
+    mobile: ['/dashboard', '/claims/pending?tab=claims', '/hr/exceptions', '/claims/my'],
+  },
 };
 
 navByRole.HRBP = navByRole.HRBP_HR;
@@ -337,6 +351,7 @@ const DELEGATABLE_NAV_BY_ROLE = {
   GROUP_HEAD_HR: [pendingApprovalsItem('Pending Approvals'), exceptionRequestsItem()],
   IT_ADMIN: [],
   RECRUITER: [],
+  ADMIN: [pendingApprovalsItem('Pending Approvals'), exceptionRequestsItem()],
 };
 
 /**

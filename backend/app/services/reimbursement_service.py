@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -37,10 +38,16 @@ from app.models.reimbursement import (
     ReimbursementCategory,
 )
 from app.models.travel_booking import TravelMode, TravelTrip
-from app.models.travel_request import TravelOptionType, TravelRequestTravelType
+from app.models.travel_request import TravelOptionType, TravelRequest, TravelRequestTravelType
 from app.schemas.reimbursement import ClaimDraftIn, InvoiceFieldsUpdateRequest
 from app.services.budget_alert_service import check_and_notify_budget_threshold
-from app.services.claim_submission_rules import validate_claim_submission
+from app.services.claim_submission_rules import (
+    CLAIM_ARCHIVED,
+    CLAIM_LATE,
+    CLAIM_ON_TIME,
+    claim_lateness,
+    claim_windows,
+)
 from app.services.expense_category_service import check_blacklist
 from app.services.invoice_gemini_extraction import extract_invoice_with_gemini_sync
 from app.services.notification_service import create_notification
@@ -1859,6 +1866,127 @@ async def assert_trips_not_on_other_claim(trip_ids: list[int], claim_id: int, db
     )
 
 
+async def trip_end_dates(trips: list, db: AsyncSession) -> dict[int, date]:
+    """Each trip's to date — what its claim window is counted from: the last leg of the trip it
+    belongs to (every leg booked from one travel request counts as one trip) or that request's
+    return date, whichever is later. A trip booked on its own ends on its own date."""
+    request_ids = {t.travel_request_id for t in trips if t.travel_request_id}
+    returns: dict[int, date | None] = {}
+    legs_by_request: dict[int, list[date]] = defaultdict(list)
+    if request_ids:
+        returns = dict(
+            (
+                await db.execute(
+                    select(TravelRequest.id, TravelRequest.return_date).where(TravelRequest.id.in_(request_ids))
+                )
+            ).tuples().all()
+        )
+        legs = await db.execute(
+            select(TravelTrip.travel_request_id, TravelTrip.travel_date).where(
+                TravelTrip.travel_request_id.in_(request_ids)
+            )
+        )
+        for request_id, leg_date in legs.tuples().all():
+            legs_by_request[request_id].append(leg_date)
+    ends: dict[int, date] = {}
+    for trip in trips:
+        if not trip.travel_request_id:
+            ends[trip.id] = trip.travel_date
+            continue
+        dates = [*legs_by_request.get(trip.travel_request_id, []), trip.travel_date]
+        if returns.get(trip.travel_request_id):
+            dates.append(returns[trip.travel_request_id])
+        ends[trip.id] = max(dates)
+    return ends
+
+
+async def archived_trip_ids(trips: list, db: AsyncSession) -> set[int]:
+    """Trips more than the archive window past their to date — no longer claimable."""
+    cfg = await get_workflow_config(db)
+    today = now_ist().date()
+    return {
+        trip_id
+        for trip_id, end in (await trip_end_dates(trips, db)).items()
+        if claim_lateness(end, cfg, today)[0] == CLAIM_ARCHIVED
+    }
+
+
+async def claim_trip_end(claim: ClaimDraft, db: AsyncSession) -> date | None:
+    """The to date a travel claim is measured from: its booked trips' (the latest of them), or —
+    with no trip — the return date on the claim."""
+    trip_ids = (await db.execute(select(ClaimTrip.trip_id).where(ClaimTrip.claim_id == claim.id))).scalars().all()
+    if trip_ids:
+        trips = (await db.execute(select(TravelTrip).where(TravelTrip.id.in_(trip_ids)))).scalars().all()
+        ends = list((await trip_end_dates(list(trips), db)).values())
+        if ends:
+            return max(ends)
+    return claim.return_date
+
+
+LATE_CLAIM_EXCEPTION = "LATE_CLAIM"
+LATE_CLAIM_ITEM_NAME = "Late claim"
+
+
+async def _has_late_claim_item(claim_id: int, db: AsyncSession) -> bool:
+    from app.models.claim_workflow import ExceptionRequest, ExceptionRequestItem, ExceptionRequestStatus
+    from app.services.workflow_service import ITEM_STATUS_DROPPED
+
+    found = (
+        await db.execute(
+            select(ExceptionRequestItem.id)
+            .join(ExceptionRequest, ExceptionRequest.id == ExceptionRequestItem.exception_request_id)
+            .where(
+                ExceptionRequest.claim_id == claim_id,
+                ExceptionRequest.status != ExceptionRequestStatus.CANCELLED.value,
+                ExceptionRequestItem.exception_type == LATE_CLAIM_EXCEPTION,
+                ExceptionRequestItem.status.not_in((ExceptionRequestStatus.CANCELLED.value, ITEM_STATUS_DROPPED)),
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return found is not None
+
+
+async def claim_window_for(claim: ClaimDraft, expenses: list, cfg: dict, db: AsyncSession):
+    """Where a travel claim stands against its trip's claim window, and — when it's late — its
+    late-claim exception as an item shaped like a flagged expense (exception_type, category_name,
+    amount, ...), so the submit modal, the exception request and a send-back treat it exactly like
+    one. Returns (window, late item or None); (None, None) for other claims.
+
+    Measured against today while the claim is a draft. A claim already submitted once keeps what
+    was decided then: sent back and resubmitted, it isn't made late (or archived) by the time the
+    fix took, and stays late only if it was raised late."""
+    if getattr(claim, "reimbursement_category", None) != ReimbursementCategory.TRAVEL or getattr(
+        claim, "is_exception_shell", False
+    ):
+        return None, None
+    late_after, archive_after = claim_windows(cfg)
+    trip_end = await claim_trip_end(claim, db)
+    state, days = claim_lateness(trip_end, cfg, now_ist().date())
+    if claim.status != ClaimStatus.DRAFT:
+        state = CLAIM_LATE if await _has_late_claim_item(claim.id, db) else CLAIM_ON_TIME
+    window = {
+        "status": state,
+        "days_since_trip": days,
+        "trip_end": trip_end.isoformat() if trip_end else None,
+        "late_after_days": late_after,
+        "archive_after_days": archive_after,
+    }
+    if state != CLAIM_LATE or not is_exception_enabled(cfg, LATE_CLAIM_EXCEPTION):
+        return window, None
+    late = SimpleNamespace(
+        id=None,
+        exception_type=LATE_CLAIM_EXCEPTION,
+        category_name=LATE_CLAIM_ITEM_NAME,
+        amount=sum((Decimal(str(e.amount)) for e in expenses), Decimal("0.00")),
+        cap_amount=None,
+        days_since_trip=days,
+        trip_end=trip_end,
+        exception_requested=False,
+    )
+    return window, late
+
+
 def _assert_trip_dates_in_order(claim: Any) -> None:
     if claim.departure_date and claim.return_date and claim.return_date < claim.departure_date:
         raise HTTPException(
@@ -1980,9 +2108,9 @@ async def _create_or_update_claim_draft_impl(
     # as-is) — flipping it to DRAFT would hide it from the approver who sent it back and let it
     # be deleted along with its approval history (see delete_claim_draft).
 
-    # Relocation: started from the Travel Claim form with trip purpose "Relocation". It's its own
-    # claim type (RELOCATION), raised against an approved relocation, with Relocation invoices only
-    # and no trips; origin/destination come from that relocation approval.
+    # Relocation: started from its own form (New Claim -> Relocation Claim). It's its own claim
+    # type (RELOCATION), raised against an approved relocation, with Relocation invoices only and
+    # no trips; cities, travel type and project code come from that relocation approval.
     from app.services.relocation_service import RELOCATION_TRIP_PURPOSE, assert_usable_for_claim
 
     relocation = None
@@ -1992,12 +2120,13 @@ async def _create_or_update_claim_draft_impl(
         or payload.relocation_request_id
     ):
         relocation = await assert_usable_for_claim(payload.relocation_request_id, user_id, db)
+        relocation_details = relocation.details or {}
         payload = payload.model_copy(
             update={
                 "reimbursement_category": ReimbursementCategory.RELOCATION,
                 "trip_purpose": RELOCATION_TRIP_PURPOSE,
-                "travel_type": "NON_PROJECT",
-                "project_code": None,
+                "travel_type": relocation_details.get("travel_type") or "NON_PROJECT",
+                "project_code": relocation_details.get("project_code"),
                 "trip_ids": [],
                 "from_city": relocation.origin_city,
                 "destination_city": relocation.destination_city,
@@ -2118,6 +2247,11 @@ async def annotate_expense_exceptions(
     from app.services.workflow_service import describe_exception_items, is_itemized_claim_request
 
     cfg = cfg or await get_workflow_config(db)
+    window, late = await claim_window_for(claim, expenses, cfg, db)
+    claim.claim_window = window
+    claim.late_claim = late
+    if late is not None:
+        expenses = [*expenses, late]
     requests = (
         await db.execute(
             select(ExceptionRequest)
@@ -2298,6 +2432,28 @@ async def submit_claim(
             )
 
     cfg = await get_workflow_config(db)
+    window = getattr(claim, "claim_window", None) or {}
+    if window.get("status") == CLAIM_ARCHIVED:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"This trip ended {window['days_since_trip']} days ago, more than "
+                f"{window['archive_after_days']} days, so it's archived and can no longer be claimed."
+            ),
+        )
+    late = getattr(claim, "late_claim", None)
+    if late is not None:
+        # The whole claim's late-claim exception goes through the same reasons, request and
+        # send-back handling as a flagged expense's.
+        expenses = [*expenses, late]
+        if late.exception_reason_required and late.exception_mode == EXCEPTION_SUBMISSION_BLOCK:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"This trip ended {late.days_since_trip} days ago, more than {window['late_after_days']} "
+                    "days, and policy doesn't allow late claims."
+                ),
+            )
     needing = [expense for expense in expenses if expense.exception_reason_required]
     blocked = [
         expense for expense in needing
@@ -2360,14 +2516,13 @@ async def submit_claim(
                     f"Missing for: {refs}"
                 ),
             )
-    wf = await get_workflow_config(db)
-    is_late, late_days = validate_claim_submission(claim, wf)
-    if is_late:
+    if window.get("status") == CLAIM_LATE and claim.status == ClaimStatus.DRAFT:
         rep = dict(claim.compliance_report or {})
         rep["is_late_submission"] = True
-        rep["late_by_days"] = late_days
+        rep["late_by_days"] = window["days_since_trip"] - window["late_after_days"]
+        rep["days_since_trip"] = window["days_since_trip"]
         claim.compliance_report = rep
-        
+
     claim.submitted_at = _now()
     if relocation is not None:
         from app.services.relocation_service import render_undertaking

@@ -1,10 +1,10 @@
-// Travel Claim and General Reimbursement are separate wizard pages/routes (see
-// TravelClaimWizard.jsx / GeneralReimbursementWizard.jsx) — these helpers pick the right
-// one from a claim's own reimbursement_category so callers don't duplicate the branch.
-// Relocation claims are raised from the Travel Claim wizard with trip purpose "Relocation"
-// (see ClaimRelocationSteps.jsx), so they share its route.
+// Travel Claim, General Reimbursement and Relocation Claim are separate wizard routes (relocation
+// shares TravelClaimWizard.jsx in its `relocation` mode, see ClaimRelocationSteps.jsx) — these
+// helpers pick the right one from a claim's own reimbursement_category so callers don't
+// duplicate the branch.
 export function claimCategorySegment(category) {
-  return category === 'TRAVEL' || category === 'RELOCATION' ? 'travel' : 'general';
+  if (category === 'RELOCATION') return 'relocation';
+  return category === 'TRAVEL' ? 'travel' : 'general';
 }
 
 export function claimEditPath(claim) {
@@ -13,7 +13,6 @@ export function claimEditPath(claim) {
 
 /** New-claim path for a category, with optional query params (e.g. { invoiceIds: '1,2' }). */
 export function claimNewPath(category, params = {}) {
-  const query = new URLSearchParams(category === 'RELOCATION' ? { purpose: 'Relocation', ...params } : params);
-  const search = query.toString();
+  const search = new URLSearchParams(params).toString();
   return `/claims/${claimCategorySegment(category)}/new${search ? `?${search}` : ''}`;
 }

@@ -78,8 +78,11 @@ export default function App() {
               <Route path="invoices" element={<InvoiceUpload />} />
               <Route path="invoices/archived" element={<ArchivedInvoices />} />
               <Route path="invoices/:invoiceId/review" element={<InvoiceReview />} />
-              <Route path="claims/travel/new" element={<TravelClaimWizard />} />
-              <Route path="claims/travel/:id/edit" element={<TravelClaimWizard />} />
+              <Route path="claims/travel/new" element={<TravelClaimWizard key="travel" />} />
+              <Route path="claims/travel/:id/edit" element={<TravelClaimWizard key="travel" />} />
+              {/* Relocation claims have their own form; the wizard shares its invoice and submit steps. */}
+              <Route path="claims/relocation/new" element={<TravelClaimWizard key="relocation" relocation />} />
+              <Route path="claims/relocation/:id/edit" element={<TravelClaimWizard key="relocation" relocation />} />
               <Route path="claims/general/new" element={<GeneralReimbursementWizard />} />
               <Route path="claims/general/:id/edit" element={<GeneralReimbursementWizard />} />
               <Route path="claims/my" element={<MyClaims />} />

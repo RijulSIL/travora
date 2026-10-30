@@ -75,7 +75,7 @@ export const reimbursementApi = {
   claimRelocationEvidenceBlob: (claimId) =>
     api.get(`claims/${claimId}/relocation-evidence`, { responseType: 'blob' }),
 
-  // Relocation approvals (Travel Claim → trip purpose Relocation; approvers in Pending Approvals)
+  // Relocation approvals (New Claim → Relocation Claim; approvers in Pending Approvals)
   relocationMine: () => api.get('relocation/mine'),
   createRelocationRequest: (payload) => api.post('relocation/requests', payload),
   uploadRelocationPriorApproval: (formData) =>

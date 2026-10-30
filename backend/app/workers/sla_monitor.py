@@ -273,8 +273,7 @@ async def _relocation_stages(db: AsyncSession, clock: _Clock) -> None:
         return
     cfg = await ws.get_workflow_config(db)
     for row, req in rows:
-        # A request's chain, or a prior-approval upload's check — each has its own route.
-        stage_defs = ws.relocation_stage_defs_for(cfg, req.source)
+        stage_defs = ws.relocation_request_stage_defs(cfg)
         ref = relocation_service.relocation_ref(req)
         link = "/claims/pending?tab=relocation"
         owner = await db.get(User, req.employee_user_id)

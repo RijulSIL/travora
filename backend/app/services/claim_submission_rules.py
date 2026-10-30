@@ -1,55 +1,50 @@
 """Claim submission business rules (Phase 3 spec §1)."""
 
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 
-from fastapi import HTTPException, status
+# How long after a trip ends it can be claimed, in calendar days from its to date (the last leg,
+# or the return date). Up to LATE_AFTER days it's an ordinary claim; after that the claim needs a
+# late-claim exception (LATE_CLAIM); after ARCHIVE_AFTER days the trip is archived and can't be
+# claimed at all. Admin-editable as workflow config submission.late_after_days /
+# submission.archive_after_days (Approval Matrix).
+DEFAULT_LATE_AFTER_DAYS = 7
+DEFAULT_ARCHIVE_AFTER_DAYS = 15
 
-from app.models.reimbursement import ClaimDraft, ReimbursementCategory
-
-
-def _add_working_days(start: date, days: int) -> date:
-    """Add N working days (Mon–Fri only; no holiday calendar in Phase 3 MVP)."""
-    d = start
-    added = 0
-    while added < days:
-        d += timedelta(days=1)
-        if d.weekday() < 5:
-            added += 1
-    return d
+CLAIM_ON_TIME = "ON_TIME"
+CLAIM_LATE = "LATE"
+CLAIM_ARCHIVED = "ARCHIVED"
 
 
-def assert_submission_deadline(claim: ClaimDraft, submission_config: dict) -> tuple[bool, int]:
-    # General Reimbursements and Relocation claims have no trip, so there's no return_date
-    # to anchor a deadline to — the "N working days after return" rule doesn't apply to them.
-    if claim.reimbursement_category in (ReimbursementCategory.GENERAL, ReimbursementCategory.RELOCATION):
-        return False, 0
-    if not claim.return_date:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Return date is mandatory for claim submission to validate the 5-day deadline.",
-        )
-    max_days = int(submission_config.get("max_working_days_after_return", 5))
-    deadline = _add_working_days(claim.return_date, max_days)
-    mode = submission_config.get("deadline_mode", "hard_block")
-    today = date.today()
-    if today > deadline:
-        late_days = (today - deadline).days
-        if mode == "hard_block":
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=(
-                    f"Claim must be submitted within {max_days} working days of return "
-                    f"(deadline {deadline.isoformat()}). Configure workflow for soft warning if needed."
-                ),
-            )
-        return True, late_days
-    return False, 0
+def _days(value, default: int) -> int:
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        return default
+    return days if days >= 1 else default
 
 
-def validate_claim_submission(claim: ClaimDraft, workflow_config: dict) -> tuple[bool, int]:
+def claim_windows(workflow_config: dict) -> tuple[int, int]:
+    """(late after, archived after) in days — the archive window is never shorter than the late one."""
     submission = workflow_config.get("submission") or {}
-    return assert_submission_deadline(claim, submission)
+    late = _days(submission.get("late_after_days"), DEFAULT_LATE_AFTER_DAYS)
+    archive = _days(submission.get("archive_after_days"), DEFAULT_ARCHIVE_AFTER_DAYS)
+    return late, max(archive, late)
+
+
+def claim_lateness(trip_end: date | None, workflow_config: dict, today: date) -> tuple[str, int]:
+    """Where a claim for a trip that ended on `trip_end` stands today — ON_TIME, LATE (needs a
+    late-claim exception) or ARCHIVED (can't be claimed) — and how many days ago the trip ended.
+    No end date (a claim without a trip yet) is on time."""
+    if trip_end is None:
+        return CLAIM_ON_TIME, 0
+    days_since = (today - trip_end).days
+    late_after, archive_after = claim_windows(workflow_config)
+    if days_since > archive_after:
+        return CLAIM_ARCHIVED, days_since
+    if days_since > late_after:
+        return CLAIM_LATE, days_since
+    return CLAIM_ON_TIME, max(days_since, 0)
 
 
 def parse_auto_approve_threshold(workflow_config: dict) -> Decimal:
@@ -60,7 +55,7 @@ def parse_auto_approve_threshold(workflow_config: dict) -> Decimal:
         return Decimal("0")
 
 
-def total_claimed_from_report(claim: ClaimDraft) -> Decimal:
+def total_claimed_from_report(claim) -> Decimal:
     report = claim.compliance_report or {}
     try:
         return Decimal(str(report.get("total_claimed", "0")))

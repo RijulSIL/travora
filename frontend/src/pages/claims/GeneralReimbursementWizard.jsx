@@ -14,7 +14,7 @@ import { reimbursementApi } from '../../services/reimbursementApi';
 const STEP_LABELS = ['Invoices', 'Policy check', 'Submit'];
 const DRAFT_STORAGE_KEY = 'travora_general_reimbursement_draft';
 // General Reimbursement draws only from General-tagged invoices. Relocation claims are raised
-// from the Travel Claim wizard (trip purpose Relocation) with Relocation-tagged invoices.
+// from the Relocation Claim form with Relocation-tagged invoices.
 const PICKER_CATEGORIES = ['GENERAL'];
 
 export default function GeneralReimbursementWizard() {

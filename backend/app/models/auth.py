@@ -23,6 +23,10 @@ class Role(str, enum.Enum):
     # Uses the app like a regular employee, and approves relocation requests (the first stage of
     # the default Relocation Approval workflow — see workflow_service.RELOCATION_REQUEST_DEFAULT_STAGES).
     RECRUITER = "RECRUITER"
+    # A pure approver: assignable to any stage in the Approval Matrix (claims, travel requests,
+    # relocation, exception chains), nothing more. Deliberately not IT_ADMIN — no system/user
+    # management permissions, no manager status, no admin-config access.
+    ADMIN = "ADMIN"
 
 
 class User(Base):

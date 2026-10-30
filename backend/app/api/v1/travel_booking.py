@@ -22,7 +22,7 @@ from app.schemas.travel_booking import (
     TrainSearchIn,
     TripOut,
 )
-from app.services.reimbursement_service import trip_ids_on_claims
+from app.services.reimbursement_service import archived_trip_ids, trip_ids_on_claims
 from app.services.travel_booking_service import (
     book_bus,
     book_flight,
@@ -170,6 +170,9 @@ async def buses_book(
 async def my_trips(
     unlinked_only: bool = Query(False),
     editing_claim_id: int | None = Query(None),
+    # With unlinked_only: keep archived trips (flagged archived) — My Travel Requests shows them
+    # as archived; the claim wizard and Home leave them out.
+    include_archived: bool = Query(False),
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ) -> list[TripOut]:
@@ -178,12 +181,23 @@ async def my_trips(
     from app.models.travel_request import TravelRequest
 
     trips = await list_trips(int(claims["sub"]), db)
+    archived = await archived_trip_ids(trips, db)
     if unlinked_only:
         # "Still to claim": drop trips already on a claim (any but a rejected one — see
-        # reimbursement_service.assert_trips_not_on_other_claim). The claim being edited keeps
-        # its own trips, so reopening it in the wizard still shows them as selected.
+        # reimbursement_service.assert_trips_not_on_other_claim) and archived ones (too long after
+        # the trip to claim). The claim being edited keeps its own trips, so reopening it in the
+        # wizard still shows them as selected.
         linked = await trip_ids_on_claims([t.id for t in trips], db, exclude_claim_id=editing_claim_id)
-        trips = [t for t in trips if t.id not in linked]
+        own = set()
+        if editing_claim_id:
+            from app.models.reimbursement import ClaimTrip
+
+            own = set(
+                (await db.execute(select(ClaimTrip.trip_id).where(ClaimTrip.claim_id == editing_claim_id)))
+                .scalars()
+                .all()
+            )
+        trips = [t for t in trips if t.id not in linked and (include_archived or t.id not in archived or t.id in own)]
     desk_ids = await desk_ticket_ids_for_trips(trips, db)
 
     # Fetch return date / trip type / purpose / travel type / project code from travel requests
@@ -216,6 +230,7 @@ async def my_trips(
             "purpose": _req_field(t, "purpose"),
             "travel_type": _req_field(t, "travel_type"),
             "project_code": _req_field(t, "project_code"),
+            "archived": t.id in archived,
         })
         for t in trips
     ]

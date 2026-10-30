@@ -7,7 +7,7 @@ import { useAuthStore } from '../../store/authStore';
 import { RELOCATION_PURPOSE } from '../../components/claims/ClaimRelocationSteps';
 import TicketPreviewDrawer from '../../components/ui/TicketPreviewDrawer';
 import { EntitlementChips, TravelRequestDetail, TravelRequestRow, TripRow } from '../../components/travel/TravelRequestList';
-import { describeRequest } from '../../components/travel/travelRequestView';
+import { claimWindow, claimWindowDays, describeRequest } from '../../components/travel/travelRequestView';
 import LegPicker, { pickDone, segmentComplete } from '../../components/travel/LegPicker';
 import {
   CapsPanel,
@@ -20,7 +20,7 @@ import {
   RouteLine,
   SegButtons,
 } from '../../components/travel/TravelRequestFormParts';
-import { addWorkingDays, dayOf, daysBetween, shortDate, today, weekdayDate } from '../../components/home/HomeParts';
+import { dayOf, today } from '../../components/home/HomeParts';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
 import Pagination from '../../components/ui/Pagination';
 import SubmissionAnimation from '../../components/ui/SubmissionAnimation';
@@ -317,7 +317,8 @@ export default function TravelRequestsPage() {
     const [my, allTrips, unclaimed] = await Promise.all([
       reimbursementApi.travelRequestsMy(),
       reimbursementApi.bookingTripsMy().catch(() => ({ data: [] })),
-      reimbursementApi.bookingTripsMy({ unlinked_only: true }).catch(() => ({ data: [] })),
+      // Archived trips too, so they read as "archived" here rather than as claimed.
+      reimbursementApi.bookingTripsMy({ unlinked_only: true, include_archived: true }).catch(() => ({ data: [] })),
     ]);
     const list = my.data || [];
     setRows(list);
@@ -377,21 +378,17 @@ export default function TravelRequestsPage() {
   }, [profile, form]);
 
   // How each request reads (tab, status in plain words, claim window), then the current tab's rows.
-  const viewOptions = useMemo(
-    () => ({
-      trips,
-      unclaimedIds,
-      claimDays: profile?.workflow_submission_max_working_days || 5,
-      claimMode: profile?.workflow_submission_deadline_mode || 'hard_block',
-    }),
-    [trips, unclaimedIds, profile?.workflow_submission_max_working_days, profile?.workflow_submission_deadline_mode],
+  const windowDays = useMemo(
+    () => claimWindowDays(profile),
+    [profile],
   );
+  const viewOptions = useMemo(() => ({ trips, unclaimedIds, windowDays }), [trips, unclaimedIds, windowDays]);
   const described = useMemo(
     () => (rows || []).map(({ request }) => ({ request, view: describeRequest(request, chains[request.id], viewOptions) })),
     [rows, chains, viewOptions],
   );
   const bucketCounts = useMemo(() => {
-    const counts = { upcoming: 0, past: 0, cancelled: 0, all: described.length };
+    const counts = { upcoming: 0, past: 0, archived: 0, cancelled: 0, all: described.length };
     described.forEach(({ view }) => {
       counts[view.bucket] += 1;
     });
@@ -414,18 +411,11 @@ export default function TravelRequestsPage() {
     const ends = (group.length ? group : [trip]).map((t) => dayOf(t.return_date) || dayOf(t.travel_date)).filter(Boolean);
     const end = ends.sort((a, b) => b - a)[0];
     if (!end) return { claimed: false, open: true, text: '', ids: [trip.id] };
-    const deadline = addWorkingDays(end, viewOptions.claimDays);
     const now = today();
-    const left = daysBetween(now, deadline);
     const ids = (group.length ? group : [trip]).filter((t) => unclaimedIds.has(t.id)).map((t) => t.id);
     if (end >= now) return { claimed: false, open: false, text: 'Claim after you travel', ids };
-    if (now > deadline && viewOptions.claimMode === 'hard_block') return { claimed: false, open: false, text: `Claim window closed ${shortDate(deadline)}`, ids };
-    return {
-      claimed: false,
-      open: true,
-      ids,
-      text: now > deadline ? `Claim window closed ${shortDate(deadline)} · late claim` : `Claim by ${weekdayDate(deadline)} · ${left === 0 ? 'today' : left === 1 ? 'tomorrow' : `${left} days left`}`,
-    };
+    const claimState = claimWindow(end, windowDays, now);
+    return { claimed: false, open: claimState.state !== 'archived', late: claimState.state === 'late', ids, text: claimState.text };
   };
   const startClaim = (ids) => navigate(claimNewPath('TRAVEL', { tripIds: ids.join(',') }));
 
@@ -682,6 +672,7 @@ export default function TravelRequestsPage() {
             {[
               ['upcoming', 'Upcoming'],
               ['past', 'Past'],
+              ['archived', 'Archived'],
               ['cancelled', 'Cancelled & rejected'],
               ['all', 'All'],
             ].map(([key, label]) => {

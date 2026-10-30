@@ -46,6 +46,11 @@ async def get_exception(
         if not allowed and await _has_department_head_step(row.id, db):
             requester = await db.get(User, row.requested_by_user_id)
             allowed = await is_department_head_for(uid, requester.employee_id if requester else None, db)
+        # Whoever's actually assigned the pending step may open it too — covers a pooled role
+        # (e.g. ADMIN, RECRUITER, PAYROLL) that isn't in broad_view_roles and isn't the direct
+        # manager, same as decide_exception_request already lets them act on it.
+        if not allowed:
+            allowed = await _has_pending_step_for_role(row.id, role.value, db)
         if not allowed:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     return row
@@ -57,6 +62,19 @@ async def _has_department_head_step(exception_id: int, db: AsyncSession) -> bool
             select(ExceptionApproval.id).where(
                 ExceptionApproval.exception_request_id == exception_id,
                 ExceptionApproval.required_role == DEPARTMENT_HEAD,
+            )
+        )
+    ).scalars().first()
+    return found is not None
+
+
+async def _has_pending_step_for_role(exception_id: int, role_value: str, db: AsyncSession) -> bool:
+    found = (
+        await db.execute(
+            select(ExceptionApproval.id).where(
+                ExceptionApproval.exception_request_id == exception_id,
+                ExceptionApproval.required_role == role_value,
+                ExceptionApproval.status == "PENDING",
             )
         )
     ).scalars().first()

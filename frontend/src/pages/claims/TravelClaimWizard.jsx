@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import {
@@ -10,7 +9,8 @@ import {
 } from '../../components/claims/ClaimRelocationSteps';
 import ClaimWizardShell, { ClaimSummaryCard, dateSpan, netPayable, policyCounts } from '../../components/claims/ClaimWizardShell';
 import ClaimWizardStepEvidence from '../../components/claims/ClaimWizardStepEvidence';
-import { travelRef } from '../../components/travel/travelRequestView';
+import { claimWindow, claimWindowDays, travelRef } from '../../components/travel/travelRequestView';
+import { dayOf } from '../../components/home/HomeParts';
 import ClaimWizardStepPolicyCheck from '../../components/claims/ClaimWizardStepPolicyCheck';
 import ClaimWizardStepSubmit from '../../components/claims/ClaimWizardStepSubmit';
 import ClaimWizardStepTripInfo from '../../components/claims/ClaimWizardStepTripInfo';
@@ -22,8 +22,8 @@ import useToast from '../../hooks/useToast';
 import { reimbursementApi } from '../../services/reimbursementApi';
 
 const STEP_LABELS = ['Trip', 'Invoices', 'Policy check', 'Submit'];
-// Trip purpose "Relocation" turns this into a relocation claim: raised against an approved
-// relocation, Relocation-tagged invoices only, no policy check, and an undertaking to accept.
+// The Relocation Claim form (`relocation`): raised against an approved relocation,
+// Relocation-tagged invoices only, no policy check, and an undertaking to accept.
 const RELOCATION_STEP_LABELS = ['Relocation', 'Invoices', 'Summary', 'Submit'];
 
 function errorDetail(error, fallback) {
@@ -36,19 +36,11 @@ function isoDate(value) {
   return String(value).slice(0, 10);
 }
 
-function addWorkingDays(date, days) {
-  const value = new Date(date);
-  let left = days;
-  while (left > 0) {
-    value.setDate(value.getDate() + 1);
-    const dow = value.getDay();
-    if (dow !== 0 && dow !== 6) left -= 1;
-  }
-  return value;
-}
-
-export default function TravelClaimWizard() {
-  useSetPageTitle('Travel Claim');
+/** Travel Claim, or — with `relocation` — the Relocation Claim form (its own route and menu entry;
+ * they share the invoice step and the submit flow). */
+export default function TravelClaimWizard({ relocation = false }) {
+  const isRelocation = relocation;
+  useSetPageTitle(isRelocation ? 'Relocation Claim' : 'Travel Claim');
   const navigate = useNavigate();
   const { id } = useParams();
   const [searchParams] = useSearchParams();
@@ -69,14 +61,21 @@ export default function TravelClaimWizard() {
         .filter(Boolean),
     [searchParams],
   );
-  // ?purpose=Relocation — the link in relocation notifications ("continue to your claim").
-  const purposeFromUrl = searchParams.get('purpose') === RELOCATION_PURPOSE && !id ? RELOCATION_PURPOSE : '';
   const { showToast } = useToast();
+  // Each form keeps its own unsaved draft, so starting one never resumes the other.
+  const draftKey = isRelocation ? 'travora_relocation_claim_draft' : 'travora_claim_draft';
+
+  // Links from before relocation had its own form (/claims/travel/new?purpose=Relocation).
+  useEffect(() => {
+    if (!isRelocation && !id && searchParams.get('purpose') === RELOCATION_PURPOSE) {
+      navigate('/claims/relocation/new', { replace: true });
+    }
+  }, [isRelocation, id, searchParams, navigate]);
 
   const [currentStep, setCurrentStep] = useState(1);
   const [claim, setClaim] = useState(null);
   const [form, setForm] = useState({
-    trip_purpose: purposeFromUrl,
+    trip_purpose: isRelocation ? RELOCATION_PURPOSE : '',
     travel_type: 'NON_PROJECT',
     project_code: '',
     office_location: '',
@@ -90,9 +89,10 @@ export default function TravelClaimWizard() {
   const [cityQ, setCityQ] = useState('');
   const [cityOptions, setCityOptions] = useState([]);
   const [cityGroupHint, setCityGroupHint] = useState('');
-  const [deadlineWarning, setDeadlineWarning] = useState('');
+  // { tone, title, text } when the trip is past its on-time claim window (late, or archived).
+  const [deadlineWarning, setDeadlineWarning] = useState(null);
   const [validationErrors, setValidationErrors] = useState({});
-  const [workflowConfig, setWorkflowConfig] = useState(null);
+  const [windowDays, setWindowDays] = useState(() => claimWindowDays(null));
   const [trips, setTrips] = useState([]);
   const [invoices, setInvoices] = useState([]);
   const [selectedTripIds, setSelectedTripIds] = useState(tripIdsFromUrl);
@@ -104,12 +104,10 @@ export default function TravelClaimWizard() {
   const [declarationChecked, setDeclarationChecked] = useState(false);
   const [exceptionsOpen, setExceptionsOpen] = useState(false);
   const [submittedClaim, setSubmittedClaim] = useState(null);
-  const [showLateModal, setShowLateModal] = useState(false);
   const [relocations, setRelocations] = useState([]);
   const [relocationsLoading, setRelocationsLoading] = useState(false);
   const [relocationRequestId, setRelocationRequestId] = useState(null);
   const [undertakingAccepted, setUndertakingAccepted] = useState(false);
-  const isRelocation = form.trip_purpose === RELOCATION_PURPOSE;
   const stepLabels = isRelocation ? RELOCATION_STEP_LABELS : STEP_LABELS;
   const selectedRelocation = relocations.find((row) => row.id === relocationRequestId) || null;
 
@@ -170,12 +168,7 @@ export default function TravelClaimWizard() {
               from_city: prev.from_city || data?.office_location || '',
             }));
           }
-          setWorkflowConfig({
-            submission: {
-              deadline_mode: data?.workflow_submission_deadline_mode || 'hard_block',
-              max_working_days_after_return: data?.workflow_submission_max_working_days || 5,
-            }
-          });
+          setWindowDays(claimWindowDays(data));
         } else {
           setOfficeLocations([]);
         }
@@ -202,6 +195,12 @@ export default function TravelClaimWizard() {
         const detail = await reimbursementApi.claimDetail(effectiveEditId);
         if (cancelled) return;
         const row = detail.data;
+        // A relocation claim opened from an old travel-claim link edits in its own form, and the other way round.
+        if ((row.reimbursement_category === 'RELOCATION') !== isRelocation) {
+          const segment = row.reimbursement_category === 'RELOCATION' ? 'relocation' : 'travel';
+          navigate(`/claims/${segment}/${row.id}/edit`, { replace: true });
+          return;
+        }
         setClaim(row);
         setForm((prev) => ({
           ...prev,
@@ -224,7 +223,7 @@ export default function TravelClaimWizard() {
     return () => {
       cancelled = true;
     };
-  }, [effectiveEditId, showToast]);
+  }, [effectiveEditId, isRelocation, navigate, showToast]);
 
   // From City / Destination City autocomplete — same debounced City Groups suggestion endpoint
   // the Travel Request form already uses (city_suggestions / CityGroup.city_name), so both
@@ -254,12 +253,11 @@ export default function TravelClaimWizard() {
   useEffect(() => {
     if (effectiveEditId) return;
     try {
-      const saved = localStorage.getItem('travora_claim_draft');
+      const saved = localStorage.getItem(draftKey);
       if (saved) {
         const parsed = JSON.parse(saved);
-        // Opened for a relocation claim (?purpose=Relocation): an unfinished claim of another
-        // kind isn't resumed here — it would carry the wrong trips/invoices into this one.
-        if (purposeFromUrl && parsed.form?.trip_purpose !== purposeFromUrl) return;
+        // A travel-claim draft saved before relocation had its own form may be a relocation one.
+        if ((parsed.form?.trip_purpose === RELOCATION_PURPOSE) !== isRelocation) return;
         if (parsed.form) setForm(prev => ({ ...prev, ...parsed.form }));
         if (parsed.selectedTripIds) setSelectedTripIds(parsed.selectedTripIds);
         if (parsed.selectedInvoiceIds) setSelectedInvoiceIds(parsed.selectedInvoiceIds);
@@ -269,17 +267,17 @@ export default function TravelClaimWizard() {
     } catch {
       // ignore parse errors
     }
-  }, [effectiveEditId, purposeFromUrl]);
+  }, [effectiveEditId, draftKey, isRelocation]);
 
   // Draft Auto-Save: Save to localStorage on change
   useEffect(() => {
     if (effectiveEditId) return; // Don't auto-save if editing a backend claim
     const draftData = { form, selectedTripIds, selectedInvoiceIds, relocationRequestId, currentStep };
-    localStorage.setItem('travora_claim_draft', JSON.stringify(draftData));
-  }, [form, selectedTripIds, selectedInvoiceIds, relocationRequestId, currentStep, effectiveEditId]);
+    localStorage.setItem(draftKey, JSON.stringify(draftData));
+  }, [form, selectedTripIds, selectedInvoiceIds, relocationRequestId, currentStep, effectiveEditId, draftKey]);
 
   // Each claim type draws only from invoices tagged for it: a Travel claim from Travel, a
-  // relocation claim (trip purpose Relocation) from Relocation. General invoices belong to the
+  // relocation claim from Relocation. General invoices belong to the
   // General Reimbursement wizard (see GeneralReimbursementWizard.jsx's visibleInvoices).
   const visibleInvoices = useMemo(
     () =>
@@ -407,16 +405,6 @@ export default function TravelClaimWizard() {
   }, [selectedTripIds, trips, officeLocations]);
 
   const onChange = (key, value) => {
-    if (key === 'trip_purpose' && (value === RELOCATION_PURPOSE) !== isRelocation) {
-      // Switching between a relocation claim and a trip claim: their trips, invoices and
-      // relocation approval don't carry over (each draws from differently tagged invoices).
-      setSelectedTripIds([]);
-      setSelectedInvoiceIds([]);
-      setRelocationRequestId(null);
-      setUndertakingAccepted(false);
-      setValidationErrors({});
-      setDeadlineWarning('');
-    }
     setForm((prev) => {
       const next = { ...prev, [key]: value };
       if (key === 'office_location' && value && !prev.from_city) {
@@ -441,19 +429,25 @@ export default function TravelClaimWizard() {
     if (form.departure_date && form.return_date && form.return_date < form.departure_date) {
       next.return_date = 'Return date must be on or after departure date.';
     }
-    if (form.return_date) {
-      const returnDate = new Date(form.return_date);
-      const maxDays = workflowConfig?.submission?.max_working_days_after_return ?? 5;
-      const mode = workflowConfig?.submission?.deadline_mode ?? 'hard_block';
-      const deadline = addWorkingDays(returnDate, maxDays);
-      if (new Date() > deadline) {
-        setDeadlineWarning(`Submission deadline has passed. You had until ${deadline.toLocaleDateString()} to submit.`);
-        if (mode === 'hard_block') {
-          next.return_date = 'Submission deadline has passed.';
-        }
-      } else {
-        setDeadlineWarning('');
-      }
+    // Counted from the trip's to date (the return date here): a late claim needs an exception,
+    // an archived trip can't be claimed (claim_submission_rules.claim_lateness on the server).
+    const ended = dayOf(form.return_date);
+    const claimState = ended ? claimWindow(ended, windowDays) : null;
+    if (claimState?.state === 'archived') {
+      next.return_date = 'Too late to claim this trip.';
+      setDeadlineWarning({
+        tone: 'rose',
+        title: 'This trip is archived',
+        text: `It ended more than ${windowDays.archiveDays} days ago, so it can no longer be claimed.`,
+      });
+    } else if (claimState?.state === 'late') {
+      setDeadlineWarning({
+        tone: 'amber',
+        title: 'Late claim',
+        text: `The trip ended more than ${windowDays.lateDays} days ago. You can still claim it until ${claimState.lastDay.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}: you'll give a reason when you submit, and it goes to the exception approvers.`,
+      });
+    } else {
+      setDeadlineWarning(null);
     }
     setValidationErrors(next);
     return !Object.keys(next).length;
@@ -483,8 +477,8 @@ export default function TravelClaimWizard() {
     setSaving(true);
     try {
       const claimId = claim?.id || (effectiveEditId ? Number(effectiveEditId) : null);
-      // Relocation claims: no trips or dates; origin/destination come from the approved
-      // relocation on the server (create_or_update_claim_draft).
+      // Relocation claims: no trips or dates; cities, travel type and project code come from the
+      // approved relocation on the server (create_or_update_claim_draft).
       const relocationPayload = {
         claim_id: claimId,
         reimbursement_category: 'RELOCATION',
@@ -518,7 +512,7 @@ export default function TravelClaimWizard() {
       };
       const response = await reimbursementApi.saveClaimDraft(payload);
       setClaim(response.data);
-      localStorage.removeItem('travora_claim_draft');
+      localStorage.removeItem(draftKey);
       return response.data;
     } finally {
       setSaving(false);
@@ -569,7 +563,11 @@ export default function TravelClaimWizard() {
     }
   };
 
-  const exceptionExpenses = (claim?.expenses || []).filter((expense) => expense.exception_reason_required);
+  // Flagged expenses, plus the whole claim's late-claim exception when it's late.
+  const exceptionExpenses = [
+    ...(claim?.expenses || []).filter((expense) => expense.exception_reason_required),
+    ...(claim?.late_claim?.exception_reason_required ? [claim.late_claim] : []),
+  ];
 
   const sendClaim = async (exceptions = []) => {
     if (!claim?.id) return;
@@ -580,7 +578,7 @@ export default function TravelClaimWizard() {
         undertaking_accepted: isRelocation && undertakingAccepted,
       });
       const submitted = response?.data || claim;
-      localStorage.removeItem('travora_claim_draft');
+      localStorage.removeItem(draftKey);
       showToast(`Claim submitted successfully. Claim ID: ${submitted.claim_reference || `CLM-${submitted.id}`}`, 'success');
       setExceptionsOpen(false);
       setSubmittedClaim(submitted);
@@ -617,12 +615,15 @@ export default function TravelClaimWizard() {
     }
   };
 
+  // An approval they already have needs no approval here: it's saved as approved, so the claim
+  // goes straight on to its invoices.
   const uploadRelocationPriorApproval = async (formData) => {
     try {
       const response = await reimbursementApi.uploadRelocationPriorApproval(formData);
-      setRelocationRequestId(response.data.id);
-      showToast(`Approval saved as ${response.data.reference}`, 'success');
+      showToast(`Approval saved as ${response.data.reference}. Now add your invoices.`, 'success');
       await loadRelocations();
+      setRelocationRequestId(response.data.id);
+      setCurrentStep(2);
       return true;
     } catch (error) {
       showToast(errorDetail(error, 'Could not upload the approval'), 'error');
@@ -651,19 +652,6 @@ export default function TravelClaimWizard() {
       return;
     }
     if (!validateStep1()) return;
-
-    if (form.return_date) {
-      const returnDate = new Date(form.return_date);
-      const maxDays = workflowConfig?.submission?.max_working_days_after_return ?? 5;
-      const mode = workflowConfig?.submission?.deadline_mode ?? 'hard_block';
-      const deadline = addWorkingDays(returnDate, maxDays);
-
-      if (new Date() > deadline && mode === 'soft_warning') {
-        setShowLateModal(true);
-        return;
-      }
-    }
-
     setCurrentStep(2);
   };
 
@@ -717,6 +705,11 @@ export default function TravelClaimWizard() {
       }`
     : null;
   const policyChecked = currentStep >= 3 && claim;
+  // Relocation has its own form, so it isn't one of a travel claim's trip purposes.
+  const tripTravelOptions = {
+    ...travelOptions,
+    trip_purposes: (travelOptions.trip_purposes || []).filter((o) => o.value !== RELOCATION_PURPOSE),
+  };
   const summary = isRelocation ? null : (
     <ClaimSummaryCard
       trip={tripSummary}
@@ -741,8 +734,6 @@ export default function TravelClaimWizard() {
     >
       {currentStep === 1 && isRelocation ? (
         <RelocationApprovalStep
-          form={form}
-          onChange={onChange}
           travelOptions={travelOptions}
           relocations={relocations}
           loading={relocationsLoading}
@@ -760,7 +751,7 @@ export default function TravelClaimWizard() {
           form={form}
           onChange={onChange}
           officeLocations={officeLocations}
-          travelOptions={travelOptions}
+          travelOptions={tripTravelOptions}
           cityOptions={cityOptions}
           onCityQueryChange={setCityQ}
           cityGroupHint={cityGroupHint}
@@ -874,39 +865,6 @@ export default function TravelClaimWizard() {
         <ClaimSubmitAnimation claim={submittedClaim} onComplete={() => navigate('/claims/my')} />
       )}
 
-      {showLateModal && createPortal(
-        <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4">
-          <div className="w-full max-w-md rounded-2xl border border-amber-200 bg-white p-6 shadow-2xl">
-            <h3 className="mb-2 flex items-center gap-2 text-lg font-bold text-amber-600">
-              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
-              Late Claim Submission
-            </h3>
-            <p className="mb-6 text-sm text-slate-600 leading-relaxed">
-              {deadlineWarning} Your claim will be flagged as late and may require additional scrutiny from your approver. Do you wish to proceed?
-            </p>
-            <div className="flex justify-end gap-3">
-              <button
-                type="button"
-                className="rounded-lg px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100 transition-colors"
-                onClick={() => setShowLateModal(false)}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-600 transition-colors shadow-sm"
-                onClick={() => {
-                  setShowLateModal(false);
-                  setCurrentStep(2);
-                }}
-              >
-                Yes, Proceed
-              </button>
-            </div>
-          </div>
-        </div>,
-        document.body
-      )}
     </ClaimWizardShell>
   );
 }

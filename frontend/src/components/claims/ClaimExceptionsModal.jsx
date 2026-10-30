@@ -37,6 +37,7 @@ const EXCEPTION_COPY = {
   FOOD_DEVIATION: ['Food & Meals Limit Deviation', 'Food & Meals spend exceeds the policy cap for your level/city.'],
   INCIDENTAL_DEVIATION: ['Incidental Expenses Limit Deviation', 'Incidental expenses exceed the policy cap for your level/city.'],
   DAY_VISIT_EXTERNAL_MEETING: ['Day Visit Limit Deviation', 'Day visit spend exceeds the policy cap for your level/city.'],
+  LATE_CLAIM: ['Late Claim', 'This claim is being raised later than policy allows after the trip ended. Say why it is late.'],
 };
 
 function exceptionCopy(type) {
@@ -282,6 +283,8 @@ export default function ClaimExceptionsModal({ open, expenses, onClose, onSubmit
   const [title, description] = exceptionCopy(active.exception_type);
   const hasCap = active.cap_amount != null;
   const excess = Math.max(Number(active.amount || 0) - Number(active.cap_amount || 0), 0);
+  // The whole claim's late-claim exception, not one expense.
+  const isLate = active.exception_type === 'LATE_CLAIM';
   const nextTodo = items.find((expense) => exceptionKey(expense) !== exceptionKey(active) && !isDone(expense) && expense.exception_mode !== 'BLOCK');
 
   const selectTab = (expense) => {
@@ -316,7 +319,7 @@ export default function ClaimExceptionsModal({ open, expenses, onClose, onSubmit
             </div>
             <div>
               <h3 id="claim-exceptions-title" className="text-sm font-bold text-slate-900">
-                {items.length} expense{items.length > 1 ? 's need' : ' needs'} an exception
+                {items.length} exception{items.length > 1 ? 's need' : ' needs'} a reason
               </h3>
               <p className="text-[11px] font-medium text-slate-500">
                 {blocked.length
@@ -432,8 +435,14 @@ export default function ClaimExceptionsModal({ open, expenses, onClose, onSubmit
                 <div className="mb-1 flex items-center gap-1.5 font-bold">
                   <AlertCircle size={15} className="text-rose-600" /> Not allowed by policy
                 </div>
-                {title}: policy doesn&apos;t allow submitting this expense, even with an exception. Go back to the
-                Evidence step and remove its invoice{invoices.length > 1 ? 's' : ''} to submit the rest of the claim.
+                {isLate ? (
+                  <>Policy doesn&apos;t allow late claims, so this claim can&apos;t be submitted.</>
+                ) : (
+                  <>
+                    {title}: policy doesn&apos;t allow submitting this expense, even with an exception. Go back to the
+                    Evidence step and remove its invoice{invoices.length > 1 ? 's' : ''} to submit the rest of the claim.
+                  </>
+                )}
               </div>
             ) : (
               <div
@@ -462,9 +471,15 @@ export default function ClaimExceptionsModal({ open, expenses, onClose, onSubmit
 
             <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/50 p-3.5">
               <div className="grid grid-cols-2 gap-y-2 text-[11.5px] font-semibold text-slate-500">
-                <div>Expense category</div>
+                <div>{isLate ? 'Exception' : 'Expense category'}</div>
                 <div className="text-right font-bold text-slate-800">{active.category_name}</div>
-                <div>Claimed amount</div>
+                {isLate && active.days_since_trip != null ? (
+                  <>
+                    <div>Trip ended</div>
+                    <div className="text-right font-bold text-slate-800">{active.days_since_trip} days ago</div>
+                  </>
+                ) : null}
+                <div>{isLate ? 'Claim total' : 'Claimed amount'}</div>
                 <div className="text-right font-bold tabular-nums text-slate-800">₹{money(active.amount)}</div>
               </div>
               {hasCap && (

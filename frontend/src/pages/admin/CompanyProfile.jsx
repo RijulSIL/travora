@@ -242,7 +242,7 @@ export default function CompanyProfile() {
                 {travelAgentEmailError ? (
                   <span className="text-[11.5px] font-semibold text-amber-800">⚠ {travelAgentEmailError}</span>
                 ) : null}
-                <UsedIn items={['Travel Desk · “Send to agent”']} />
+                <UsedIn items={['Approved travel requests (sent automatically)', 'Travel Desk · “Resend to agent”']} />
               </div>
             </fieldset>
           </section>

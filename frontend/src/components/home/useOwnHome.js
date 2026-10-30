@@ -3,7 +3,8 @@ import { useEffect, useState } from 'react';
 import { claimStanding } from '../claims/ClaimListRow';
 import { RELOCATION_PURPOSE } from '../claims/ClaimRelocationSteps';
 import { reimbursementApi } from '../../services/reimbursementApi';
-import { addWorkingDays, dayOf, daysBetween, shortDate, today, weekdayDate } from './HomeParts';
+import { claimWindow, claimWindowDays } from '../travel/travelRequestView';
+import { dayOf, shortDate, today, weekdayDate } from './HomeParts';
 
 /*
  * Everything Home shows about the viewer's *own* claims and travel — the part every role gets:
@@ -53,8 +54,8 @@ function financialYearStart(d) {
   return new Date(d.getMonth() >= 3 ? d.getFullYear() : d.getFullYear() - 1, 3, 1);
 }
 
-/** Booked trips with no claim yet, one entry per travel request, with the claim deadline. */
-function tripsToClaim(bookingTrips, maxDays, mode) {
+/** Booked trips with no claim yet (archived ones are left out), one entry per travel request, with where its claim window stands. */
+function tripsToClaim(bookingTrips, windowDays) {
   const groups = new Map();
   for (const trip of bookingTrips) {
     if (['CANCELLED', 'REFUNDED'].includes(trip.status)) continue;
@@ -73,8 +74,8 @@ function tripsToClaim(bookingTrips, maxDays, mode) {
       .filter(Boolean)
       .sort((a, b) => b - a)[0];
     if (!start || !end || end >= now) continue; // not travelled yet — nothing to claim
-    const deadline = addWorkingDays(end, maxDays);
-    const closed = now > deadline;
+    const claimState = claimWindow(end, windowDays, now);
+    if (claimState.state === 'archived') continue; // too late to claim (the server leaves these out too)
     const roundTrip = first.trip_type === 'ROUND_TRIP';
     const route = roundTrip ? `${first.from_city} ⇄ ${first.to_city}` : `${first.from_city} → ${last.to_city}`;
     const by = trips.every((t) => t.booked_by_travel_desk) ? 'booked by the travel desk' : 'booked';
@@ -84,25 +85,22 @@ function tripsToClaim(bookingTrips, maxDays, mode) {
       trips.length === 1
         ? `${ref}${MODE_NAME[first.mode] || 'Trip'} on ${weekdayDate(start)} · ${first.provider || ''} ₹${Number(first.amount || 0).toLocaleString('en-IN')} ${by}`
         : `${ref}${roundTrip ? 'Round trip' : 'Trip'} ${shortDate(start)}–${shortDate(end)} · ${trips.length} ${modeName}s ${by}`;
-    const left = daysBetween(now, deadline);
     out.push({
       key,
       ids: trips.map((t) => t.id),
       route,
       sub: sub.replace(/\s+/g, ' '),
-      deadline,
-      closed: closed && mode !== 'warn',
-      late: closed,
-      when: closed
-        ? `Claim window closed ${shortDate(deadline)}`
-        : `Claim by ${weekdayDate(deadline)} · ${left === 0 ? 'today' : left === 1 ? 'tomorrow' : `${left} days left`}`,
-      soon: !closed && left <= 1,
+      deadline: claimState.deadline || claimState.lastDay,
+      closed: false,
+      late: claimState.state === 'late',
+      when: claimState.text,
+      soon: claimState.state === 'on_time' && claimState.left <= 1,
     });
   }
-  // Still claimable first (soonest deadline first), then a couple of closed ones, newest first.
-  const open = out.filter((t) => !t.late).sort((a, b) => a.deadline - b.deadline);
-  const late = out.filter((t) => t.late).sort((a, b) => b.deadline - a.deadline).slice(0, 2);
-  return [...open, ...late];
+  // On time first (soonest deadline first), then late ones (soonest to be archived first).
+  const onTime = out.filter((t) => !t.late).sort((a, b) => a.deadline - b.deadline);
+  const late = out.filter((t) => t.late).sort((a, b) => a.deadline - b.deadline);
+  return [...onTime, ...late];
 }
 
 export function useOwnHome(profile) {
@@ -174,11 +172,7 @@ export function useOwnHome(profile) {
         recent: recent.map((c) => ({ claim: c, standing: claimStanding(c, chains[c.id], notes[c.id]) })),
         sentBack: sentBack.map((c) => ({ claim: c, note: notes[c.id] })),
         drafts: claims.filter((c) => c.status === 'DRAFT'),
-        toClaim: tripsToClaim(
-          booking,
-          profile?.workflow_submission_max_working_days || 5,
-          profile?.workflow_submission_deadline_mode === 'hard_block' || !profile?.workflow_submission_deadline_mode ? 'hard_block' : 'warn',
-        ),
+        toClaim: tripsToClaim(booking, claimWindowDays(profile)),
         upcoming: upcoming.slice(0, UPCOMING).map((t) => ({ ...t, status: TRIP_STATUS[t.request.status] })),
         moreUpcoming: Math.max(0, upcoming.length - UPCOMING),
         upcomingCount: upcoming.length,

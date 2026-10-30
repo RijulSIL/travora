@@ -505,7 +505,7 @@ export default function PendingApprovals() {
       <QueueRow
         key={key}
         wideLead={labelled}
-        lead={<DateBox value={details.planned_move_date} />}
+        lead={<DateBox value={details.travel_date} />}
         main={
           <>
             <RowTitle>
@@ -516,7 +516,8 @@ export default function PendingApprovals() {
             </RowTitle>
             <RowSub>
               {row.employee_name || '—'}
-              {details.planned_move_date ? ` · moving ${shortDay(details.planned_move_date)}` : ''}
+              {details.travel_date ? ` · travelling ${shortDay(details.travel_date)}` : ''}
+              {details.travel_type === 'PROJECT' && details.project_code ? ` · project ${details.project_code}` : ''}
               {details.family_members ? ` · ${details.family_members} family member${Number(details.family_members) === 1 ? '' : 's'}` : ''}
               {row.created_at ? ` · requested ${ago(row.created_at)}` : ''}
             </RowSub>

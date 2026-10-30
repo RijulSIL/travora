@@ -20,7 +20,7 @@ import { formatRole } from '../../utils/formatters';
 // A role is someone's job; being a manager is the separate Manager setting (is_manager), so
 // Reporting Manager is no longer a role. Older CSV files may still say REPORTING_MANAGER — it's
 // read as Employee + Manager.
-const ROLES = ['EMPLOYEE', 'HRBP_HR', 'PAYROLL', 'FINANCE', 'IT_ADMIN', 'CEO', 'GROUP_HEAD_HR', 'RECRUITER'];
+const ROLES = ['EMPLOYEE', 'HRBP_HR', 'PAYROLL', 'FINANCE', 'IT_ADMIN', 'CEO', 'GROUP_HEAD_HR', 'RECRUITER', 'ADMIN'];
 const IMPORT_ROLES = [...ROLES, 'REPORTING_MANAGER'];
 
 const CLAIM_KIND = { TRAVEL: 'Travel', GENERAL: 'General', RELOCATION: 'Relocation' };

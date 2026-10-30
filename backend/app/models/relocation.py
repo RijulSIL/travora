@@ -1,14 +1,13 @@
 """Relocation approval — the prerequisite for a relocation reimbursement claim.
 
-An employee starts a relocation claim from New Claim -> Travel Claim with the "Relocation" trip
-purpose. Before claiming they need an approved RelocationRequest, which comes about one of two
-ways (`source`):
+An employee starts a relocation claim from New Claim -> Relocation Claim. Before claiming they need
+an approved RelocationRequest, which comes about one of two ways (`source`):
 
-* REQUESTED — they filled in the relocation request form, and it went through the configurable
+* REQUESTED — they filled in the relocation form, and it went through the configurable
   Relocation Approval workflow (default Recruiter -> CEO -> HRBP -> Payroll, see
   workflow_service.RELOCATION_REQUEST_DEFAULT_STAGES); APPROVED once its last stage approves.
-* PRIOR_APPROVAL — they already had approval and uploaded the evidence (PDF/screenshot). It's
-  APPROVED straight away; the evidence is reviewed by the claim's approvers and Finance.
+* PRIOR_APPROVAL — they already had approval: the same form plus the evidence (PDF/screenshot).
+  It's APPROVED straight away; the evidence is reviewed by the claim's approvers and Finance.
 
 Any number of claims can then be raised against an approved request (ClaimDraft.relocation_request_id).
 """
@@ -44,11 +43,12 @@ class RelocationRequest(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default=RelocationRequestStatus.PENDING.value)
     origin_city: Mapped[str] = mapped_column(String(128), nullable=False)
     destination_city: Mapped[str] = mapped_column(String(128), nullable=False)
-    # Estimated (REQUESTED) or approved-as-stated (PRIOR_APPROVAL, optional) amount; claims are
+    # Amount to be approved (REQUESTED) or already approved (PRIOR_APPROVAL); claims are
     # compared against it, never capped by it.
     estimated_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
-    # The rest of the request form (planned move date, family members, notes, ...) — kept as JSON
-    # so the form's fields can change without a schema migration.
+    # The rest of the form (travel type, project code, travel date, family members, notes) — kept
+    # as JSON so the form's fields can change without a schema migration. Older requests have a
+    # planned_move_date instead of travel_date (relocation_service._details_out reads either).
     details: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     # PRIOR_APPROVAL only: the approval evidence the employee uploaded.
     evidence_path: Mapped[str | None] = mapped_column(String(512))

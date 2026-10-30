@@ -32,6 +32,7 @@ export const ROLE_LABELS = {
   CEO: 'CEO',
   GROUP_HEAD_HR: 'Group Head HR',
   RECRUITER: 'Recruiter',
+  ADMIN: 'Admin',
   // Not a user role: an approval step that goes to the head of the person's department.
   DEPARTMENT_HEAD: 'Department Head',
 };
@@ -57,6 +58,7 @@ export const EXCEPTION_TYPE_LABELS = {
   INCIDENTAL_DEVIATION: 'Incidental Expenses Deviation',
   HIRED_TAXI_UNAUTHORIZED: 'Hired Taxi (Unauthorized)',
   MODE_DEVIATION: 'Mode of Travel Deviation',
+  LATE_CLAIM: 'Late Claim',
   DAY_VISIT_EXTERNAL_MEETING: 'Day Visit External Meeting',
   // Catch-all for any expense category with no dedicated exception rule (every generic
   // f"{category}_DEVIATION" type on the backend follows its on/off and Allow/Block settings).
@@ -77,6 +79,7 @@ export const formatExceptionTypes = (types, fallbackType) =>
     : formatExceptionType(fallbackType);
 
 export const EXCEPTION_TYPE_DESCRIPTIONS = {
+  LATE_CLAIM: "The claim was raised later than policy allows after the trip's to date (Approval Matrix: late claim after).",
   AIR_TRAVEL_UNLOCK:
     "This employee's level does not normally permit air travel. Approving this unlocks air travel for this request only.",
   AIR_TRAVEL_L5_L6:

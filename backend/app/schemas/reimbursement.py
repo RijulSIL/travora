@@ -96,7 +96,7 @@ class DuplicateCheckOut(BaseModel):
 
 class ClaimDraftIn(BaseModel):
     claim_id: int | None = None
-    # Relocation claims (trip purpose "Relocation"): the approved relocation this claim is raised against.
+    # Relocation claims (Relocation Claim form): the approved relocation this claim is raised against.
     relocation_request_id: int | None = None
     # Which "New Claim" entry point created this draft — TRAVEL (default) or GENERAL. The
     # claim's *effective* routing category can still end up RELOCATION if any linked
@@ -167,6 +167,27 @@ class ClaimExpenseOut(BaseModel):
     exception_decisions: list[dict] = Field(default_factory=list)
 
 
+class LateClaimOut(BaseModel):
+    """A travel claim raised more than the late window (default 7 days) after its trip's to date:
+    a late-claim exception for the whole claim, with the same exception fields as a flagged
+    expense (see reimbursement_service.late_claim_item)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    exception_type: str
+    category_name: str
+    amount: Decimal
+    days_since_trip: int
+    trip_end: date | None = None
+    exception_mode: str | None = None
+    exception_status: str | None = None
+    exception_reason_required: bool = False
+    exception_item_id: int | None = None
+    exception_reason: str | None = None
+    exception_comment: str | None = None
+    exception_decisions: list[dict] = Field(default_factory=list)
+
+
 class ClaimSubmitExceptionIn(BaseModel):
     exception_type: str = Field(..., min_length=1, max_length=128)
     category_name: str = Field(..., min_length=1, max_length=128)
@@ -219,6 +240,11 @@ class ClaimDraftOut(BaseModel):
     expenses: list[ClaimExpenseOut] = Field(default_factory=list)
     invoice_ids: list[int] = Field(default_factory=list)
     trip_ids: list[int] = Field(default_factory=list)
+    # Travel claims, while editable: where the claim stands against its trip's claim window
+    # ({status: ON_TIME/LATE/ARCHIVED, days_since_trip, trip_end, late_after_days,
+    # archive_after_days}) and, when late, its late-claim exception.
+    claim_window: dict | None = None
+    late_claim: LateClaimOut | None = None
 
 
 class PolicyCheckOut(BaseModel):
@@ -230,3 +256,5 @@ class PolicyCheckOut(BaseModel):
     exceptions: list[dict] = Field(default_factory=list)
     gst_summary: dict
     expenses: list[ClaimExpenseOut] = Field(default_factory=list)
+    claim_window: dict | None = None
+    late_claim: LateClaimOut | None = None

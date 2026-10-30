@@ -9,8 +9,8 @@ from app.core.rbac import get_current_claims, require_permission
 from app.services import relocation_service as svc
 
 # Relocation approvals for relocation reimbursement claims — see app.models.relocation. Employees
-# reach this from New Claim -> Travel Claim (trip purpose "Relocation"); approvers act on it from
-# the Relocation tab of Pending Approvals, decided by the Relocation Approval workflow's stage roles.
+# reach this from New Claim -> Relocation Claim; approvers act on it from the Relocation tab of
+# Pending Approvals, decided by the Relocation Approval workflow's stage roles.
 router = APIRouter(prefix="/relocation", tags=["relocation"])
 
 
@@ -18,7 +18,9 @@ class RelocationRequestIn(BaseModel):
     origin_city: str = Field(..., max_length=128)
     destination_city: str = Field(..., max_length=128)
     estimated_amount: str
-    planned_move_date: str
+    travel_type: str
+    project_code: str | None = Field(default=None, max_length=128)
+    travel_date: str
     family_members: int | None = None
     notes: str | None = Field(default=None, max_length=2000)
 
@@ -50,12 +52,27 @@ async def create_request(
 async def upload_prior_approval(
     origin_city: str = Form(...),
     destination_city: str = Form(...),
-    approved_amount: str | None = Form(default=None),
+    approved_amount: str = Form(...),
+    travel_type: str = Form(...),
+    project_code: str | None = Form(default=None),
+    travel_date: str = Form(...),
+    family_members: str | None = Form(default=None),
+    notes: str | None = Form(default=None),
     file: UploadFile = File(...),
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    row = await svc.create_prior_approval(int(claims["sub"]), origin_city, destination_city, approved_amount, file, db)
+    payload = {
+        "origin_city": origin_city,
+        "destination_city": destination_city,
+        "approved_amount": approved_amount,
+        "travel_type": travel_type,
+        "project_code": project_code,
+        "travel_date": travel_date,
+        "family_members": family_members,
+        "notes": notes,
+    }
+    row = await svc.create_prior_approval(int(claims["sub"]), payload, file, db)
     return jsonable_encoder(await svc.relocation_summary(row, db))
 
 

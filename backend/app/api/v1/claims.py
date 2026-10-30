@@ -167,6 +167,8 @@ async def policy_check(
         "exceptions": report.get("exceptions", []),
         "gst_summary": report.get("gst_summary", {}),
         "expenses": expenses,
+        "claim_window": getattr(claim, "claim_window", None),
+        "late_claim": getattr(claim, "late_claim", None),
     }
 
 

@@ -14,7 +14,7 @@ from app.models.expense_category import CompanyProfile
 from app.models.policy import CityGroupTier, ExpenseLimit, ImpactLevel, PolicyVersion
 from app.schemas.me import ApproverScopeOut, CityTierLimitsOut, MeOut, MyPolicyLimitsOut, PolicyCapOut
 from app.services.advance_service import get_outstanding_advance
-from app.services.claim_submission_rules import parse_auto_approve_threshold
+from app.services.claim_submission_rules import claim_windows, parse_auto_approve_threshold
 from app.services.policy_engine import get_active_policy_version, get_expense_limits
 from app.services.workflow_service import (
     department_head_scope,
@@ -202,9 +202,7 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
     company_office_locations: list[str] = list(company_profile.office_locations or []) if company_profile else []
 
     workflow_cfg = await get_workflow_config(db)
-    submission_cfg = workflow_cfg.get("submission", {})
-    deadline_mode = submission_cfg.get("deadline_mode", "hard_block")
-    max_days = int(submission_cfg.get("max_working_days_after_return", 5))
+    late_after_days, archive_after_days = claim_windows(workflow_cfg)
 
     # The Manager setting, on top of whatever role they have (always on for the CEO).
     user_is_a_manager = is_manager(user)
@@ -282,8 +280,8 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
         exception_requests_pending_count=int(exc_pending),
         travel_desk_queue_count=travel_desk_queue_count,
         company_office_locations=company_office_locations,
-        workflow_submission_deadline_mode=deadline_mode,
-        workflow_submission_max_working_days=max_days,
+        workflow_claim_late_after_days=late_after_days,
+        workflow_claim_archive_after_days=archive_after_days,
         is_acting_delegate=is_acting_delegate,
         delegated_roles=[r.value for r in delegated_roles],
         delegation_feature_enabled=delegation_feature_enabled,
