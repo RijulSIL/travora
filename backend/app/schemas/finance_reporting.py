@@ -271,6 +271,10 @@ class ExceptionTravelRequestOut(BaseModel):
     notes: str | None = None
     # The traveler's flight/train/bus choice per leg (see TravelRequest.leg_picks).
     leg_picks: list[dict] = Field(default_factory=list)
+    # The traveller's name as per ID and which ID; the copy opens at /travel-requests/{id}/id-proof.
+    id_name: str | None = None
+    id_type: str | None = None
+    has_id_proof: bool = False
     requested_at: datetime
     legs: list[ExceptionTravelRequestLegOut] = Field(default_factory=list)
 

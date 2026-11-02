@@ -1189,6 +1189,9 @@ async def list_exception_requests_log(
                         "purpose": travel_request.purpose,
                         "notes": travel_request.notes,
                         "leg_picks": travel_request.leg_picks or [],
+                        "id_name": travel_request.id_name,
+                        "id_type": travel_request.id_type,
+                        "has_id_proof": travel_request.has_id_proof,
                         "requested_at": travel_request.requested_at,
                         "legs": [
                             {

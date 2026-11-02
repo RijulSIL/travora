@@ -92,9 +92,38 @@ async def create_request(
         notes=body.notes,
         legs=body.legs,
         leg_picks=body.leg_picks,
+        traveller_id=_traveller_id(body),
         db=db,
     )
     return _build_request_out(row)
+
+
+def _traveller_id(body: TravelRequestCreate) -> dict:
+    return {
+        "id_name": body.id_name,
+        "id_type": body.id_type,
+        "id_proof_ref": body.id_proof_ref,
+        "id_proof_filename": body.id_proof_filename,
+    }
+
+
+@router.post("/id-proof", dependencies=[Depends(require_permission("submit_claim"))])
+async def upload_id_proof(
+    file: UploadFile = File(...),
+    claims: dict = Depends(get_current_claims),
+) -> dict:
+    """Upload a copy of your ID for a travel request; the request then refers to it by `ref`."""
+    from app.services.travel_id_proof_service import store_id_proof
+
+    return await store_id_proof(int(claims["sub"]), file)
+
+
+@router.get("/id-proof/last", dependencies=[Depends(require_permission("submit_claim"))])
+async def last_id_proof(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)) -> dict | None:
+    """The ID on your previous request, to fill in the new one (null if there isn't one)."""
+    from app.services.travel_id_proof_service import last_traveller_id
+
+    return await last_traveller_id(int(claims["sub"]), db)
 
 
 @router.post(
@@ -143,6 +172,7 @@ async def create_request_with_exception(
         notes=body.notes,
         legs=body.legs,
         leg_picks=body.leg_picks,
+        traveller_id=_traveller_id(body),
         justification=body.justification,
         db=db,
     )
@@ -420,6 +450,31 @@ async def download_supporting_document(
         content=path.read_bytes(),
         media_type=doc.content_type,
         headers={"Content-Disposition": f'inline; filename="{doc.original_filename}"'},
+    )
+
+
+@router.get("/{request_id}/id-proof")
+async def download_id_proof(
+    request_id: int,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """The traveller's ID on a request — for them, its approvers, the Travel Desk and admins
+    (svc.assert_can_view_id_proof)."""
+    from app.models.travel_request import TravelRequest
+    from app.services.travel_id_proof_service import id_proof_path
+
+    req = await db.get(TravelRequest, request_id)
+    if req is None:
+        raise HTTPException(status_code=404, detail="Travel request not found")
+    await svc.assert_can_view_id_proof(req, int(claims["sub"]), _role(claims), db)
+    path = id_proof_path(req.employee_user_id, req.id_proof_ref)
+    if path is None:
+        raise HTTPException(status_code=404, detail="No ID is attached to this request")
+    return Response(
+        content=path.read_bytes(),
+        media_type=req.id_proof_content_type or "application/octet-stream",
+        headers={"Content-Disposition": f'inline; filename="{req.id_proof_filename or path.name}"'},
     )
 
 

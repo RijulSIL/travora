@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { AlertTriangle, ArrowRight, CalendarDays, CheckCircle2, Clock, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, ArrowRight, CalendarDays, CheckCircle2, Clock, FileText, IdCard, ShieldCheck } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 
@@ -280,6 +280,29 @@ export default function AgentBookingPage() {
               <p className="mt-1 text-sm text-slate-500">
                 {TRIP_TYPE_LABEL[trip.trip_type] || trip.trip_type} · {total} {total === 1 ? 'leg' : 'legs'}
               </p>
+              {trip.id_name ? (
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5">
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <IdCard size={18} className="shrink-0 text-brand" />
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-semibold text-slate-500">
+                        Book in the name as per ID{trip.id_type ? ` · ${trip.id_type}` : ''}
+                      </p>
+                      <p className="break-words text-base font-extrabold text-ink">{trip.id_name}</p>
+                    </div>
+                  </div>
+                  {trip.has_id_proof ? (
+                    <a
+                      href={`${PUBLIC_API_BASE}/${encodeURIComponent(token)}/id-proof`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-ink hover:bg-slate-50"
+                    >
+                      <FileText size={13} /> View ID
+                    </a>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
 
             <div className="px-5 py-5">

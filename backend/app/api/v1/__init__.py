@@ -20,7 +20,7 @@ from app.api.v1 import (
     travel_requests,
     workflow_admin,
 )
-from app.api.v1.admin import budgets, company_profile, expense_categories, policy, travel_options, users
+from app.api.v1.admin import budgets, company_profile, expense_categories, overrides, policy, travel_options, users
 
 api_router = APIRouter()
 api_router.include_router(health.router)
@@ -47,3 +47,4 @@ api_router.include_router(travel_options.router)
 api_router.include_router(budgets.router)
 api_router.include_router(permission_matrix_admin.router)
 api_router.include_router(relocation.router)
+api_router.include_router(overrides.router)

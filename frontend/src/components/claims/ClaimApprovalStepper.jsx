@@ -30,7 +30,7 @@ export default function ClaimApprovalStepper({
         {stages.map((s, idx) => {
           const done = s.status === 'APPROVED';
           // Approver missed the SLA; the claim moved on to the next stage.
-          const skipped = s.status === 'SLA_SKIPPED';
+          const skipped = s.status === 'SLA_SKIPPED' || s.status === 'OVERRIDE_SKIPPED';
           // Only the claimant could have approved this step, so it was passed over.
           const ownSkipped = s.status === 'SKIPPED_OWN';
           const active =

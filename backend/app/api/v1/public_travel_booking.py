@@ -14,7 +14,8 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -27,6 +28,18 @@ router = APIRouter(prefix="/public/travel-booking", tags=["public-travel-booking
 @router.get("/{token}", response_model=PublicAgentBookingOut)
 async def agent_booking_detail(token: str, db: AsyncSession = Depends(get_db)) -> PublicAgentBookingOut:
     return PublicAgentBookingOut(**await svc.agent_booking_summary(token, db))
+
+
+@router.get("/{token}/id-proof")
+async def agent_id_proof(token: str, db: AsyncSession = Depends(get_db)) -> FileResponse:
+    """The traveller's ID, so the agent can issue tickets in the exact name on it."""
+    from app.services.travel_id_proof_service import id_proof_path
+
+    req = await svc.resolve_agent_booking_request(token, db)
+    path = id_proof_path(req.employee_user_id, req.id_proof_ref)
+    if path is None:
+        raise HTTPException(status_code=404, detail="No ID is attached to this trip")
+    return FileResponse(path, media_type=req.id_proof_content_type, filename=req.id_proof_filename)
 
 
 @router.post("/{token}/read-ticket")

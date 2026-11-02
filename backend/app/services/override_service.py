@@ -88,8 +88,18 @@ async def _name(user_id: int | None, db: AsyncSession) -> str | None:
     return (await ws._user_identity(user_id, db))[0]
 
 
+_ROLE_NAMES = {
+    "REPORTING_MANAGER": "Reporting Manager",
+    "HRBP_HR": "HRBP",
+    "CEO": "CEO",
+    "GROUP_HEAD_HR": "Group Head HR",
+    "IT_ADMIN": "IT Admin",
+    ws.DEPARTMENT_HEAD: "Department head",
+}
+
+
 def _role_label(role: str | None) -> str:
-    return ws._humanize_token(role or "")
+    return _ROLE_NAMES.get(role or "", ws._humanize_token(role or ""))
 
 
 async def _stage_steps(rows: list, db: AsyncSession) -> list[dict]:
@@ -268,7 +278,7 @@ async def _travel_waiting(req: TravelRequest, db: AsyncSession) -> Waiting | Non
             route="exception",
             step_label=f"{_role_label(step.required_role)} (exception route)",
             step_role=step.required_role,
-            waiting_since=_since([a.acted_at for a in approvals if a.id < step.id], req.created_at),
+            waiting_since=_since([a.acted_at for a in approvals if a.id < step.id], req.requested_at),
             sla_deadline_at=step.sla_deadline_at,
             actions=_actions(send_back=False, has_next=_has_later_exception_step(approvals, step)),
             steps=await _exception_steps(approvals, db),
@@ -292,7 +302,7 @@ async def _travel_waiting(req: TravelRequest, db: AsyncSession) -> Waiting | Non
         route="approval",
         step_label=pending.stage_label,
         step_role=pending.required_role,
-        waiting_since=_since([s.decided_at for s in stages if s.stage_number < pending.stage_number], req.created_at),
+        waiting_since=_since([s.decided_at for s in stages if s.stage_number < pending.stage_number], req.requested_at),
         sla_deadline_at=pending.sla_deadline_at,
         actions=_actions(send_back=False, has_next=any(s.stage_number > pending.stage_number for s in stages)),
         steps=await _stage_steps(stages, db),

@@ -37,6 +37,7 @@ const DECISION = {
   APPROVED: ['bg-emerald-600', '✓', (d) => `Approved${d.acted_by_name ? ` by ${d.acted_by_name}` : ''}`],
   REJECTED: ['bg-rose-600', '✕', (d) => `Rejected${d.acted_by_name ? ` by ${d.acted_by_name}` : ''}`],
   SLA_SKIPPED: ['bg-orange-600', 'skip', () => 'Missed its SLA, passed on'],
+  OVERRIDE_SKIPPED: ['bg-slate-500', 'skip', () => 'Skipped by an admin override'],
   PENDING: ['bg-amber-500', '●', () => 'Deciding now'],
   AWAITING: ['bg-slate-400', '', () => 'Still to come'],
 };

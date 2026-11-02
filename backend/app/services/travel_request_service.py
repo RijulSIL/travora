@@ -1129,21 +1129,22 @@ async def _determine_blocking_exceptions(
     if not flight_dates and not train_dates and not other_dates:
         return []
 
-    from app.services.workflow_service import get_workflow_config, is_exception_enabled
+    from app.services.workflow_service import get_workflow_config, is_exception_enabled, travel_notice_days
 
     cfg = await get_workflow_config(db)
+    today = _today_ist()
     blocking: list[tuple[str, str]] = []
     # Every check here is scoped to THIS request: an exception approved for an earlier trip
     # never exempts a new one (each short-notice / air-locked request needs its own approval).
 
     if flight_dates and is_exception_enabled(cfg, "FLIGHT_ADVANCE_BOOKING_OVERRIDE"):
         earliest_flight_date = min(flight_dates)
-        min_days = settings.flight_advance_booking_min_days
-        days_in_advance = (earliest_flight_date - date.today()).days
+        min_days = travel_notice_days(cfg, "FLIGHT_ADVANCE_BOOKING_OVERRIDE")
+        days_in_advance = (earliest_flight_date - today).days
         if days_in_advance < min_days:
             blocking.append((
                 "FLIGHT_ADVANCE_BOOKING_OVERRIDE",
-                f"Minimum {min_days}-day advance booking window for flights is enforced.",
+                f"Flights need at least {min_days} days' notice.",
             ))
 
     if train_dates and is_exception_enabled(cfg, "TRAIN_ADVANCE_BOOKING_OVERRIDE"):
@@ -1152,19 +1153,19 @@ async def _determine_blocking_exceptions(
         # a departure exactly `min_train_days` days out — e.g. booking on the 6th for the
         # 8th — is itself the short-notice case this is meant to catch, not the safe side of it.
         earliest_train_date = min(train_dates)
-        min_train_days = settings.train_advance_booking_min_days
-        train_days_in_advance = (earliest_train_date - date.today()).days
+        min_train_days = travel_notice_days(cfg, "TRAIN_ADVANCE_BOOKING_OVERRIDE")
+        train_days_in_advance = (earliest_train_date - today).days
         if train_days_in_advance <= min_train_days:
             blocking.append((
                 "TRAIN_ADVANCE_BOOKING_OVERRIDE",
-                f"Trains departing within {min_train_days} day(s) of booking require exception approval.",
+                f"Trains leaving within {min_train_days} day(s) need exception approval.",
             ))
 
     if other_dates and is_exception_enabled(cfg, "TRAVEL_REQUEST_LEAD_TIME_OVERRIDE"):
         # Generic floor for any mode without its own dedicated advance-booking exception
         # (flight and train are covered above, at their own thresholds, instead of this one).
-        min_lead_days = settings.travel_request_min_lead_working_days
-        earliest_allowed = earliest_travel_date_allowed(_today_ist(), min_lead_days)
+        min_lead_days = travel_notice_days(cfg, "TRAVEL_REQUEST_LEAD_TIME_OVERRIDE")
+        earliest_allowed = earliest_travel_date_allowed(today, min_lead_days)
         earliest_other_date = min(other_dates)
         if earliest_other_date < earliest_allowed:
             blocking.append((
@@ -1187,6 +1188,15 @@ async def _determine_blocking_exceptions(
     return blocking
 
 
+def _traveller_id(user_id: int, traveller_id: dict | None) -> dict:
+    from app.services.travel_id_proof_service import clean_traveller_id
+
+    t = traveller_id or {}
+    return clean_traveller_id(
+        user_id, t.get("id_name"), t.get("id_type"), t.get("id_proof_ref"), t.get("id_proof_filename")
+    )
+
+
 async def create_travel_request(
     *,
     user_id: int,
@@ -1202,8 +1212,10 @@ async def create_travel_request(
     notes: str | None,
     legs: list | None,
     leg_picks: list | None = None,
+    traveller_id: dict | None = None,
     db: AsyncSession,
 ) -> TravelRequest:
+    """`traveller_id`: {id_name, id_type, id_proof_ref, id_proof_filename} — all required."""
     user, mode_val = await _validate_common_travel_request_fields(
         user_id=user_id, travel_mode=travel_mode, travel_date=travel_date, legs=legs, db=db
     )
@@ -1218,6 +1230,7 @@ async def create_travel_request(
         db=db,
     )
     picks = validate_leg_picks(leg_picks, trip_type=trip_type, return_date=return_date, legs=legs, mode=mode_val)
+    ident = _traveller_id(user_id, traveller_id)
 
     impact_level = await _get_user_impact_level_code(user_id, db)
     blocking = await _determine_blocking_exceptions(
@@ -1248,6 +1261,7 @@ async def create_travel_request(
         legs=legs,
         status_value=TravelRequestStatus.PENDING.value,
         leg_picks=picks,
+        ident=ident,
         db=db,
         **details,
     )
@@ -1282,10 +1296,12 @@ async def _insert_travel_request_row(
     notes: str | None,
     legs: list | None,
     leg_picks: list | None = None,
+    ident: dict | None = None,
     status_value: str,
     db: AsyncSession,
 ) -> TravelRequest:
     row = TravelRequest(
+        **(ident or {}),
         employee_user_id=user_id,
         trip_type=trip_type,
         travel_mode=mode_val,
@@ -1341,6 +1357,7 @@ async def create_travel_request_with_exception(
     notes: str | None,
     legs: list | None,
     leg_picks: list | None = None,
+    traveller_id: dict | None = None,
     justification: str,
     db: AsyncSession,
 ) -> TravelRequest:
@@ -1362,6 +1379,7 @@ async def create_travel_request_with_exception(
         db=db,
     )
     picks = validate_leg_picks(leg_picks, trip_type=trip_type, return_date=return_date, legs=legs, mode=mode_val)
+    ident = _traveller_id(user_id, traveller_id)
 
     impact_level = await _get_user_impact_level_code(user_id, db)
     blocking = await _determine_blocking_exceptions(
@@ -1384,6 +1402,7 @@ async def create_travel_request_with_exception(
             notes=notes,
             legs=legs,
             leg_picks=leg_picks,
+            traveller_id=traveller_id,
             db=db,
         )
 
@@ -1401,6 +1420,7 @@ async def create_travel_request_with_exception(
         legs=legs,
         status_value=TravelRequestStatus.PENDING_EXCEPTION.value,
         leg_picks=picks,
+        ident=ident,
         db=db,
         **details,
     )
@@ -2563,10 +2583,14 @@ async def issue_agent_booking_link(req: TravelRequest, *, sent_by_user_id: int, 
         }
         for seg in _segments_for_request(req)
     ]
+    from app.services.travel_id_proof_service import id_type_label
+
     subject, body, html = build_agent_booking_email(
         company_name=(profile.company_name or "").strip() or "Your client",
         reference=f"TR-{req.id:04d}",
         traveller=employee_name,
+        id_name=req.id_name,
+        id_type=id_type_label(req.id_type),
         trip_type=req.trip_type,
         legs=legs,
         eligibility=entitlement_note_text(entitlement),
@@ -2588,6 +2612,54 @@ async def issue_agent_booking_link(req: TravelRequest, *, sent_by_user_id: int, 
         db=db,
     )
     return True
+
+
+async def assert_can_view_id_proof(req: TravelRequest, viewer_user_id: int, viewer_role: Role, db: AsyncSession) -> None:
+    """Who may open a traveller's ID: the traveller; the Travel Desk; anyone who can open the
+    request (their manager, a department head on it); anyone on its approval route, normal or
+    exception; and admins who can override its approval."""
+    from app.core.rbac import get_extra_permissions
+    from app.models.claim_workflow import ExceptionApproval, ExceptionRequest
+    from app.models.travel_request import TravelRequestApprovalStage
+    from app.services.permission_config_service import get_effective_permission_matrix
+    from app.services.workflow_service import _user_matches_required_role
+
+    if req.employee_user_id == viewer_user_id:
+        return
+    perms = set((await get_effective_permission_matrix(db)).get(viewer_role, set()))
+    perms |= await get_extra_permissions(viewer_user_id, db)
+    if perms & {"view_travel_desk", "override_approvals"}:
+        return
+    try:
+        await get_travel_request_for_viewer(req.id, viewer_user_id, viewer_role, db)
+        return
+    except HTTPException:
+        pass
+    viewer = await db.get(User, viewer_user_id)
+    owner = await db.get(User, req.employee_user_id)
+    roles = set(
+        (
+            await db.execute(
+                select(TravelRequestApprovalStage.required_role).where(
+                    TravelRequestApprovalStage.travel_request_id == req.id
+                )
+            )
+        ).scalars().all()
+    ) | set(
+        (
+            await db.execute(
+                select(ExceptionApproval.required_role)
+                .join(ExceptionRequest, ExceptionRequest.id == ExceptionApproval.exception_request_id)
+                .where(ExceptionRequest.travel_request_id == req.id)
+            )
+        ).scalars().all()
+    )
+    for role in roles:
+        if role and viewer and await _user_matches_required_role(
+            viewer, role, owner.employee_id if owner else None, db
+        ):
+            return
+    raise HTTPException(status_code=403, detail="You can't view this traveller's ID")
 
 
 async def resolve_agent_booking_request(token: str, db: AsyncSession) -> TravelRequest:
@@ -2620,9 +2692,15 @@ async def agent_booking_summary(token: str, db: AsyncSession) -> dict:
     employee_name = (owner.full_name or owner.email) if owner else "Traveller"
     entitlement = await travel_entitlement(req.employee_user_id, db)
     segments = build_segments_out(req)
+    from app.services.travel_id_proof_service import id_type_label
+
     return {
         "reference": f"TR-{req.id:04d}",
         "employee_name": employee_name,
+        # Tickets are issued in the name on the traveller's ID.
+        "id_name": req.id_name,
+        "id_type": id_type_label(req.id_type),
+        "has_id_proof": req.has_id_proof,
         "trip_type": req.trip_type,
         "notes": req.notes,
         "impact_level": entitlement["impact_level"],

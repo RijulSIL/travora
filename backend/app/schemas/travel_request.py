@@ -104,6 +104,12 @@ class TravelRequestCreate(BaseModel):
     legs: list[TravelRequestLegIn] | None = None
     # One choice per ticketable leg — see travel_request_service.validate_leg_picks.
     leg_picks: list[LegPickIn] = Field(default_factory=list)
+    # The traveller's ID — all required (travel_id_proof_service.clean_traveller_id). The file is
+    # uploaded first (POST /travel-requests/id-proof) and referred to by its `ref`.
+    id_name: str | None = Field(default=None, max_length=255)
+    id_type: str | None = Field(default=None, max_length=32)
+    id_proof_ref: str | None = Field(default=None, max_length=80)
+    id_proof_filename: str | None = Field(default=None, max_length=255)
 
 
 class TravelRequestExceptionCreate(TravelRequestCreate):
@@ -143,6 +149,12 @@ class TravelRequestOut(BaseModel):
     purpose: str | None = None
     notes: str | None = None
     leg_picks: list[dict] | None = None
+    # The traveller's name as per ID, which ID, and whether a copy is attached (open it with
+    # GET /travel-requests/{id}/id-proof).
+    id_name: str | None = None
+    id_type: str | None = None
+    has_id_proof: bool = False
+    id_proof_filename: str | None = None
     status: str
     rejection_reason: str | None = None
     requested_at: datetime
@@ -289,6 +301,10 @@ class PublicAgentBookingSegmentOut(BaseModel):
 
 
 class PublicAgentBookingOut(BaseModel):
+    # The traveller's name as per ID and which ID; the copy opens at /{token}/id-proof.
+    id_name: str | None = None
+    id_type: str | None = None
+    has_id_proof: bool = False
     """Everything (and only this) the agent's public booking page may show — see
     travel_request_service.agent_booking_summary. No employee id, exception, or other request's
     data is ever included here."""

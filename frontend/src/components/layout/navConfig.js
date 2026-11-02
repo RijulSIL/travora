@@ -262,6 +262,7 @@ export const navByRole = {
         ...policyAdminItems(),
         { to: '/admin/team-budgets', label: 'Team Budgets', icon: 'money', anyOf: ['manage_team_budgets'] },
         { to: '/admin/workflow-config', label: 'Approval Matrix', icon: 'check', anyOf: ['view_workflow_config', 'edit_workflow_config'] },
+        { to: '/admin/stuck-items', label: 'Stuck Items', icon: 'alert', anyOf: ['override_approvals'] },
         { to: '/admin/permission-matrix', label: 'Role Permissions', icon: 'settings', anyOf: ['view_permission_matrix', 'edit_permission_matrix'] },
         { to: '/admin/notification-templates', label: 'Notification Templates', icon: 'mail', anyOf: ['view_notification_templates', 'edit_notification_templates'] },
         { to: '/admin/holiday-calendar', label: 'Holiday Calendar', icon: 'calendar', anyOf: ['manage_holiday_calendar'] },
@@ -394,6 +395,7 @@ const CONFIGURABLE_NAV_ITEMS = [
     icon: 'settings',
     anyOf: ['view_permission_matrix', 'edit_permission_matrix'],
   },
+  { to: '/admin/stuck-items', label: 'Stuck Items', icon: 'alert', anyOf: ['override_approvals'] },
   pendingApprovalsItem('Pending Approvals'),
   exceptionRequestsItem(),
 ];

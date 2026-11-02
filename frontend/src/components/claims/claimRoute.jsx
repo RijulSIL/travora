@@ -35,6 +35,7 @@ export function claimRouteItems(claim, chain, { viewerName, decided, now }) {
     else if (s.status === 'SENT_BACK') {
       items.push({ key, state: 'current', title, sub: `${stepSub('Sent back', s.acted_by_name, s.acted_at)} · comes back here once resubmitted`, detail: s.comment });
     } else if (s.status === 'SLA_SKIPPED') items.push({ key, state: 'skipped', title, sub: 'Passed on after the SLA was missed' });
+    else if (s.status === 'OVERRIDE_SKIPPED') items.push({ key, state: 'skipped', title, sub: 'Skipped by an admin override', detail: s.comment });
     else if (s.status === 'PENDING' && !ended) {
       items.push({ key, state: 'current', title,
         sub: s.pending_approver_names?.length ? `Waiting on ${s.pending_approver_names.join(', ')}` : 'Waiting on a decision' });
@@ -49,6 +50,7 @@ export function claimRouteItems(claim, chain, { viewerName, decided, now }) {
     else if (s.status === 'REJECTED') items.push({ key, state: 'rejected', title: s.label, sub: stepSub('Rejected', s.decided_by_name, s.decided_at), detail: s.comment || claim.reject_reason });
     else if (s.status === 'SLA_SKIPPED') items.push({ key, state: 'skipped', title: s.label, sub: 'Passed on after the SLA was missed' });
     else if (s.status === 'SKIPPED_OWN') items.push({ key, state: 'skipped', title: s.label, sub: "Skipped — the claimant can't approve their own claim" });
+    else if (s.status === 'OVERRIDE_SKIPPED') items.push({ key, state: 'skipped', title: s.label, sub: 'Skipped by an admin override', detail: s.comment });
     else if (s.status === 'PENDING' && !ended) {
       const names = s.pending_approver_names || [];
       const mine = !decided && viewerName && names.includes(viewerName);

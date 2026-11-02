@@ -74,6 +74,9 @@ function buildApprovalSteps(request, chain) {
       } else if (a.status === 'SLA_SKIPPED') {
         state = 'skipped';
         stateLabel = 'SLA missed — passed on';
+      } else if (a.status === 'OVERRIDE_SKIPPED') {
+        state = 'skipped';
+        stateLabel = 'Skipped by an admin override';
       } else if (a.status === 'CANCELLED') {
         state = 'skipped';
         stateLabel = 'Cancelled — request withdrawn';
@@ -122,6 +125,9 @@ function buildApprovalSteps(request, chain) {
       } else if (s.status === 'SLA_SKIPPED') {
         state = 'skipped';
         stateLabel = 'SLA missed — passed on';
+      } else if (s.status === 'OVERRIDE_SKIPPED') {
+        state = 'skipped';
+        stateLabel = 'Skipped by an admin override';
       } else if (s.status === 'PENDING') {
         state = 'current';
         stateLabel = s.pending_approver_names?.length

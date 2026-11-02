@@ -27,6 +27,8 @@ import {
   rolesCoveredByConfig,
   sanitizeAutoApprove,
   sanitizeDays,
+  sanitizeNoticeDays,
+  TRAVEL_NOTICE,
   sanitizeSlaHours,
 } from '../../components/admin/approvalMatrix';
 import { BTN_GHOST, BTN_SM, CARD, EYEBROW, FIELD } from '../../components/policy/PolicyAdminParts';
@@ -91,6 +93,10 @@ function normalize(cfg) {
     exception_chains: chains,
     exception_enabled: cfg.exception_enabled || {},
     exception_submission_mode: cfg.exception_submission_mode || {},
+    // Notice periods for the travel request short-notice checks.
+    travel_notice_days: Object.fromEntries(
+      Object.entries(TRAVEL_NOTICE).map(([type, [fallback]]) => [type, sanitizeNoticeDays(cfg.travel_notice_days?.[type], fallback)]),
+    ),
     // One SLA per route step, trimmed or padded to the route's length.
     exception_sla_hours: Object.fromEntries(
       Object.entries(chains).map(([key, chain]) => [key, (chain || []).map((_, i) => sanitizeSlaHours(cfg.exception_sla_hours?.[key]?.[i] ?? 48))]),
@@ -117,7 +123,8 @@ function changedParts(a, b) {
       types.some(
         (t) =>
           (a.exception_enabled[t] !== false) !== (b.exception_enabled[t] !== false) ||
-          (a.exception_submission_mode[t] || 'ALLOW') !== (b.exception_submission_mode[t] || 'ALLOW'),
+          (a.exception_submission_mode[t] || 'ALLOW') !== (b.exception_submission_mode[t] || 'ALLOW') ||
+          a.travel_notice_days?.[t] !== b.travel_notice_days?.[t],
       )
     )
       out.push(k);
@@ -836,6 +843,30 @@ export default function WorkflowConfig() {
                       title={EXCEPTION_FLOWS[sel].types[type]}
                       control={
                         <span className="flex flex-wrap items-center gap-2.5">
+                          {TRAVEL_NOTICE[type] && on ? (
+                            <label className="flex items-center gap-1.5 text-xs font-bold text-slate-600">
+                              Notice
+                              <input
+                                type="number"
+                                min="0"
+                                max="365"
+                                className={`${FIELD} h-8 w-[72px] text-center`}
+                                disabled={!canEdit}
+                                aria-label={`${EXCEPTION_FLOWS[sel].types[type]}: notice period in days`}
+                                value={cfg.travel_notice_days?.[type] ?? TRAVEL_NOTICE[type][0]}
+                                onChange={(e) =>
+                                  update((d) => {
+                                    d.travel_notice_days = {
+                                      ...d.travel_notice_days,
+                                      [type]: sanitizeNoticeDays(e.target.value, TRAVEL_NOTICE[type][0]),
+                                    };
+                                    return d;
+                                  })
+                                }
+                              />
+                              {type === 'TRAVEL_REQUEST_LEAD_TIME_OVERRIDE' ? 'working days' : 'days'}
+                            </label>
+                          ) : null}
                           {allowBlock ? (
                             <Segmented
                               label={`${EXCEPTION_FLOWS[sel].types[type]}: when it's on a claim`}
@@ -873,7 +904,9 @@ export default function WorkflowConfig() {
                           ? "Blocks the claim: it can't be submitted with this expense, even with a reason."
                           : sel === CLAIM_EXCEPTION_FLOW
                             ? 'On: the employee gives a reason and it goes through the route above with the claim.'
-                            : 'On: the request goes through the route above.'}
+                            : TRAVEL_NOTICE[type]
+                              ? `${TRAVEL_NOTICE[type][1](cfg.travel_notice_days?.[type] ?? TRAVEL_NOTICE[type][0])} It then goes through the route above.`
+                              : 'On: the request goes through the route above.'}
                     </Option>
                   );
                 })}

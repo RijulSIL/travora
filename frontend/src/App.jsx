@@ -38,6 +38,7 @@ const TravelRequestsPage = lazy(() => import('./pages/travel/TravelRequestsPage'
 const CityGroupClassification = lazy(() => import('./pages/admin/CityGroupClassification'));
 const CompanyProfile = lazy(() => import('./pages/admin/CompanyProfile'));
 const AuditLogs = lazy(() => import('./pages/admin/AuditLogs'));
+const StuckItems = lazy(() => import('./pages/admin/StuckItems'));
 const ExpenseCategoryManager = lazy(() => import('./pages/admin/ExpenseCategoryManager'));
 const ExpenseLimitsMatrix = lazy(() => import('./pages/admin/ExpenseLimitsMatrix'));
 const ImpactLevelMaster = lazy(() => import('./pages/admin/ImpactLevelMaster'));
@@ -186,6 +187,10 @@ export default function App() {
 
             <Route element={<RoleGuard anyOf={['export_audit']} />}>
               <Route path="admin/audit-logs" element={<AuditLogs />} />
+            </Route>
+
+            <Route element={<RoleGuard anyOf={['override_approvals']} />}>
+              <Route path="admin/stuck-items" element={<StuckItems />} />
             </Route>
 
             <Route element={<RoleGuard anyOf={['view_sensitive_admin']} />}>

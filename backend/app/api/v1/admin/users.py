@@ -5,15 +5,17 @@ import re
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy import delete, func, insert, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.rbac import MANAGER_ROLES, get_current_claims, is_manager, require_mfa, require_permission
-from app.core.timezone import today_ist
-from app.models.auth import Role, User
-from app.models.claim_workflow import NotificationCategory
+from app.core.timezone import now_ist, today_ist
+from app.models.auth import PasswordResetToken, RefreshToken, Role, User
+from app.models.claim_workflow import Notification, NotificationCategory
 from app.models.employee import Employee
 from app.models.expense_category import CompanyProfile
+from app.models.mfa import LoginOTP, TrustedDevice
 from app.models.policy import ImpactLevel
 from app.schemas.common import (
     AdminBulkImportSummaryOut,
@@ -77,8 +79,11 @@ async def list_users(
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
 ) -> list[AdminUserOut]:
-    statement = select(User, Employee).outerjoin(Employee, Employee.employee_id == User.employee_id)
-
+    statement = (
+        select(User, Employee)
+        .outerjoin(Employee, Employee.employee_id == User.employee_id)
+        .where(User.deleted_at.is_(None))  # anonymised deleted users aren't anyone to manage
+    )
 
     if role:
         statement = statement.where(User.role == role)
@@ -888,6 +893,144 @@ async def deactivate_user(
             employee.is_active = False
     await db.commit()
     return {"status": "inactive"}
+
+
+DELETED_NAME = "Deleted user"
+
+
+async def _open_items(user: User, db: AsyncSession) -> list[str]:
+    """This person's own claims and requests still going through approval or payment — they're
+    finished (or rejected, e.g. from Stuck items) before the person can be deleted."""
+    from app.models.reimbursement import ClaimDraft, ClaimStatus
+    from app.models.relocation import RelocationRequest
+    from app.models.travel_request import TravelRequest, TravelRequestStatus
+
+    claims = (
+        await db.execute(
+            select(func.count(ClaimDraft.id)).where(
+                ClaimDraft.employee_user_id == user.id,
+                ClaimDraft.status.in_(
+                    [ClaimStatus.IN_APPROVAL, ClaimStatus.PENDING_EXCEPTION, ClaimStatus.READY_FOR_PAYMENT,
+                     ClaimStatus.SENT_BACK]
+                ),
+            )
+        )
+    ).scalar_one()
+    travel = (
+        await db.execute(
+            select(func.count(TravelRequest.id)).where(
+                TravelRequest.employee_user_id == user.id,
+                TravelRequest.status.in_(
+                    [TravelRequestStatus.PENDING.value, TravelRequestStatus.PENDING_EXCEPTION.value,
+                     TravelRequestStatus.APPROVED.value, TravelRequestStatus.PARTIALLY_BOOKED.value]
+                ),
+            )
+        )
+    ).scalar_one()
+    relocation = (
+        await db.execute(
+            select(func.count(RelocationRequest.id)).where(
+                RelocationRequest.employee_user_id == user.id, RelocationRequest.status == "PENDING"
+            )
+        )
+    ).scalar_one()
+    out = []
+    for count, one, many in ((claims, "claim", "claims"), (travel, "travel request", "travel requests"),
+                             (relocation, "relocation request", "relocation requests")):
+        if count:
+            out.append(f"{count} {one if count == 1 else many}")
+    return out
+
+
+@router.post(
+    "/users/{user_id}/delete",
+    dependencies=[Depends(require_permission("manage_users")), Depends(require_mfa)],
+)
+async def delete_user(
+    user_id: int,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    """Removes someone for good. With no records pointing at them (never claimed, requested or
+    approved anything) the user and their employee record are deleted outright. Otherwise their
+    claims, approvals and audit trail stay intact and the person is anonymised instead: name
+    "Deleted user", email and employee ID freed for reuse, bank details cleared, no sign-in, and
+    hidden from User Management. Either way their sessions, codes and notifications go. The audit
+    log itself is tamper-proof, so entries written before keep what they recorded."""
+    actor_id = int(claims["sub"])
+    user = await db.get(User, user_id)
+    if user is None or user.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.id == actor_id:
+        raise HTTPException(status_code=422, detail="You can't delete your own account — ask another admin to do it")
+    await _keeps_an_admin(user, actor_id, db, deactivating=True)
+    team = await _team_of(user, db)
+    if team:
+        raise _team_still_reports(user, team)
+    name = user.full_name or user.email
+    open_items = await _open_items(user, db)
+    if open_items:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{name} still has {' and '.join(open_items)} in progress. Let them finish, or reject them "
+                "(Stuck items), before deleting."
+            ),
+        )
+
+    employee_id = user.employee_id
+    for model in (RefreshToken, PasswordResetToken, LoginOTP, TrustedDevice, Notification):
+        await db.execute(delete(model).where(model.user_id == user.id))
+
+    # Delete outright if nothing points at them; the database refuses otherwise (a claim, an
+    # approval, a delegation...), and then they're anonymised instead.
+    outcome = "deleted"
+    try:
+        async with db.begin_nested():
+            await db.execute(delete(User).where(User.id == user.id))
+            if employee_id:
+                await db.execute(delete(Employee).where(Employee.employee_id == employee_id))
+    except IntegrityError:
+        outcome = "anonymised"
+
+    if outcome == "anonymised":
+        now = now_ist()
+        user = await db.get(User, user_id, populate_existing=True)
+        user.email = f"deleted-user-{user.id}@deleted.invalid"
+        user.full_name = DELETED_NAME
+        user.hashed_password = None
+        user.is_active = False
+        user.is_manager = False
+        user.mfa_verified = False
+        user.must_change_password = False
+        user.welcome_email_sent_at = None
+        user.auto_approve_threshold = None
+        user.password_changed_at = now.replace(microsecond=0)
+        user.deleted_at = now
+        employee = await db.get(Employee, employee_id, populate_existing=True) if employee_id else None
+        if employee is not None:
+            employee.full_name = DELETED_NAME
+            employee.designation = None
+            employee.business_unit = None
+            employee.cost_centre = None
+            employee.bank_account_details = None
+            employee.reporting_manager_id = None
+            employee.is_active = False
+            await db.flush()
+            # Frees their employee ID for someone else; their records follow the renamed row.
+            await _rename_employee_id(employee_id, f"DELETED-{user.id}", db)
+
+    await log_event(
+        entity_type="user",
+        entity_id=str(user_id),
+        action="user_deleted",
+        actor_id=actor_id,
+        old=None,
+        new={"outcome": outcome},
+        db=db,
+    )
+    await db.commit()
+    return {"outcome": outcome, "name": name}
 
 
 async def _manager_problem(manager_employee_id: str | None, own_employee_id: str | None, db) -> str | None:

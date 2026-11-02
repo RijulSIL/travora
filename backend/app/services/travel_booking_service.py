@@ -7,7 +7,6 @@ from fastapi import HTTPException, UploadFile, status
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.core.timezone import now_ist
 from app.models.auth import User
 from app.models.claim_workflow import ExceptionApproval, ExceptionRequest, ExceptionRequestStatus
@@ -223,7 +222,9 @@ async def search_flights(from_city: str, to_city: str, travel_date: date, user_i
                 ),
             )
 
-    min_days = settings.flight_advance_booking_min_days
+    from app.services.workflow_service import get_workflow_config, travel_notice_days
+
+    min_days = travel_notice_days(await get_workflow_config(db), "FLIGHT_ADVANCE_BOOKING_OVERRIDE")
     min_advance_enforced = days_in_advance < min_days
     has_advance_override = await _has_completed_exception_chain(
         user_id, "FLIGHT_ADVANCE_BOOKING_OVERRIDE", db

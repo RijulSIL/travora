@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 
 import SegmentUploadForm, { EMPTY_UPLOAD_FIELDS, ModeIcon } from '../../components/travel/SegmentUploadForm';
+import TravellerId from '../../components/travel/TravellerId';
 import TicketPreviewDrawer from '../../components/ui/TicketPreviewDrawer';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import useToast from '../../hooks/useToast';
@@ -800,6 +801,9 @@ export default function TravelDeskPage() {
                     </div>
                   </div>
                 </div>
+
+                {/* Book in the name as per the traveller's ID. */}
+                <TravellerId request={selectedRow.request} compact />
 
                 {selectedRow.request.purpose && (
                   <div className="space-y-0.5">

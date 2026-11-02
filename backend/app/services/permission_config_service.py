@@ -59,6 +59,7 @@ ALL_KNOWN_PERMISSIONS = {
     "process_advances",
     "view_permission_matrix",
     "edit_permission_matrix",
+    "override_approvals",
 }
 
 # IT_ADMIN must always retain enough to administer users and recover this very config — the

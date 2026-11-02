@@ -14,6 +14,7 @@ import {
   X,
 } from 'lucide-react';
 
+import OverridePanel, { waitingFor } from '../../components/admin/OverridePanel';
 import { EYEBROW, RouteTimeline, slaRemaining } from '../../components/approvals/ApprovalDetail';
 import ClaimExceptionList from '../../components/claims/ClaimExceptionList';
 import { RelocationClaimPanel } from '../../components/claims/ClaimRelocationSteps';
@@ -25,6 +26,8 @@ import Skeleton from '../../components/ui/Skeleton';
 import TicketPreviewDrawer from '../../components/ui/TicketPreviewDrawer';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import useToast from '../../hooks/useToast';
+import { adminApi } from '../../services/adminApi';
+import { hasPermission } from '../../services/permissions';
 import { reimbursementApi } from '../../services/reimbursementApi';
 import { useAuthStore } from '../../store/authStore';
 import { claimEditPath } from '../../utils/claimRoutes';
@@ -82,6 +85,51 @@ function StatusBanner({ tone, icon: Icon, title, sub, quote, facts = [], action 
   );
 }
 
+/** For whoever may override stuck approvals (IT Admin by default): the claim's override, folded
+ * away under one line while it's waiting on an approver (see OverridePanel). */
+function AdminOverride({ claimId, onDone }) {
+  const canOverride = useAuthStore((s) => hasPermission(s.profile?.permissions, 'override_approvals'));
+  const [item, setItem] = useState(null);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!canOverride) return undefined;
+    let cancelled = false;
+    adminApi
+      .overrideItem('claim', claimId)
+      .then((res) => {
+        if (!cancelled) setItem(res.data || null);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [canOverride, claimId]);
+
+  if (!item) return null;
+  return (
+    <section aria-label="Admin override" className="overflow-hidden rounded-[14px] border border-slate-200 bg-white">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full flex-wrap items-center justify-between gap-2 px-4 py-3 text-left hover:bg-slate-50"
+      >
+        <span className="text-[12.5px] text-slate-600">
+          <b className="text-ink">Admin override</b> · waiting on {item.step_label} for {waitingFor(item.waiting_since)}
+          {item.overdue ? <b className="text-rose-700"> · past its SLA</b> : null}
+        </span>
+        <span className="text-[12px] font-bold text-brand">{open ? 'Hide' : 'Override…'}</span>
+      </button>
+      {open ? (
+        <div className="border-t border-slate-100 bg-slate-50/60 p-3">
+          <OverridePanel item={item} onDone={onDone} />
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 export default function ClaimDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -92,6 +140,8 @@ export default function ClaimDetail() {
   const [timeline, setTimeline] = useState([]);
   const [invoicePreview, setInvoicePreview] = useState(null);
   const [ticketPreview, setTicketPreview] = useState({ open: false, blob: null, name: '', type: '', title: '' });
+  // Bumped after an admin override, to load the claim again as it is now.
+  const [reloadKey, setReloadKey] = useState(0);
 
   useSetPageTitle(claim?.claim_reference || `Claim #${id}`);
 
@@ -127,7 +177,7 @@ export default function ClaimDetail() {
     return () => {
       cancelled = true;
     };
-  }, [id, showToast]);
+  }, [id, showToast, reloadKey]);
 
   const linkedInvoices = useMemo(() => claim?.linked_invoices ?? [], [claim]);
   const linkedTrips = useMemo(() => claim?.linked_trips ?? [], [claim]);
@@ -286,6 +336,15 @@ export default function ClaimDetail() {
       </section>
 
       <StatusBanner {...banner} />
+
+      <AdminOverride
+        key={`${id}-${reloadKey}`}
+        claimId={id}
+        onDone={() => {
+          showToast('Override applied', 'success');
+          setReloadKey((k) => k + 1);
+        }}
+      />
 
       {report.is_late_submission ? (
         <div className="flex items-center gap-2.5 rounded-[10px] border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-900">

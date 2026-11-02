@@ -50,6 +50,7 @@ const NODE_STYLE = {
   PENDING: 'bg-amber-50 text-amber-700',
   REJECTED: 'bg-rose-50 text-rose-700',
   SLA_SKIPPED: 'bg-slate-100 text-slate-400 line-through',
+  OVERRIDE_SKIPPED: 'bg-slate-100 text-slate-400 line-through',
   NOT_STARTED: 'bg-slate-100 text-slate-500',
 };
 
@@ -66,6 +67,8 @@ export function RelocationChain({ stages = [] }) {
             title={
               stage.status === 'SLA_SKIPPED'
                 ? `${stage.label}: passed on after the SLA was missed`
+                : stage.status === 'OVERRIDE_SKIPPED'
+                  ? `${stage.label}: skipped by an admin override`
                 : stage.decided_by_name
                   ? `${stage.label}: ${stage.decided_by_name}`
                   : stage.label
@@ -104,14 +107,19 @@ export function RelocationStatusPill({ row }) {
   );
 }
 
-function ChoiceButton({ active, title, text, onClick }) {
+function ChoiceButton({ active, title, text, onClick, disabled = false }) {
   return (
     <button
       type="button"
       onClick={onClick}
       aria-pressed={active}
+      disabled={disabled}
       className={`rounded-xl border p-4 text-left transition-all duration-200 ${
-        active ? 'border-brand bg-brand/5 ring-1 ring-brand' : 'border-slate-200 bg-white hover:border-slate-300'
+        active
+          ? 'border-brand bg-brand/5 ring-1 ring-brand'
+          : disabled
+            ? 'cursor-not-allowed border-slate-200 bg-slate-50 opacity-60'
+            : 'border-slate-200 bg-white hover:border-slate-300'
       }`}
     >
       <span className="block text-sm font-bold text-slate-800">{title}</span>
@@ -365,6 +373,9 @@ export function RelocationApprovalStep({
   const [busy, setBusy] = useState(false);
   const selected = relocations.find((row) => row.id === selectedId);
   const canContinue = selected?.status === 'APPROVED';
+  // One or the other: claim against a relocation above, or add a new one below — never both.
+  const addingNew = hasApproval !== null;
+  const pickedExisting = Boolean(selected);
 
   const run = async (action, payload) => {
     setBusy(true);
@@ -383,17 +394,29 @@ export function RelocationApprovalStep({
           <p className="mt-0.5 mb-3 text-xs text-slate-500">
             Choose the approved relocation this claim is for. You can raise more than one claim against the same approval.
           </p>
-          <div className="divide-y divide-slate-100 rounded-xl border border-slate-150">
+          {addingNew ? (
+            <p className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-150 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+              <span>You&apos;re adding a new relocation below, so these can&apos;t be chosen.</span>
+              <button type="button" className="font-bold text-brand hover:underline" onClick={() => setHasApproval(null)}>
+                Cancel the new relocation
+              </button>
+            </p>
+          ) : null}
+          <div className={`divide-y divide-slate-100 rounded-xl border border-slate-150 ${addingNew ? 'opacity-60' : ''}`}>
             {relocations.map((row) => {
-              const usable = row.status === 'APPROVED';
+              const usable = row.status === 'APPROVED' && !addingNew;
               const isSelected = row.id === selectedId;
+              // Clicking the chosen one again clears the choice (so a new relocation can be added).
+              const toggle = () => onSelect(isSelected ? null : row.id);
               return (
                 <div
                   key={row.id}
                   role={usable ? 'button' : undefined}
                   tabIndex={usable ? 0 : undefined}
-                  onClick={usable ? () => onSelect(row.id) : undefined}
-                  onKeyDown={usable ? (e) => (e.key === 'Enter' || e.key === ' ') && onSelect(row.id) : undefined}
+                  aria-pressed={usable ? isSelected : undefined}
+                  aria-disabled={row.status === 'APPROVED' && addingNew ? true : undefined}
+                  onClick={usable ? toggle : undefined}
+                  onKeyDown={usable ? (e) => (e.key === 'Enter' || e.key === ' ') && toggle() : undefined}
                   className={`flex flex-wrap items-center gap-3 border-l-[3px] px-4 py-3 transition-colors ${
                     isSelected
                       ? 'border-l-brand bg-brand/5'
@@ -456,15 +479,25 @@ export function RelocationApprovalStep({
         <p className="mt-0.5 mb-3 text-xs text-slate-500">
           {loading ? 'Loading your relocations...' : 'Do you already have approval for this relocation?'}
         </p>
+        {pickedExisting ? (
+          <p className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-150 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+            <span>You&apos;ve chosen {relocationRef(selected)} above. Clear that choice to add another relocation.</span>
+            <button type="button" className="font-bold text-brand hover:underline" onClick={() => onSelect(null)}>
+              Clear choice
+            </button>
+          </p>
+        ) : null}
         <div className="grid gap-3 md:grid-cols-2">
           <ChoiceButton
             active={hasApproval === true}
+            disabled={pickedExisting}
             title="Yes, I have approval"
             text="Fill in the details and upload the approval (PDF or screenshot). No further approval: go straight on to your invoices."
             onClick={() => setHasApproval(hasApproval === true ? null : true)}
           />
           <ChoiceButton
             active={hasApproval === false}
+            disabled={pickedExisting}
             title="No, request approval"
             text="Send a relocation request for approval. You'll be notified when it's approved."
             onClick={() => setHasApproval(hasApproval === false ? null : false)}
@@ -487,7 +520,9 @@ export function RelocationApprovalStep({
         <span className="text-xs text-slate-500">
           {canContinue
             ? `Claiming against ${relocationRef(selected)} (${selected.origin_city} → ${selected.destination_city}).`
-            : 'Choose an approved relocation to continue.'}
+            : addingNew
+              ? 'Finish the new relocation above to continue.'
+              : 'Choose an approved relocation to continue.'}
         </span>
         <button type="button" className={PRIMARY} onClick={onNext} disabled={!canContinue}>
           Next: Attach Invoices <ArrowRight size={15} />

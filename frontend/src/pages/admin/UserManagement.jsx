@@ -165,6 +165,7 @@ export default function UserManagement() {
   const [panelError, setPanelError] = useState('');
   const [recentClaims, setRecentClaims] = useState(null);
   const [confirmDeactivate, setConfirmDeactivate] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null);
   const [reactivating, setReactivating] = useState(null);
   // A manager being deactivated whose people have to be moved first.
   const [moveBeforeDeactivate, setMoveBeforeDeactivate] = useState(null);
@@ -454,6 +455,23 @@ export default function UserManagement() {
       showToast(`${user.full_name || user.email} is now inactive.`, 'success');
     } catch (err) {
       showToast(errorText(err, 'Could not deactivate this user.'), 'error');
+    }
+  };
+
+  const deleteUser = async (user) => {
+    setConfirmDelete(null);
+    try {
+      const res = await adminApi.deleteUser(user.user_id);
+      closePanel();
+      await loadUsers();
+      showToast(
+        res.data?.outcome === 'anonymised'
+          ? `${user.full_name || user.email} is deleted. Their past claims and approvals are kept under "Deleted user".`
+          : `${user.full_name || user.email} is deleted.`,
+        'success',
+      );
+    } catch (err) {
+      showToast(errorText(err, 'Could not delete this user.'), 'error');
     }
   };
 
@@ -801,6 +819,9 @@ export default function UserManagement() {
               Reactivate
             </button>
           )}
+          <button type="button" className={BTN_NO} onClick={() => setConfirmDelete(selected)}>
+            Delete…
+          </button>
           <button type="button" className={BTN_MAIN} onClick={startEdit}>
             Edit
           </button>
@@ -1016,6 +1037,21 @@ export default function UserManagement() {
         confirmVariant="danger"
         onCancel={() => setConfirmDeactivate(null)}
         onConfirm={() => confirmDeactivate && deactivate(confirmDeactivate)}
+      />
+      <ConfirmDialog
+        open={Boolean(confirmDelete)}
+        title="Delete this user for good?"
+        description={
+          confirmDelete
+            ? `${confirmDelete.full_name || confirmDelete.email} is removed and can't be brought back. If they've ever claimed, requested or approved anything, ` +
+              'those records are kept, but their name, email, employee ID and bank details are wiped and shown as "Deleted user". ' +
+              'Their email and employee ID can then be used for someone else. To only stop them signing in, deactivate them instead.'
+            : ''
+        }
+        confirmLabel="Delete user"
+        confirmVariant="danger"
+        onCancel={() => setConfirmDelete(null)}
+        onConfirm={() => confirmDelete && deleteUser(confirmDelete)}
       />
       {reactivating ? (
         <div className="fixed inset-0 z-[95] grid grid-cols-[minmax(0,1fr)] place-items-center bg-slate-900/40 p-4" onMouseDown={() => !reactivating.saving && setReactivating(null)}>

@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     invoice_storage_dir: str = "storage/invoices"
     travel_ticket_storage_dir: str = "storage/travel_tickets"
     relocation_evidence_storage_dir: str = "storage/relocation_evidence"
+    travel_id_proof_storage_dir: str = "storage/travel_id_proofs"
     travel_request_min_lead_working_days: int = 2
     flight_advance_booking_min_days: int = 7
     train_advance_booking_min_days: int = 2

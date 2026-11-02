@@ -11,6 +11,8 @@ export const adminApi = {
     }),
   changeUserRole: (userId, role) => api.put(`/admin/users/${userId}/role`, { role }),
   deactivateUser: (userId) => api.delete(`/admin/users/${userId}`),
+  // Removes someone for good (anonymised instead when records still point at them).
+  deleteUser: (userId) => api.post(`/admin/users/${userId}/delete`),
   reactivateUser: (userId, payload) => api.post(`/admin/users/${userId}/reactivate`, payload),
   updateUser: (userId, payload) => api.put(`/admin/users/${userId}`, payload),
   // Send the welcome email again (only while they're still on the temporary password).
@@ -71,6 +73,10 @@ export const adminApi = {
   workflowConfig: () => api.get('/workflow/config'),
   updateWorkflowConfig: (config) => api.put('/workflow/config', { config }),
   departmentHeadCandidates: () => api.get('/workflow/department-head-candidates'),
+  // Admin override of stuck approvals (Stuck items page; override_approvals permission).
+  overrideItems: () => api.get('/admin/overrides'),
+  overrideItem: (kind, id) => api.get(`/admin/overrides/${kind}/${id}`),
+  overrideAct: (kind, id, payload) => api.post(`/admin/overrides/${kind}/${id}`, payload),
   holidays: () => api.get('/admin/holidays'),
   createHoliday: (payload) => api.post('/admin/holidays', payload),
   updateHoliday: (id, payload) => api.put(`/admin/holidays/${id}`, payload),

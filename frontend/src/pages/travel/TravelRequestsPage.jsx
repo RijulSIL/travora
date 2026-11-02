@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeftRight, ChevronDown, Clock, Plus, Send, ShieldAlert, Ticket, X } from 'lucide-react';
+import { ArrowLeftRight, ChevronDown, Clock, FileCheck2, Plus, Send, ShieldAlert, Ticket, UploadCloud, X } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 
 import { RELOCATION_PURPOSE } from '../../components/claims/ClaimRelocationSteps';
@@ -9,6 +9,7 @@ import TicketPreviewDrawer from '../../components/ui/TicketPreviewDrawer';
 import { EntitlementChips, TravelRequestDetail, TravelRequestRow, TripRow } from '../../components/travel/TravelRequestList';
 import { claimWindow, claimWindowDays, describeRequest } from '../../components/travel/travelRequestView';
 import LegPicker, { pickDone, segmentComplete } from '../../components/travel/LegPicker';
+import { ID_TYPES } from '../../components/travel/TravellerId';
 import {
   CapsPanel,
   EYEBROW,
@@ -32,6 +33,17 @@ import { reimbursementApi } from '../../services/reimbursementApi';
 import { claimNewPath } from '../../utils/claimRoutes';
 import { required } from '../../utils/validators';
 import useBodyScrollLock from '../../hooks/useBodyScrollLock';
+
+// The traveller's ID — all required on every request; filled in from their previous one.
+const EMPTY_TRAVELLER_ID = { id_name: '', id_type: '', id_proof_ref: '', id_proof_filename: '' };
+
+function travellerIdErrors(t) {
+  return {
+    id_name: t.id_name.trim().length < 2 ? 'Enter your full name exactly as it appears on your ID' : null,
+    id_type: t.id_type ? null : 'Choose which ID you are attaching',
+    id_proof_ref: t.id_proof_ref ? null : 'Attach a copy of your ID',
+  };
+}
 
 function emptyRequestForm() {
   return {
@@ -265,6 +277,56 @@ export default function TravelRequestsPage() {
   const [legPicks, setLegPicks] = useState({});
   const [showPickErrors, setShowPickErrors] = useState(false);
   const pickerRef = useRef(null);
+  const [travellerId, setTravellerId] = useState(EMPTY_TRAVELLER_ID);
+  const [idUploading, setIdUploading] = useState(false);
+  const [showIdErrors, setShowIdErrors] = useState(false);
+  const idRef = useRef(null);
+  const idErrors = travellerIdErrors(travellerId);
+
+  // Fill in the ID from the previous request (only the parts still empty).
+  useEffect(() => {
+    if (!modalOpen) return;
+    reimbursementApi
+      .lastTravelIdProof()
+      .then((r) => {
+        const last = r.data;
+        if (!last) return;
+        setTravellerId((prev) => ({
+          id_name: prev.id_name || last.id_name || '',
+          id_type: prev.id_type || last.id_type || '',
+          id_proof_ref: prev.id_proof_ref || last.id_proof_ref || '',
+          id_proof_filename: prev.id_proof_ref ? prev.id_proof_filename : last.id_proof_filename || '',
+        }));
+      })
+      .catch(() => {});
+  }, [modalOpen]);
+
+  const pickIdFile = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.pdf,.jpg,.jpeg,.png,.heic';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      if (file.size > 10 * 1024 * 1024) {
+        showToast('The ID file can be up to 10 MB', 'error');
+        return;
+      }
+      const fd = new FormData();
+      fd.append('file', file);
+      setIdUploading(true);
+      try {
+        const r = await reimbursementApi.uploadTravelIdProof(fd);
+        setTravellerId((prev) => ({ ...prev, id_proof_ref: r.data.ref, id_proof_filename: r.data.filename }));
+      } catch (err) {
+        const detail = err?.response?.data?.detail;
+        showToast(typeof detail === 'string' ? detail : 'Could not upload the ID', 'error');
+      } finally {
+        setIdUploading(false);
+      }
+    };
+    input.click();
+  };
   const pickSegments = useMemo(() => {
     const v = form.values;
     const raw =
@@ -451,6 +513,10 @@ export default function TravelRequestsPage() {
       leg_picks: pickSegments
         .filter(segmentComplete)
         .map((seg, i) => ({ seq: i + 1, ...(legPicks[seg.key] || {}) })),
+      id_name: travellerId.id_name.trim(),
+      id_type: travellerId.id_type,
+      id_proof_ref: travellerId.id_proof_ref,
+      id_proof_filename: travellerId.id_proof_filename,
     };
   }
 
@@ -463,6 +529,11 @@ export default function TravelRequestsPage() {
       if (pickSegments.some((seg) => !segmentComplete(seg) || !pickDone(legPicks[seg.key]))) {
         setShowPickErrors(true);
         pickerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
+      if (Object.values(idErrors).some(Boolean) || idUploading) {
+        setShowIdErrors(true);
+        idRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
         return;
       }
 
@@ -481,6 +552,8 @@ export default function TravelRequestsPage() {
       form.setValues(emptyRequestForm());
       setLegPicks({});
       setShowPickErrors(false);
+      setTravellerId(EMPTY_TRAVELLER_ID);
+      setShowIdErrors(false);
 
     } catch (err) {
       setIsSubmitting(false);
@@ -527,6 +600,8 @@ export default function TravelRequestsPage() {
       form.setValues(emptyRequestForm());
       setLegPicks({});
       setShowPickErrors(false);
+      setTravellerId(EMPTY_TRAVELLER_ID);
+      setShowIdErrors(false);
     } catch (err) {
       setSubmissionState({ active: false, status: 'idle', mode: null });
       showToast(err.response?.data?.detail || err.message || 'Failed to submit exception', 'error');
@@ -1236,6 +1311,77 @@ export default function TravelRequestsPage() {
                       <FieldError>{form.errors.project_code}</FieldError>
                     </div>
                   ) : null}
+                </section>
+
+                {/* The traveller's ID — tickets are issued in this name */}
+                <section ref={idRef} className="space-y-3">
+                  <div>
+                    <p className={EYEBROW}>Your ID</p>
+                    <p className="mt-0.5 text-[11.5px] text-slate-500">
+                      Tickets are booked in this name. Your approvers, the travel desk and the travel agent can see it.
+                    </p>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <label htmlFor="tr-id-name" className={LABEL}>Full name as per ID</label>
+                      <input
+                        id="tr-id-name"
+                        className={FIELD}
+                        placeholder="Exactly as printed on the ID"
+                        maxLength={255}
+                        value={travellerId.id_name}
+                        onChange={(e) => setTravellerId((t) => ({ ...t, id_name: e.target.value }))}
+                        aria-invalid={Boolean(showIdErrors && idErrors.id_name)}
+                        required
+                      />
+                      {showIdErrors ? <FieldError>{idErrors.id_name}</FieldError> : null}
+                    </div>
+                    <div>
+                      <label htmlFor="tr-id-type" className={LABEL}>ID type</label>
+                      <select
+                        id="tr-id-type"
+                        className={FIELD}
+                        value={travellerId.id_type}
+                        onChange={(e) => setTravellerId((t) => ({ ...t, id_type: e.target.value }))}
+                        aria-invalid={Boolean(showIdErrors && idErrors.id_type)}
+                        required
+                      >
+                        <option value="">Select ID type</option>
+                        {ID_TYPES.map(([code, label]) => (
+                          <option key={code} value={code}>{label}</option>
+                        ))}
+                      </select>
+                      {showIdErrors ? <FieldError>{idErrors.id_type}</FieldError> : null}
+                    </div>
+                  </div>
+                  <div>
+                    <span className={LABEL}>ID proof</span>
+                    <button
+                      type="button"
+                      onClick={pickIdFile}
+                      disabled={idUploading}
+                      className={`w-full rounded-[10px] border-2 px-3 py-3 text-center text-xs font-semibold transition-colors ${
+                        travellerId.id_proof_ref
+                          ? 'border-solid border-emerald-200 bg-emerald-50 text-emerald-800'
+                          : showIdErrors
+                            ? 'border-dashed border-rose-300 bg-rose-50/40 text-rose-700'
+                            : 'border-dashed border-slate-200 bg-slate-50/60 text-slate-500 hover:border-brand/40'
+                      }`}
+                    >
+                      {idUploading ? (
+                        'Uploading…'
+                      ) : travellerId.id_proof_ref ? (
+                        <span className="inline-flex items-center gap-1.5">
+                          <FileCheck2 size={15} /> {travellerId.id_proof_filename || 'ID attached'} (click to replace)
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5">
+                          <UploadCloud size={15} /> Attach your ID: PDF, JPG, PNG or HEIC, up to 10 MB
+                        </span>
+                      )}
+                    </button>
+                    {showIdErrors ? <FieldError>{idErrors.id_proof_ref}</FieldError> : null}
+                  </div>
                 </section>
 
                 {/* Notes */}

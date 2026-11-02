@@ -53,6 +53,9 @@ class User(Base):
     # rbac.get_current_claims.
     password_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     auto_approve_threshold: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    # Deleted by an admin but kept, anonymised, because their claims, approvals or other records
+    # still point at them (admin/users.py delete_user). Hidden from User Management.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )

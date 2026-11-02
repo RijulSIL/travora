@@ -198,6 +198,35 @@ DEFAULT_EXCEPTION_SUBMISSION_MODE: dict[str, str] = {
 }
 
 
+# How much notice a travel request needs before it's flagged as short notice, per exception type
+# (Approval Matrix -> Travel request exceptions; stored as travel_notice_days). Flight: flagged
+# when it's less than N calendar days away. Train: N calendar days away or sooner. Any other mode:
+# sooner than N working days. The server config values are only the starting defaults.
+TRAVEL_NOTICE_TYPES = (
+    "FLIGHT_ADVANCE_BOOKING_OVERRIDE",
+    "TRAIN_ADVANCE_BOOKING_OVERRIDE",
+    "TRAVEL_REQUEST_LEAD_TIME_OVERRIDE",
+)
+
+
+def default_travel_notice_days() -> dict[str, int]:
+    from app.core.config import settings
+
+    return {
+        "FLIGHT_ADVANCE_BOOKING_OVERRIDE": settings.flight_advance_booking_min_days,
+        "TRAIN_ADVANCE_BOOKING_OVERRIDE": settings.train_advance_booking_min_days,
+        "TRAVEL_REQUEST_LEAD_TIME_OVERRIDE": settings.travel_request_min_lead_working_days,
+    }
+
+
+def travel_notice_days(cfg: dict, exception_type: str) -> int:
+    """The notice period for one short-notice check, as configured (else the default)."""
+    value = (cfg.get("travel_notice_days") or {}).get(exception_type)
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 365:
+        return value
+    return default_travel_notice_days()[exception_type]
+
+
 def exception_submission_mode(cfg: dict, exception_type: str) -> str:
     """ALLOW or BLOCK for a flagged claim expense of `exception_type`. A generic
     f"{category}_DEVIATION" type has no entry of its own and follows POLICY_EXCEPTION_GENERAL."""
@@ -722,6 +751,7 @@ DEFAULT_WORKFLOW_CONFIG: dict = {
     ],
     "exception_chains": dict(EXCEPTION_APPROVAL_CHAINS),
     "exception_submission_mode": dict(DEFAULT_EXCEPTION_SUBMISSION_MODE),
+    "travel_notice_days": {},
     "submission": {"late_after_days": DEFAULT_LATE_AFTER_DAYS, "archive_after_days": DEFAULT_ARCHIVE_AFTER_DAYS},
     "auto_approve_below_amount": "2000.00",
 }
@@ -915,6 +945,16 @@ def _validate_workflow_config(config: dict) -> None:
                         detail=f"exception_sla_hours '{key}' must be whole hours between 1 and 2000",
                     )
 
+    notice = config.get("travel_notice_days")
+    if notice is not None:
+        if not isinstance(notice, dict):
+            raise HTTPException(status_code=422, detail="travel_notice_days must be an object")
+        for key, val in notice.items():
+            if key not in TRAVEL_NOTICE_TYPES:
+                raise HTTPException(status_code=422, detail=f"Unknown notice period '{key}'")
+            if isinstance(val, bool) or not isinstance(val, int) or not 0 <= val <= 365:
+                raise HTTPException(status_code=422, detail="Notice periods must be a whole number of days from 0 to 365")
+
     submission_modes = config.get("exception_submission_mode")
     if submission_modes is not None:
         if not isinstance(submission_modes, dict):
@@ -957,7 +997,7 @@ async def get_workflow_config(db: AsyncSession, category: str | None = None) -> 
     category=None, so existing behavior is unchanged until an admin opts in."""
     row = await db.get(WorkflowConfigRow, 1)
     if row is None or not row.config_json:
-        return dict(DEFAULT_WORKFLOW_CONFIG)
+        return {**DEFAULT_WORKFLOW_CONFIG, "travel_notice_days": default_travel_notice_days()}
     merged = dict(DEFAULT_WORKFLOW_CONFIG)
     merged.update(row.config_json)
     if "stages" in row.config_json:
@@ -972,6 +1012,10 @@ async def get_workflow_config(db: AsyncSession, category: str | None = None) -> 
     merged["exception_submission_mode"] = {
         **DEFAULT_EXCEPTION_SUBMISSION_MODE,
         **(row.config_json.get("exception_submission_mode") or {}),
+    }
+    merged["travel_notice_days"] = {
+        **default_travel_notice_days(),
+        **(row.config_json.get("travel_notice_days") or {}),
     }
     if category:
         override = (row.config_json.get("category_overrides") or {}).get(category)

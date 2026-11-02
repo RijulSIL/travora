@@ -12,6 +12,12 @@ export const reimbursementApi = {
   deleteDelegation: (id) => api.delete(`me/delegations/${id}`),
   bookingTripsMy: (params) => api.get('booking/trips/my', { params }),
   travelRequestsMy: () => api.get('travel-requests/my'),
+  // The traveller's ID on a travel request: upload a copy (returns its ref), last time's details
+  // to fill the form, and a request's copy to view.
+  uploadTravelIdProof: (formData) =>
+    api.post('travel-requests/id-proof', formData, { headers: { 'Content-Type': 'multipart/form-data' }, suppressErrorToast: true }),
+  lastTravelIdProof: () => api.get('travel-requests/id-proof/last'),
+  travelIdProofBlob: (requestId) => api.get(`travel-requests/${requestId}/id-proof`, { responseType: 'blob' }),
   travelRequestsManagerPending: () => api.get('travel-requests/manager/pending'),
   travelRequestsTeamCalendar: () => api.get('travel-requests/manager/team-calendar'),
   travelRequestsCreate: (payload, config) => api.post('travel-requests', payload, config),

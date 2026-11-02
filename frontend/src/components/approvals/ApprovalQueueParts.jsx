@@ -157,6 +157,8 @@ const CHAIN_STEP = {
   APPROVED: ['bg-emerald-50 text-emerald-700', 'bg-emerald-600', '✓'],
   REJECTED: ['bg-rose-50 text-rose-700', 'bg-rose-600', '✕'],
   SLA_SKIPPED: ['bg-orange-50 text-orange-700', 'bg-orange-600', 'skip'],
+  // Passed on by an admin override without a decision.
+  OVERRIDE_SKIPPED: ['bg-slate-100 text-slate-600', 'bg-slate-500', 'skip'],
   // Exceptions sent back to the employee from this step; it comes back here on resubmission.
   SENT_BACK: ['bg-orange-50 text-orange-700', 'bg-orange-600', '↩'],
   PENDING: ['bg-amber-50 text-amber-700', 'bg-amber-600', '●'],
@@ -186,6 +188,8 @@ export function ApprovalChain({ decisions, yourTurn = false }) {
               ? `Rejected${d.acted_by_name ? ` by ${d.acted_by_name}` : ''}`
               : d.status === 'SLA_SKIPPED'
                 ? 'Missed its SLA, passed on'
+                : d.status === 'OVERRIDE_SKIPPED'
+                  ? 'Skipped by an admin override'
                 : d.status === 'SENT_BACK'
                   ? `Sent back to the employee${d.acted_by_name ? ` by ${d.acted_by_name}` : ''}`
                   : d.status === 'PENDING'
@@ -199,7 +203,7 @@ export function ApprovalChain({ decisions, yourTurn = false }) {
                 <ChainMark mark={mark} />
               </i>
               {/* A step passed over on its SLA is crossed out — just the name, not the mark. */}
-              <span className={d.status === 'SLA_SKIPPED' ? 'line-through' : ''}>{you ? 'You' : formatRole(d.required_role)}</span>
+              <span className={d.status === 'SLA_SKIPPED' || d.status === 'OVERRIDE_SKIPPED' ? 'line-through' : ''}>{you ? 'You' : formatRole(d.required_role)}</span>
             </span>
           </span>
         );

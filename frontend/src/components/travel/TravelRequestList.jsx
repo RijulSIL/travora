@@ -3,6 +3,7 @@ import { AlertTriangle, Bus, Check, ChevronDown, FileText, Paperclip, Plane, Tra
 import { RouteTimeline } from '../approvals/ApprovalDetail';
 import { DateBox, dayOf, shortDate, today, weekdayDate } from '../home/HomeParts';
 import { travelRouteItems } from './TravelApprovalPanel';
+import TravellerId from './TravellerId';
 import { busTypesText, leaveWindowsText, MODE_NAME, requestBanner, travelRef } from './travelRequestView';
 
 /*
@@ -237,6 +238,11 @@ export function TravelRequestDetail({ request, view, chain, onViewTicket, onView
             </>
           ) : null}
 
+          {request.id_name ? (
+            <div className="mb-3.5">
+              <TravellerId request={request} compact />
+            </div>
+          ) : null}
           {request.notes ? <Quote label="Your notes" text={request.notes} /> : null}
           {request.exception?.description ? <Quote label="Why you asked for an exception" text={request.exception.description} warn /> : null}
           {request.exception?.decision_comment ? <Quote label="Decision comment" text={request.exception.decision_comment} warn /> : null}

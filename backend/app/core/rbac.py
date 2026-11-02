@@ -77,6 +77,9 @@ PERMISSION_MATRIX: dict[Role, set[str]] = {
         "manage_holiday_calendar",
         "view_permission_matrix",
         "edit_permission_matrix",
+        # Act on any stuck claim / travel / relocation approval in place of its approver
+        # (override_service) — never Finance's payment step.
+        "override_approvals",
     },
     Role.CEO: {
         "submit_claim",

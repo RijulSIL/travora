@@ -32,6 +32,28 @@ export const TRAVEL_EXCEPTIONS = {
   TRAVEL_REQUEST_LEAD_TIME_OVERRIDE: 'Request raised too late (other modes)',
 };
 
+// Short-notice checks on travel requests and how their notice period is counted (workflow_service.
+// TRAVEL_NOTICE_TYPES): [default days, how a request is flagged with N days].
+export const TRAVEL_NOTICE = {
+  FLIGHT_ADVANCE_BOOKING_OVERRIDE: [7, (n) => `Flagged when the flight is less than ${n} calendar day${n === 1 ? '' : 's'} away.`],
+  TRAIN_ADVANCE_BOOKING_OVERRIDE: [
+    2,
+    (n) => (n === 0 ? 'Flagged when the train leaves the same day.' : `Flagged when the train is ${n} calendar day${n === 1 ? '' : 's'} away or sooner.`),
+  ],
+  TRAVEL_REQUEST_LEAD_TIME_OVERRIDE: [
+    2,
+    (n) => `Flagged when a bus (or other mode) is sooner than ${n} working day${n === 1 ? '' : 's'} away (weekends don't count).`,
+  ],
+};
+
+/** A whole number of notice days from 0 to 365, or `fallback`. */
+export function sanitizeNoticeDays(raw, fallback) {
+  if (raw === '' || raw === undefined || raw === null) return fallback;
+  const n = typeof raw === 'number' ? raw : parseInt(String(raw).trim(), 10);
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return Math.min(Math.floor(n), 365);
+}
+
 export const EXCEPTION_KEYS = [...Object.keys(CLAIM_EXCEPTIONS), ...Object.keys(TRAVEL_EXCEPTIONS)];
 
 // The two shared exception routes (workflow_service.CLAIM_EXCEPTIONS_ROUTE / TRAVEL_EXCEPTIONS_ROUTE):

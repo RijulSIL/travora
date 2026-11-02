@@ -18,6 +18,7 @@ import {
   waitingOnYou,
 } from './ApprovalDetail';
 import TravelPicksSummary from '../travel/TravelPicksSummary';
+import TravellerId from '../travel/TravellerId';
 import { describeExceptionType, formatDate, formatDatetime, formatExceptionType, formatRole } from '../../utils/formatters';
 
 const MODE_ICONS = { FLIGHT: Plane, TRAIN: TrainFront, BUS: Bus };
@@ -72,6 +73,8 @@ function routeItems(row, { canDecide, decided, now }) {
       });
     } else if (d.status === 'SLA_SKIPPED') {
       items.push({ key, state: 'skipped', title, sub: 'Passed on after the SLA was missed' });
+    } else if (d.status === 'OVERRIDE_SKIPPED') {
+      items.push({ key, state: 'skipped', title, sub: 'Skipped by an admin override', detail: d.comment });
     } else if (d.status === 'PENDING' && !ended) {
       items.push({
         key,
@@ -489,6 +492,7 @@ export default function ExceptionApprovalPanel({
           />
         )}
 
+        {tr ? <TravellerId request={tr} /> : null}
         {tr ? <TravelPicksSummary request={tr} name={name} /> : null}
         {row.itemized ? null : <Quote title={`Reason from ${name}`} text={row.description} empty="No reason given" />}
         {tr?.notes ? <Quote title="Trip notes" text={tr.notes} /> : null}

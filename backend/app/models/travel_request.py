@@ -112,6 +112,15 @@ class TravelRequest(Base):
     # [{"seq": 1, "choice": "option", "option": {...}, "note": None, "searched_at": "..."}, or
     #  {"seq": 2, "choice": "own", "option": None, "note": "Any evening train after 6 pm"}].
     leg_picks: Mapped[list | None] = mapped_column(JSON)
+    # The traveller's ID (travel_id_proof_service): full name exactly as on it, which ID it is
+    # (AADHAAR, PAN, PASSPORT, ...), and the uploaded copy — stored per user under its content
+    # hash (`ref`), so the same file can be reused on later requests. Required on new requests;
+    # empty on requests made before it was asked for.
+    id_name: Mapped[str | None] = mapped_column(String(255))
+    id_type: Mapped[str | None] = mapped_column(String(32))
+    id_proof_ref: Mapped[str | None] = mapped_column(String(80))
+    id_proof_filename: Mapped[str | None] = mapped_column(String(255))
+    id_proof_content_type: Mapped[str | None] = mapped_column(String(128))
     status: Mapped[str] = mapped_column(String(24), nullable=False, default=TravelRequestStatus.PENDING.value, index=True)
     rejection_reason: Mapped[str | None] = mapped_column(Text)
     # Which TravelRequestApprovalStage.stage_number is currently active — mirrors
@@ -148,6 +157,10 @@ class TravelRequest(Base):
         lazy="selectin",
         viewonly=True,
     )
+
+    @property
+    def has_id_proof(self) -> bool:
+        return bool(self.id_proof_ref)
 
     @property
     def sent_to_agent(self) -> bool:

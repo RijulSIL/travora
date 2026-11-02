@@ -17,6 +17,7 @@ import {
 } from '../approvals/ApprovalDetail';
 import { reimbursementApi } from '../../services/reimbursementApi';
 import TravelPicksSummary from './TravelPicksSummary';
+import TravellerId from './TravellerId';
 import { formatDate, formatDatetime, formatRole } from '../../utils/formatters';
 
 const MODE_ICONS = { FLIGHT: Plane, TRAIN: TrainFront, BUS: Bus };
@@ -50,6 +51,8 @@ export function travelRouteItems(request, chain, { employeeName, decided, now })
         sub: `Rejected${s.acted_by_name ? ` by ${s.acted_by_name}` : ''}`, detail: s.comment });
     } else if (s.status === 'SLA_SKIPPED') {
       items.push({ key: `exc-${s.exception_request_id}-${s.required_role}`, state: 'skipped', title, sub: 'Passed on after the SLA was missed' });
+    } else if (s.status === 'OVERRIDE_SKIPPED') {
+      items.push({ key: `exc-${s.exception_request_id}-${s.required_role}`, state: 'skipped', title, sub: 'Skipped by an admin override', detail: s.comment });
     } else if (s.status === 'PENDING') {
       items.push({ key: `exc-${s.exception_request_id}-${s.required_role}`, state: 'current', title,
         sub: s.pending_approver_names?.length ? `Waiting on ${s.pending_approver_names.join(', ')}` : 'Waiting on a decision' });
@@ -71,6 +74,8 @@ export function travelRouteItems(request, chain, { employeeName, decided, now })
         sub: `Rejected${s.decided_by_name ? ` by ${s.decided_by_name}` : ''}`, detail: s.comment || request.rejection_reason });
     } else if (s.status === 'SLA_SKIPPED') {
       items.push({ key: `stage-${s.stage_number}`, state: 'skipped', title: s.label, sub: 'Passed on after the SLA was missed' });
+    } else if (s.status === 'OVERRIDE_SKIPPED') {
+      items.push({ key: `stage-${s.stage_number}`, state: 'skipped', title: s.label, sub: 'Skipped by an admin override', detail: s.comment });
     } else if (s.status === 'PENDING') {
       const names = s.pending_approver_names?.length ? s.pending_approver_names.join(', ') : null;
       items.push({ key: `stage-${s.stage_number}`, state: 'current', title: s.label,
@@ -177,6 +182,7 @@ export default function TravelApprovalPanel({
             { label: 'Purpose', value: request.purpose },
           ]}
         />
+        <TravellerId request={request} />
         <TravelPicksSummary request={request} name={name} />
         <Quote title={`Notes from ${name}`} text={request.notes} />
       </DetailColumn>

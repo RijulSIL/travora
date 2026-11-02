@@ -116,6 +116,8 @@ def build_agent_booking_email(
     traveller: str,
     trip_type: str,
     legs: list[dict],
+    id_name: str | None = None,
+    id_type: str | None = None,
     eligibility: str,
     notes: str | None,
     link: str,
@@ -132,6 +134,7 @@ def build_agent_booking_email(
         "",
         f"Reference: {reference}",
         f"Traveller: {traveller}",
+        *([f"Name as per ID: {id_name}" + (f" ({id_type})" if id_type else "")] if id_name else []),
         f"Trip: {trip}",
         f"Eligible for: {eligibility}",
         "",
@@ -185,12 +188,13 @@ def build_agent_booking_email(
     <tr><td style="padding:30px 32px 6px 32px;">
       <div style="display:inline-block;padding:4px 10px;border-radius:999px;background:#e7f3ee;color:{BRAND};font-size:11px;line-height:16px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;">Booking request · {escape(reference)}</div>
       <h1 style="margin:14px 0 0 0;font-size:24px;line-height:31px;font-weight:800;color:{INK};letter-spacing:-0.4px;">Tickets needed for {escape(traveller)}</h1>
-      <p style="margin:8px 0 0 0;font-size:15px;line-height:23px;color:{MUTED};">Please book the trip below and upload each ticket through the secure link. No login or password is needed.</p>
+      <p style="margin:8px 0 0 0;font-size:15px;line-height:23px;color:{MUTED};">Please book the trip below and upload each ticket through the secure link. No login or password is needed.{" Issue the tickets in the name as per ID; a copy of the ID is on the booking page." if id_name else ""}</p>
     </td></tr>
 
     <tr><td style="padding:20px 32px 8px 32px;">
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
         {_fact("Traveller", escape(traveller), False)}
+        {_fact("Name as per ID", escape(id_name + (f" ({id_type})" if id_type else "")), True) if id_name else ""}
         {_fact("Trip", escape(trip), True)}
         {_fact("Eligible for", _eligibility_html(eligibility), True)}
       </table>

@@ -53,6 +53,9 @@ function routeItems(row, slaLeft, decided) {
       if (stage.status === 'SLA_SKIPPED') {
         return { key: stage.stage_number, state: 'skipped', title: stage.label, sub: 'Passed on after the SLA was missed' };
       }
+      if (stage.status === 'OVERRIDE_SKIPPED') {
+        return { key: stage.stage_number, state: 'skipped', title: stage.label, sub: 'Skipped by an admin override', detail: stage.comment };
+      }
       if (stage.status === 'PENDING') {
         // Until this approver decides, the pending stage is theirs; afterwards it's the next one.
         return {
