@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { Pill, Tabs } from '../../components/approvals/ApprovalQueueParts';
 import { ManagerSetting, MoveTeam, TeamList } from '../../components/admin/ManagerSetting';
+import OrgChart from '../../components/admin/OrgChart';
 import UserImportDialog from '../../components/admin/UserImportDialog';
 import { roleAccent, roleChip } from '../../components/layout/roleAccent';
 import { BTN_GHOST, BTN_MAIN, BTN_NO, BTN_SM, CARD, EYEBROW, FIELD, LABEL } from '../../components/policy/PolicyAdminParts';
@@ -182,9 +183,16 @@ export default function UserManagement() {
   const loadUsers = useCallback(async () => {
     try {
       setLoadError('');
-      const res = await adminApi.users({ limit: 200 });
-      setUsers(res.data || []);
-      return res.data || [];
+      // Everyone, a page at a time (the server returns at most 200 per request).
+      const everyone = [];
+      for (let offset = 0; offset < 20000; offset += 200) {
+        const res = await adminApi.users({ limit: 200, offset });
+        const batch = res.data || [];
+        everyone.push(...batch);
+        if (batch.length < 200) break;
+      }
+      setUsers(everyone);
+      return everyone;
     } catch (err) {
       setUsers((current) => current || []);
       setLoadError(errorText(err, 'Could not load users.'));
@@ -292,6 +300,12 @@ export default function UserManagement() {
 
   const startAdd = () => {
     setCreateForm(EMPTY_CREATE);
+    openPanel({ mode: 'add' });
+  };
+
+  // The + under a manager in the org chart: add someone who reports to them.
+  const startAddUnder = (manager) => {
+    setCreateForm({ ...EMPTY_CREATE, reporting_manager_id: manager.employee_id || '' });
     openPanel({ mode: 'add' });
   };
 
@@ -893,10 +907,11 @@ export default function UserManagement() {
               { key: 'active', label: 'Active', count: matching.filter((u) => u.is_active).length },
               { key: 'inactive', label: 'Inactive', count: matching.filter((u) => !u.is_active).length },
               { key: 'all', label: 'All', count: matching.length },
+              { key: 'org', label: 'Org chart', count: all.filter((u) => u.is_active).length },
             ]}
           />
         </div>
-        <div className="mb-1.5 flex w-full flex-wrap gap-2 lg:w-auto">
+        <div className={`mb-1.5 flex w-full flex-wrap gap-2 lg:w-auto ${tab === 'org' ? 'hidden' : ''}`}>
           <label className="relative w-full sm:w-[240px]">
             <span className="sr-only">Search users</span>
             <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -935,6 +950,17 @@ export default function UserManagement() {
       </div>
 
       <div className={`grid items-start gap-3.5 ${panelOpen ? 'lg:grid-cols-[minmax(0,1fr)_400px]' : ''}`}>
+        {tab === 'org' ? (
+          <section aria-label="Organisation chart" className={CARD}>
+            {users === null ? (
+              <div className="p-4">
+                <Skeleton variant="table" rows={6} columns={1} />
+              </div>
+            ) : (
+              <OrgChart users={all} levelById={levelById} selectedId={selected?.user_id} onOpen={openUser} onAddUnder={startAddUnder} />
+            )}
+          </section>
+        ) : (
         <section aria-label="Users" className={CARD}>
           {users === null ? (
             <div className="p-4">
@@ -1016,6 +1042,7 @@ export default function UserManagement() {
           )}
           <Pagination page={page} totalPages={totalPages} onPageChange={setPage} total={total} pageSize={pageSize} startIndex={startIndex} />
         </section>
+        )}
 
         {panelOpen ? (
           <aside

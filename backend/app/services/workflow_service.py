@@ -549,15 +549,35 @@ async def is_department_head_for(user_id: int, subject_employee_id: str | None, 
     return await _user_matches_required_role(user, DEPARTMENT_HEAD, subject_employee_id, db)
 
 
+async def has_manager(employee_id: str | None, db: AsyncSession) -> bool:
+    """Whether this person reports to anyone. The CEO, and anyone with no manager set, doesn't —
+    so there's nobody for a Reporting Manager step to wait on, and that step is left out."""
+    if not employee_id:
+        return False
+    employee = await db.get(Employee, employee_id)
+    return bool(employee and employee.reporting_manager_id)
+
+
+async def without_manager_step(defs: list, employee_id: str | None, db: AsyncSession) -> list:
+    """Stage definitions (dicts with route_role) with the Reporting Manager step left out when the
+    subject has no manager. Never empties the route: it's kept when it's the only step."""
+    if not any(d["route_role"] == Role.REPORTING_MANAGER.value for d in defs) or await has_manager(employee_id, db):
+        return defs
+    return [d for d in defs if d["route_role"] != Role.REPORTING_MANAGER.value] or defs
+
+
 async def _without_inapplicable_head(
     roles: list[str], employee_id: str | None, flow: str, cfg: dict, db: AsyncSession
 ) -> list[str]:
-    """An exception route for this subject: DEPARTMENT_HEAD dropped when it doesn't apply. Never
-    returns an empty route (that would leave the request with no approver) — HR is the last
-    resort."""
-    if DEPARTMENT_HEAD not in roles or await department_head_applies(employee_id, flow, cfg, db):
-        return roles
-    return [r for r in roles if r != DEPARTMENT_HEAD] or ["HRBP_HR"]
+    """An exception route for this subject: DEPARTMENT_HEAD dropped when it doesn't apply, and
+    REPORTING_MANAGER when they have no manager. Never returns an empty route (that would leave
+    the request with no approver) — HR is the last resort."""
+    kept = list(roles)
+    if DEPARTMENT_HEAD in kept and not await department_head_applies(employee_id, flow, cfg, db):
+        kept = [r for r in kept if r != DEPARTMENT_HEAD] or ["HRBP_HR"]
+    if Role.REPORTING_MANAGER.value in kept and not await has_manager(employee_id, db):
+        kept = [r for r in kept if r != Role.REPORTING_MANAGER.value] or kept
+    return kept
 
 
 async def department_head_scope(user: User, db: AsyncSession) -> dict:
@@ -1912,6 +1932,8 @@ async def init_claim_approval_chain(claim: ClaimDraft, db: AsyncSession) -> None
     ]
     if not filtered_defs:
         filtered_defs = stage_defs[:1]
+    # No manager (the CEO, or nobody set): there's no one for the Reporting Manager step to wait on.
+    filtered_defs = await without_manager_step(filtered_defs, claim.employee_id, db)
 
     min_n = min(int(s["number"]) for s in filtered_defs)
     claim.current_approval_stage = min_n
@@ -3045,6 +3067,9 @@ async def init_travel_request_approval_chain(travel_request, db: AsyncSession) -
             stage_defs = [s for s in stage_defs if s["route_role"] != DEPARTMENT_HEAD] or _normalize_stage_defs(
                 {"stages": TRAVEL_REQUEST_DEFAULT_STAGES}
             )
+    # No manager (the CEO, or nobody set): there's no one for the Reporting Manager step to wait on.
+    manager_subject = await db.get(User, travel_request.employee_user_id)
+    stage_defs = await without_manager_step(stage_defs, manager_subject.employee_id if manager_subject else None, db)
     now = _now()
 
     await db.execute(

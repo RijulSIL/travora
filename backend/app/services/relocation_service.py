@@ -262,6 +262,8 @@ async def create_relocation_request(user_id: int, payload: dict, db: AsyncSessio
     await db.flush()
 
     stage_defs = ws.relocation_request_stage_defs(await ws.get_workflow_config(db))
+    # No manager (the CEO, or nobody set): there's no one for a Reporting Manager step to wait on.
+    stage_defs = await ws.without_manager_step(stage_defs, (await _employee(user_id, db)).employee_id, db)
     stages = [
         RelocationApprovalStage(
             relocation_request_id=row.id,
