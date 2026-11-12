@@ -166,8 +166,7 @@ export default function NotificationTemplates() {
   };
 
   return (
-    // pb: room above the phone bottom nav, so the end of the preview isn't under it.
-    <section className="flex min-w-0 flex-col gap-3.5 pb-6 md:pb-0">
+    <section className="flex min-w-0 flex-col gap-3.5">
       <PolicyHead title="Notification templates" sub="The wording of the emails Travora sends. Changes apply to the next email sent." />
       <ErrorNote error={loadError} />
 

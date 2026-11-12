@@ -671,7 +671,6 @@ export default function UserImportDialog({ users, roles, managerIds = [], levels
   }
 
   return (
-    // Above the phone bottom bar (z-60), like ConfirmDialog.
     <div className="fixed inset-0 z-[95] grid grid-cols-[minmax(0,1fr)] place-items-center bg-slate-900/40 p-4" onMouseDown={() => !busy && onClose()}>
       <div
         role="dialog"

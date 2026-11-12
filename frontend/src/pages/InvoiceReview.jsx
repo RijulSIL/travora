@@ -755,7 +755,7 @@ export default function InvoiceReview() {
           {error ? <div className="text-xs font-semibold text-red-600">{error.message}</div> : null}
 
           {/* Sticky bar: what's left + save */}
-          <div className="sticky bottom-[76px] z-20 flex items-center gap-3 rounded-[14px] bg-ink py-2.5 pl-4 pr-3 text-slate-300 shadow-[0_12px_28px_rgba(15,23,42,.25)] md:bottom-4">
+          <div className="sticky bottom-4 z-20 flex items-center gap-3 rounded-[14px] bg-ink py-2.5 pl-4 pr-3 text-slate-300 shadow-[0_12px_28px_rgba(15,23,42,.25)]">
             <div className="min-w-0 flex-1 text-[12.5px]">
               <b className="block text-[13px] text-white">
                 {isLocked

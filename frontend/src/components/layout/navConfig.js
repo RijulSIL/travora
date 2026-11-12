@@ -1,5 +1,5 @@
 /**
- * Single source for desktop sidebar + mobile bottom bar.
+ * Single source for the app sidebar (desktop rail and the phone slide-out menu).
  * - sections: grouped rows (optional section title for dividers / labels).
  * - items: badge/extra keys are resolved in AppSidebar from profile (counts, totals).
  * - anyOf: permission gate per link, checked against profile.permissions (see AppSidebar) —
@@ -7,7 +7,6 @@
  *   toggling that permission off in the Role Permissions admin page won't hide the link even
  *   though the page itself correctly starts rejecting the viewer. scopeGate is a second,
  *   independent filter on top (see scopeAllows) — an item can have either, both, or neither.
- * - mobile: up to four primary tab paths; remaining items go to “More”.
  * - icon: semantic key resolved to a lucide-react component via NAV_ICON_MAP (see navIcons.js).
  */
 
@@ -96,8 +95,7 @@ function policyAdminItems() {
 
 /** "New Claim" expands in place to let the employee pick which claim flow to start —
  * see AppSidebar's NavRow, which renders `children` as an expandable group instead of a
- * plain link when present. `getFlatNavItems` below flattens this to one row per flow for mobile,
- * where there's no room to expand inline. */
+ * plain link when present. */
 const NEW_CLAIM_ITEM = {
   label: 'New Claim',
   icon: 'add',
@@ -127,7 +125,6 @@ export const navByRole = {
       { to: '/travel-requests', label: 'My Travel Requests', icon: 'plane' },
       { to: '/invoices', label: 'Upload Invoice', icon: 'receipt' },
     ]),
-    mobile: ['/dashboard', '/claims/my', '/travel-requests', '/invoices'],
   },
 
   CEO: {
@@ -140,9 +137,6 @@ export const navByRole = {
       { to: '/travel-requests', label: 'My Travel Requests', icon: 'plane' },
       { to: '/invoices', label: 'Upload Invoice', icon: 'receipt' },
     ]),
-    // See REPORTING_MANAGER below — "Pending Approvals" expands to its Claims/Travel Requests
-    // submenu now, so mobile needs the explicit ?tab= path to still match a flattened item.
-    mobile: ['/dashboard', '/claims/pending?tab=claims', '/hr/exceptions', '/claims/my'],
   },
 
   GROUP_HEAD_HR: {
@@ -155,7 +149,6 @@ export const navByRole = {
       ]),
       { title: 'My Claims & Travel', items: SELF_SERVICE_ITEMS },
     ],
-    mobile: ['/dashboard', '/claims/pending?tab=claims', '/hr/exceptions', '/compliance'],
   },
 
   REPORTING_MANAGER: {
@@ -170,10 +163,6 @@ export const navByRole = {
       { to: '/travel-requests', label: 'My Travel Requests', icon: 'plane' },
       { to: '/invoices', label: 'Upload Invoice', icon: 'receipt' },
     ]),
-    // "Pending Approvals" no longer has a flat entry of its own now that it always expands to
-    // its Claims/Travel Requests submenu (see flattenChildren) — the bottom bar's primary tab
-    // defaults to the Claims half; Travel Requests still reaches mobile via the "More" sheet.
-    mobile: ['/dashboard', '/claims/pending?tab=claims', '/hr/exceptions', '/claims/my'],
   },
 
   HRBP_HR: {
@@ -195,7 +184,6 @@ export const navByRole = {
       },
       { title: 'My Claims & Travel', items: SELF_SERVICE_ITEMS },
     ],
-    mobile: ['/dashboard', '/claims/pending?tab=claims', '/travel-desk', '/admin/policy-versions'],
   },
 
   PAYROLL: {
@@ -208,7 +196,6 @@ export const navByRole = {
       ]),
       { title: 'My Claims & Travel', items: SELF_SERVICE_ITEMS },
     ],
-    mobile: ['/dashboard', '/claims/pending?tab=claims', '/claims/all', '/reports'],
   },
 
   FINANCE: {
@@ -251,7 +238,6 @@ export const navByRole = {
       ]),
       { title: 'My Claims & Travel', items: SELF_SERVICE_ITEMS },
     ],
-    mobile: ['/dashboard', '/finance/payment-queue', '/finance/gst-dashboard', '/reports'],
   },
 
   IT_ADMIN: {
@@ -277,7 +263,6 @@ export const navByRole = {
       ]),
       { title: 'My Claims & Travel', items: SELF_SERVICE_ITEMS },
     ],
-    mobile: ['/dashboard', '/admin/users', '/admin/policy-versions', '/admin/audit-logs'],
   },
 
   // An employee who also approves relocation requests (Relocation Approval workflow's first
@@ -290,7 +275,6 @@ export const navByRole = {
       ]),
       { title: 'My Claims & Travel', items: SELF_SERVICE_ITEMS },
     ],
-    mobile: ['/dashboard', '/claims/pending?tab=relocation', '/claims/my', '/travel-requests'],
   },
 
   // A pure approver: assignable to any stage in the Approval Matrix (claims, travel requests,
@@ -304,7 +288,6 @@ export const navByRole = {
       ]),
       { title: 'My Claims & Travel', items: SELF_SERVICE_ITEMS },
     ],
-    mobile: ['/dashboard', '/claims/pending?tab=claims', '/hr/exceptions', '/claims/my'],
   },
 };
 
@@ -405,9 +388,8 @@ const TEAM_PATHS = new Set(['/claims/pending', '/hr/exceptions', '/team/claims',
 
 /** Flattens `children`/`submenu` groups (e.g. NEW_CLAIM_ITEM, Pending Approvals' Claims/Travel
  * split) into their child rows in place — used anywhere paths need to be compared/listed
- * without caring about the expand/collapse grouping, which only matters to the desktop
- * sidebar's own rendering (mobile has no room to expand inline, so each child becomes its
- * own flat row there instead). */
+ * without caring about the expand/collapse grouping, which only matters to the sidebar's
+ * own rendering. */
 function flattenChildren(items) {
   return items.flatMap((item) => {
     const options = item.children?.length ? item.children : item.submenu;
@@ -513,15 +495,5 @@ export function getNavConfig(role, profile = null) {
   if (delegated.length) sections.push({ title: 'Delegated Access', items: delegated });
   if (otherGranted.length) sections.push({ title: 'Additional Access', items: otherGranted });
 
-  // An Employee with the Manager setting gets the old Reporting Manager phone tabs (approvals first).
-  const mobile = profile?.is_manager && role === 'EMPLOYEE' ? navByRole.REPORTING_MANAGER.mobile : baseConfig.mobile;
-  return { ...baseConfig, mobile, sections: applyNavFiltersToSections(sections, scope, permissions) };
-}
-
-/** Flat list of nav rows in display order (for mobile tab → label lookup). Groups like
- * NEW_CLAIM_ITEM (which have no `to` of their own) expand to their child rows, since mobile
- * has no inline expand/collapse — each child just becomes its own flat entry. */
-export function getFlatNavItems(role, profile = null) {
-  const config = getNavConfig(role, profile);
-  return flattenChildren((config.sections || []).flatMap((s) => s.items || []));
+  return { ...baseConfig, sections: applyNavFiltersToSections(sections, scope, permissions) };
 }

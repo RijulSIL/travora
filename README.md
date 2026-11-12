@@ -56,6 +56,7 @@ The frontend runs at `http://localhost:3000`. Sign in at `/login` with the `ADMI
 | `ADMIN_PASSWORD` | Bootstrap admin password | `ChangeMe!123` |
 | `ADMIN_FULL_NAME` | Display name for the bootstrap admin | `System Administrator` |
 | `SECRET_KEY` | JWT signing secret | `change-me-in-production` |
+| `APP_URL` | Where people open Travora; every link in an email starts with it. The backend won't start without it. Locally `http://localhost:3000`, in production the real address | _required_ |
 
 Other variables (`S3_*`, `CORS_ORIGINS`, token TTLs) match the previous defaults.
 

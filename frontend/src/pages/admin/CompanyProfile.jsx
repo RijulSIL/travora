@@ -361,7 +361,7 @@ export default function CompanyProfile() {
         <div
           role="region"
           aria-label="Unsaved changes"
-          className="fixed inset-x-0 bottom-[calc(env(safe-area-inset-bottom,0px)+76px)] z-40 mx-auto flex w-[min(720px,calc(100%-32px))] animate-sheet-up flex-wrap items-center justify-between gap-3 rounded-[14px] bg-ink py-2.5 pl-4 pr-3 text-white shadow-[0_20px_40px_-16px_rgba(15,23,42,0.5)] motion-reduce:animate-none md:bottom-4"
+          className="fixed inset-x-0 bottom-[calc(env(safe-area-inset-bottom,0px)+16px)] z-40 mx-auto flex w-[min(720px,calc(100%-32px))] animate-sheet-up flex-wrap items-center justify-between gap-3 rounded-[14px] bg-ink py-2.5 pl-4 pr-3 text-white shadow-[0_20px_40px_-16px_rgba(15,23,42,0.5)] motion-reduce:animate-none"
         >
           <div className="min-w-0">
             <b className="block text-[13px]">

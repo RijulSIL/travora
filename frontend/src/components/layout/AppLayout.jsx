@@ -3,13 +3,10 @@ import { Outlet } from 'react-router-dom';
 
 import { PageTitleProvider } from '../../context/PageTitleContext';
 import AppNavbar from './AppNavbar';
-import MobileBottomNav from './MobileBottomNav';
 import AppSidebar from './AppSidebar';
-import { selectResolvedRole, useAuthStore } from '../../store/authStore';
 
 export default function AppLayout() {
   const [mobileOpen, setMobileOpen] = useState(false);
-  const role = useAuthStore(selectResolvedRole);
 
   useEffect(() => {
     document.body.style.overflow = mobileOpen ? 'hidden' : '';
@@ -30,12 +27,10 @@ export default function AppLayout() {
           {/* Content column is nearly the full width next to the sidebar, capped so lines
               don't get absurdly wide on an ultra-wide monitor — below md, margins would eat
               too much of a phone screen, so it's full-width with a small fixed padding instead. */}
-          <main className="relative min-w-0 w-full px-4 pb-20 pt-4 md:mx-auto md:w-[95%] md:max-w-[1600px] md:px-0 md:pb-6">
+          <main className="relative min-w-0 w-full px-4 pb-6 pt-4 md:mx-auto md:w-[95%] md:max-w-[1600px] md:px-0">
             <Outlet />
           </main>
         </div>
-
-        <MobileBottomNav role={role} />
       </div>
     </PageTitleProvider>
   );

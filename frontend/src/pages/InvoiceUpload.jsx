@@ -644,7 +644,7 @@ export default function InvoiceUpload() {
       )}
 
       {pickedInvoices.length ? (
-        <div className="fixed bottom-[76px] left-1/2 z-40 flex md:bottom-4 w-[min(760px,calc(100%-32px))] -translate-x-1/2 flex-wrap items-center gap-3 rounded-[14px] bg-ink py-2.5 pl-[18px] pr-3 text-[13px] text-slate-200 shadow-[0_12px_32px_rgba(15,23,42,.28)]">
+        <div className="fixed bottom-4 left-1/2 z-40 flex w-[min(760px,calc(100%-32px))] -translate-x-1/2 flex-wrap items-center gap-3 rounded-[14px] bg-ink py-2.5 pl-[18px] pr-3 text-[13px] text-slate-200 shadow-[0_12px_32px_rgba(15,23,42,.28)]">
           <span>
             <b className="text-white">
               {pickedInvoices.length} {pickedCategory?.short.toLowerCase()} invoice{pickedInvoices.length > 1 ? 's' : ''}

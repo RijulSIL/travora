@@ -64,9 +64,8 @@ export function refreshSession() {
   return refreshPromise;
 }
 
-// Request interceptor for debugging and auth
+// Request interceptor for auth
 api.interceptors.request.use((config) => {
-  console.log('[DEBUG_API] Requesting:', config.method?.toUpperCase(), config.url);
   const token = getAccessToken();
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
@@ -75,12 +74,8 @@ api.interceptors.request.use((config) => {
 });
 
 api.interceptors.response.use(
-  (response) => {
-    console.log('[DEBUG_API] Response OK from:', response.config.url);
-    return response;
-  },
+  (response) => response,
   async (error) => {
-    console.error('[DEBUG_API] Response ERROR from:', error.config?.url, error.response?.status);
     const originalRequest = error.config;
     if (
       error.response?.status !== 401 ||

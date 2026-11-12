@@ -80,9 +80,10 @@ class Settings(BaseSettings):
     # Pause after each email when sending a batch (e.g. a CSV import's welcome emails), so the
     # mail server doesn't cut the connection. Set EMAIL_SEND_DELAY_SECONDS to change it.
     email_send_delay_seconds: float = 2.0
-    # Where people open Travora — used for links in emails (e.g. the welcome email's Sign in).
-    # Set APP_URL to the real address in production.
-    app_url: str = "http://localhost:3000"
+    # Where people open Travora — every link in an email (Sign in, open the claim, the travel
+    # agent's booking link) starts with this. Required, with no default, so a server can't start
+    # without it and quietly email out localhost links. Trailing slash is stripped.
+    app_url: str = Field(default="", validate_default=True)
 
     api_v1_prefix: str = "/api/v1"
 
@@ -99,6 +100,20 @@ class Settings(BaseSettings):
     def parse_cors_origins(cls, value: str | list[str]) -> list[str]:
         if isinstance(value, str):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
+
+    @field_validator("app_url")
+    @classmethod
+    def validate_app_url(cls, value: str) -> str:
+        value = (value or "").strip().rstrip("/")
+        if not value:
+            raise ValueError(
+                "APP_URL is not set. Add it to backend/.env as the address people open Travora at "
+                "(e.g. APP_URL=https://travora.yourcompany.com, or http://localhost:3000 locally) — "
+                "links in every email are built from it."
+            )
+        if not value.startswith(("http://", "https://")):
+            raise ValueError(f"APP_URL must start with http:// or https:// (got {value!r}).")
         return value
 
     @field_validator("refresh_cookie_samesite")

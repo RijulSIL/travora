@@ -2595,7 +2595,7 @@ async def issue_agent_booking_link(req: TravelRequest, *, sent_by_user_id: int, 
         legs=legs,
         eligibility=entitlement_note_text(entitlement),
         notes=req.notes,
-        link=f"{settings.app_url.rstrip('/')}/book/{token}",
+        link=f"{settings.app_url}/book/{token}",
     )
     try:
         await send_email_async(to_email=agent_email, subject=f"[Travora] {subject}", body_text=body, body_html=html)

@@ -69,7 +69,7 @@ async def _values(user: User, db: AsyncSession) -> dict[str, str]:
         "department": (employee.department if employee else None) or "",
         "manager": manager_name or "",
         "company_name": (profile.company_name if profile else "") or "",
-        "login_link": f"{settings.app_url.rstrip('/')}/login",
+        "login_link": f"{settings.app_url}/login",
     }
 
 
