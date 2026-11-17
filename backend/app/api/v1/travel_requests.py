@@ -15,6 +15,7 @@ from app.core.rbac import (
     require_permission,
     require_role,
 )
+from app.core.timing import log_if_slow
 from app.models.auth import Role
 from app.schemas.travel_request import (
     CityExpenseLimitOut,
@@ -78,23 +79,24 @@ async def create_request(
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ) -> TravelRequestOut:
-    row = await svc.create_travel_request(
-        user_id=int(claims["sub"]),
-        trip_type=body.trip_type,
-        travel_mode=body.travel_mode,
-        from_city=body.from_city,
-        to_city=body.to_city,
-        travel_date=body.travel_date,
-        return_date=body.return_date,
-        travel_type=body.travel_type,
-        project_code=body.project_code,
-        purpose=body.purpose,
-        notes=body.notes,
-        legs=body.legs,
-        leg_picks=body.leg_picks,
-        traveller_id=_traveller_id(body),
-        db=db,
-    )
+    async with log_if_slow(f"travel request submission (user {claims['sub']})"):
+        row = await svc.create_travel_request(
+            user_id=int(claims["sub"]),
+            trip_type=body.trip_type,
+            travel_mode=body.travel_mode,
+            from_city=body.from_city,
+            to_city=body.to_city,
+            travel_date=body.travel_date,
+            return_date=body.return_date,
+            travel_type=body.travel_type,
+            project_code=body.project_code,
+            purpose=body.purpose,
+            notes=body.notes,
+            legs=body.legs,
+            leg_picks=body.leg_picks,
+            traveller_id=_traveller_id(body),
+            db=db,
+        )
     return _build_request_out(row)
 
 
@@ -158,24 +160,25 @@ async def create_request_with_exception(
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ) -> TravelRequestOut:
-    row = await svc.create_travel_request_with_exception(
-        user_id=int(claims["sub"]),
-        trip_type=body.trip_type,
-        travel_mode=body.travel_mode,
-        from_city=body.from_city,
-        to_city=body.to_city,
-        travel_date=body.travel_date,
-        return_date=body.return_date,
-        travel_type=body.travel_type,
-        project_code=body.project_code,
-        purpose=body.purpose,
-        notes=body.notes,
-        legs=body.legs,
-        leg_picks=body.leg_picks,
-        traveller_id=_traveller_id(body),
-        justification=body.justification,
-        db=db,
-    )
+    async with log_if_slow(f"travel request submission with exception (user {claims['sub']})"):
+        row = await svc.create_travel_request_with_exception(
+            user_id=int(claims["sub"]),
+            trip_type=body.trip_type,
+            travel_mode=body.travel_mode,
+            from_city=body.from_city,
+            to_city=body.to_city,
+            travel_date=body.travel_date,
+            return_date=body.return_date,
+            travel_type=body.travel_type,
+            project_code=body.project_code,
+            purpose=body.purpose,
+            notes=body.notes,
+            legs=body.legs,
+            leg_picks=body.leg_picks,
+            traveller_id=_traveller_id(body),
+            justification=body.justification,
+            db=db,
+        )
     return _build_request_out(row)
 
 

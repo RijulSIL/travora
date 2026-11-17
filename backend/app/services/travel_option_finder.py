@@ -7,7 +7,11 @@ lists candidates, then check_option_sync looks each one up again by its number i
 anything that can't be confirmed is dropped and the timetable's times replace the first answer's.
 
 Called through travel_request_service.search_travel_options, which keeps only in-policy classes
-and saves results so the same search isn't repeated (and paid for) within a few hours."""
+and saves results so the same search isn't repeated (and paid for) within a few hours.
+
+find_nearby_stations_sync has a smaller job: for a place the flight/train search doesn't know (e.g.
+Paradeep), it only names the nearest airports or railway stations; the flights and trains themselves
+then come from airline schedules or the train timetable (travel_request_service.nearby_stations)."""
 
 from __future__ import annotations
 
@@ -208,6 +212,69 @@ def check_option_sync(
         if found and abs(_clock(found["depart_time"]) - wanted) <= 10:
             return found
     return None
+
+
+# What a nearby-stations lookup asks for, per mode: (what to find, its code, the code's pattern).
+_NEARBY_KINDS = {
+    "FLIGHT": (
+        "airports that have regular scheduled passenger flights",
+        "the airport's 3-letter IATA code",
+        r"[A-Z]{3}",
+    ),
+    "TRAIN": (
+        "Indian Railways stations where regular long-distance express or mail trains stop",
+        "the station's Indian Railways station code (like NDLS or CTC)",
+        r"[A-Z]{1,5}",
+    ),
+}
+
+
+def _nearby_stations_prompt(mode: str, place: str, *, max_km: int, limit: int) -> str:
+    what, code, _ = _NEARBY_KINDS[mode]
+    return f"""\
+Search the web for the {what} nearest to {place} (a place in India, unless its name says it is
+elsewhere). If {place} has one itself, list it first. Only include ones within {max_km} km of {place}
+by road. Return up to {limit}, nearest first. Do not guess: every name and code must come from what
+you found.
+
+Reply with ONLY a JSON array, no other text: start your reply with [ and end it with ]. Each item:
+{{"code": "{code}", "name": "its name", "city": "the city or town it is in",
+ "distance_km": distance from {place} by road in km, as a number}}
+If there is none within {max_km} km, reply with [].
+"""
+
+
+def find_nearby_stations_sync(
+    *, mode: str, place: str, max_km: int, limit: int, api_key: str, models: list[str]
+) -> list[dict[str, Any]]:
+    """The airports (FLIGHT) or railway stations (TRAIN) nearest `place`, nearest first: at most
+    `limit`, none further than `max_km`. Flights/trains from and to them are then searched in airline
+    schedules or the train timetable, so this only has to name them. Raises when Gemini can't answer."""
+    pattern = _NEARBY_KINDS[mode][2]
+    raw = _ask_json(
+        _nearby_stations_prompt(mode, place, max_km=max_km, limit=limit),
+        kind=list, temperature=0.0, max_tokens=1024, api_key=api_key, models=models,
+    )
+    stations: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        code = _text(item.get("code"), 8).upper()
+        if not re.fullmatch(pattern, code) or any(s["code"] == code for s in stations):
+            continue
+        try:
+            distance = round(float(item.get("distance_km")))
+        except (TypeError, ValueError):
+            distance = None
+        if distance is not None and not 0 <= distance <= max_km:
+            continue
+        stations.append(
+            {"code": code, "name": _text(item.get("name"), 80), "city": _text(item.get("city"), 60),
+             "distance_km": distance}
+        )
+    # Nearest first (one without a distance goes after those with one).
+    stations.sort(key=lambda s: s["distance_km"] if s["distance_km"] is not None else max_km + 1)
+    return stations[:limit]
 
 
 def _text(value: Any, limit: int) -> str:

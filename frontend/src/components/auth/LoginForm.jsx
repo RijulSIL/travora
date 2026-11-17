@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { LogIn } from 'lucide-react';
+import { Eye, EyeOff, LogIn } from 'lucide-react';
 import { useState } from 'react';
 
 import useFormValidation from '../../hooks/useFormValidation';
@@ -21,6 +21,7 @@ export default function LoginForm({
 }) {
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const form = useFormValidation({
     initialValues: { email: '', password: '' },
     rules: {
@@ -75,16 +76,28 @@ export default function LoginForm({
               Forgot password?
             </Link>
           </div>
-          <input
-            id={passwordId}
-            type="password"
-            autoComplete="current-password"
-            required
-            className="field w-full"
-            value={form.values.password}
-            onChange={(event) => form.handleChange('password', event.target.value)}
-            onBlur={() => form.handleBlur('password')}
-          />
+          <div className="relative">
+            <input
+              id={passwordId}
+              type={showPassword ? 'text' : 'password'}
+              autoComplete="current-password"
+              required
+              className="field w-full !pr-10"
+              value={form.values.password}
+              onChange={(event) => form.handleChange('password', event.target.value)}
+              onBlur={() => form.handleBlur('password')}
+            />
+            <button
+              type="button"
+              aria-label={showPassword ? 'Hide password' : 'Show password'}
+              aria-pressed={showPassword}
+              title={showPassword ? 'Hide password' : 'Show password'}
+              onClick={() => setShowPassword((v) => !v)}
+              className="absolute inset-y-0 right-0 grid w-10 place-items-center text-slate-400 transition-colors hover:text-slate-600"
+            >
+              {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
+          </div>
           {form.errors.password ? <p className="mt-1 text-xs text-red-600">{form.errors.password}</p> : null}
         </div>
         {error ? (

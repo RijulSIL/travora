@@ -2611,10 +2611,19 @@ async def submit_claim(
         )
     await db.commit()
     await db.refresh(claim)
+    # The manager's budget alert isn't part of submitting: the submit endpoint runs it once the
+    # employee has their answer (budget_check_after_submit).
+    return claim
+
+
+async def budget_check_after_submit(employee_user_id: int, claim_id: int) -> None:
+    """The manager's team-budget alert after a claim is submitted. Runs as a background task once
+    the response has gone, so in its own session (the request's is closed by then); it commits its
+    own notification. A failure is logged, never shown to the employee."""
+    from app.core.database import AsyncSessionLocal
 
     try:
-        await check_and_notify_budget_threshold(claim.employee_user_id, db)
+        async with AsyncSessionLocal() as db:
+            await check_and_notify_budget_threshold(employee_user_id, db)
     except Exception:
-        logger.exception("Budget threshold check failed for claim %s", claim.id)
-
-    return claim
+        logger.exception("Budget threshold check failed for claim %s", claim_id)

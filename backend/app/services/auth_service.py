@@ -266,13 +266,16 @@ def create_mfa_token(user_id: int) -> str:
     return jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
 
 
+# What emailed codes are made of: capital letters and digits, without 0 and O, which are easily
+# mistaken for each other.
+OTP_ALPHABET = "ABCDEFGHIJKLMNPQRSTUVWXYZ123456789"
+
+
 async def generate_and_send_otp(user: User, db: AsyncSession, purpose: str = "login") -> None:
     import asyncio
-    import string
 
-    alphabet = string.ascii_uppercase + string.digits
     # secrets, not random: codes must not be predictable from earlier ones.
-    otp_code = ''.join(secrets.choice(alphabet) for _ in range(6))
+    otp_code = ''.join(secrets.choice(OTP_ALPHABET) for _ in range(6))
 
     otp_entry = LoginOTP(
         user_id=user.id,

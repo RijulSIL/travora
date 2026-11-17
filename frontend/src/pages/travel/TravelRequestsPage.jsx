@@ -277,6 +277,13 @@ export default function TravelRequestsPage() {
   const [legPicks, setLegPicks] = useState({});
   const [showPickErrors, setShowPickErrors] = useState(false);
   const pickerRef = useRef(null);
+  // While a from/to city is being typed the leg searches wait: a half-typed name ("Para") would
+  // otherwise be searched — and its nearest airports/stations looked up — as a place of its own.
+  const [editingCity, setEditingCity] = useState(false);
+  const cityFocus = { onFocus: () => setEditingCity(true) };
+  useEffect(() => {
+    if (!modalOpen) setEditingCity(false); // closed with a city field focused: no blur comes
+  }, [modalOpen]);
   const [travellerId, setTravellerId] = useState(EMPTY_TRAVELLER_ID);
   const [idUploading, setIdUploading] = useState(false);
   const [showIdErrors, setShowIdErrors] = useState(false);
@@ -1071,7 +1078,11 @@ export default function TravelRequestsPage() {
                               setCityQ(e.target.value);
                               form.handleChange('from_city', e.target.value);
                             }}
-                            onBlur={() => form.handleBlur('from_city')}
+                            {...cityFocus}
+                            onBlur={() => {
+                              setEditingCity(false);
+                              form.handleBlur('from_city');
+                            }}
                             list="city-from"
                           />
                         </div>
@@ -1095,7 +1106,11 @@ export default function TravelRequestsPage() {
                               setCityQ(e.target.value);
                               form.handleChange('to_city', e.target.value);
                             }}
-                            onBlur={() => form.handleBlur('to_city')}
+                            {...cityFocus}
+                            onBlur={() => {
+                              setEditingCity(false);
+                              form.handleBlur('to_city');
+                            }}
                             list="city-to"
                           />
                         </div>
@@ -1189,6 +1204,8 @@ export default function TravelRequestsPage() {
                                 setCityQ(e.target.value);
                                 updateLeg(i, { from_city: e.target.value });
                               }}
+                              {...cityFocus}
+                              onBlur={() => setEditingCity(false)}
                               list="city-from"
                             />
                             <input
@@ -1201,6 +1218,8 @@ export default function TravelRequestsPage() {
                                 setCityQ(e.target.value);
                                 updateLeg(i, { to_city: e.target.value });
                               }}
+                              {...cityFocus}
+                              onBlur={() => setEditingCity(false)}
                               list="city-to"
                             />
                             <input
@@ -1252,7 +1271,7 @@ export default function TravelRequestsPage() {
                 </section>
 
                 <div ref={pickerRef}>
-                  <LegPicker segments={pickSegments} picks={legPicks} onChange={setLegPicks} showErrors={showPickErrors} />
+                  <LegPicker segments={pickSegments} picks={legPicks} onChange={setLegPicks} showErrors={showPickErrors} paused={editingCity} />
                 </div>
 
                 {/* Why */}

@@ -120,7 +120,7 @@ export function MoneyStrip({ cells, label = 'Your money' }) {
         >
           <span className="text-[10.5px] font-extrabold uppercase tracking-[0.07em] text-slate-400">{c.label}</span>
           <span className={`font-mono text-[19px] font-semibold tabular-nums ${c.zero ? 'text-slate-400' : 'text-ink'}`}>{c.value}</span>
-          <span className="text-xs text-slate-500 [&_a]:font-bold [&_a]:text-brand hover:[&_a]:underline">{c.sub}</span>
+          {c.sub ? <span className="text-xs text-slate-500 [&_a]:font-bold [&_a]:text-brand hover:[&_a]:underline">{c.sub}</span> : null}
         </div>
       ))}
     </section>

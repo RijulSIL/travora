@@ -62,3 +62,6 @@ scratch/
 internship_report.md
 TRP_Product_Requirements_Document.docx
 PROJECT_ANALYSIS.md
+
+# Personal Claude Code settings
+.claude/settings.local.json

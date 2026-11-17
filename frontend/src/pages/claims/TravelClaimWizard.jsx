@@ -861,8 +861,13 @@ export default function TravelClaimWizard({ relocation = false }) {
         filename={drawer.name}
         title={drawer.title}
       />
-      {submittedClaim && (
-        <ClaimSubmitAnimation claim={submittedClaim} onComplete={() => navigate('/claims/my')} />
+      {/* Starts as soon as it's sent and finishes once the server confirms; a failed submit ends it. */}
+      {(submitting || submittedClaim) && (
+        <ClaimSubmitAnimation
+          claim={submittedClaim || claim}
+          confirmed={Boolean(submittedClaim)}
+          onComplete={() => navigate('/claims/my')}
+        />
       )}
 
     </ClaimWizardShell>

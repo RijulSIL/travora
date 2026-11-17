@@ -603,7 +603,10 @@ export default function UserManagement() {
       </form>
     );
   } else if (panel?.mode === 'edit' && selected) {
-    const noProfile = !selected.employee_id;
+    // No employee record yet: typing an employee ID gives them one when saved, which also unlocks
+    // the level, manager, department and office.
+    const addingId = !selected.employee_id;
+    const noProfile = addingId && !editForm.employee_id.trim();
     const team = teamOf(selected);
     const isCeo = editForm.role === 'CEO';
     // Turning Manager off while people still report to them: move them first.
@@ -625,12 +628,14 @@ export default function UserManagement() {
             <span className={LABEL}>Employee ID</span>
             <input
               className={FIELD}
-              disabled={noProfile}
+              placeholder={addingId ? 'Not set yet' : undefined}
               value={editForm.employee_id}
               onChange={(e) => setEditForm({ ...editForm, employee_id: e.target.value })}
             />
             <span className="mt-1 block text-[11px] text-slate-400">
-              Used everywhere as their identifier (manager, claims, trips) — everything follows if you change it. Only do this to fix a genuine mistake.
+              {addingId
+                ? 'Adding one gives them an employee profile, so their level, manager, department and office can be set.'
+                : 'Used everywhere as their identifier (manager, claims, trips) — everything follows if you change it. Only do this to fix a genuine mistake.'}
             </span>
           </label>
           <Group>Role &amp; level</Group>
@@ -672,7 +677,7 @@ export default function UserManagement() {
           ) : null}
           {noProfile ? (
             <div className="col-span-full rounded-[10px] border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              This account has no employee profile, so its level, manager, department and office can&apos;t be set here.
+              This account has no employee profile yet. Add an employee ID above to set its level, manager, department and office.
             </div>
           ) : null}
           <label className="block">
@@ -686,7 +691,7 @@ export default function UserManagement() {
             <span className={LABEL}>Reporting manager</span>
             <select className={FIELD} disabled={noProfile} value={editForm.reporting_manager_id} onChange={(e) => setEditForm({ ...editForm, reporting_manager_id: e.target.value })}>
               <option value="">None</option>
-              {managerOptions(selected?.employee_id)}
+              {managerOptions(selected?.employee_id || editForm.employee_id.trim())}
             </select>
           </label>
           <Group>Work details</Group>

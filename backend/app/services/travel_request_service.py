@@ -358,45 +358,167 @@ async def _saved_search(key: str, fetch, *, mode: str, from_label: str, to_label
         return results, now_ist()
 
 
+# --- Places the searches don't know: their nearest airports / railway stations ------------------
+# A place with no airport in flight_schedule's list or no station in rail_timetable's (e.g.
+# Paradeep) is searched from and to its nearest ones instead: up to NEARBY_LIMIT, no further than
+# NEARBY_MAX_KM. Each extra one costs requests: per airport on the "from" side for flights (the "to"
+# side costs nothing: departures list every destination), per station pair for trains.
+NEARBY_LIMIT = 2
+NEARBY_MAX_KM = {TravelRequestMode.FLIGHT.value: 250, TravelRequestMode.TRAIN.value: 150}
+# Trains are searched one station pair at a time, so a train leg starts from only the nearest
+# station to the start, and goes to the (up to two) nearest the destination: at most two timetable
+# requests per route and date.
+TRAIN_FROM_STATIONS = 1
+# Airports and stations rarely change: a place's nearest ones are looked up again only after this
+# long — sooner when none was found, in case that answer was wrong.
+NEARBY_KEEP_DAYS = 180
+NOTHING_NEARBY_KEEP_DAYS = 7
+
+
+def _place_key(place: str) -> str:
+    return re.sub(r"\s+", " ", (place or "").strip().lower())[:128]
+
+
+async def nearby_stations(mode: str, place: str, db: AsyncSession) -> list[dict]:
+    """The airports (FLIGHT) or railway stations (TRAIN) nearest `place`, nearest first (see
+    NearbyStations): saved from an earlier lookup, else found by Gemini with Google Search and saved.
+    A lock per place makes searches arriving together (one per time window) wait for the first one's
+    answer instead of each asking Gemini. Raises TimetableUnavailable when they can't be looked up."""
+    from app.models.travel_request import NearbyStations
+    from app.services.travel_option_finder import find_nearby_stations_sync
+
+    key = f"{mode}|{_place_key(place)}"
+    async with _TIMETABLE_LOCKS.setdefault(f"nearby|{key}", asyncio.Lock()):
+        await db.commit()  # see the answer another request may just have saved (as in _saved_search)
+        row = (await db.execute(select(NearbyStations).where(NearbyStations.cache_key == key))).scalar_one_or_none()
+        if row is not None:
+            keep_days = NEARBY_KEEP_DAYS if row.stations else NOTHING_NEARBY_KEEP_DAYS
+            if row.created_at >= now_ist() - timedelta(days=keep_days):
+                return row.stations
+        if not settings.gemini_api_key:
+            raise TimetableUnavailable(f"no Gemini key to find what's near {place!r}")
+        try:
+            found = await asyncio.to_thread(
+                find_nearby_stations_sync,
+                mode=mode,
+                place=place.strip(),
+                max_km=NEARBY_MAX_KM[mode],
+                limit=NEARBY_LIMIT,
+                api_key=settings.gemini_api_key,
+                models=[settings.gemini_invoice_model_primary, settings.gemini_invoice_model_fallback],
+            )
+        except Exception as e:  # noqa: BLE001 — any failure: search with Gemini instead
+            raise TimetableUnavailable(f"couldn't find what's near {place!r}: {e}") from e
+        if row is not None:
+            await db.delete(row)
+            await db.flush()
+        db.add(NearbyStations(cache_key=key, mode=mode, place=place.strip()[:128], stations=found))
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()  # saved meanwhile by another server process: we have the answer anyway
+        return found
+
+
+async def _codes_for(
+    mode: str, side: str, city: str, known: str | list | None, nearby: dict, db: AsyncSession, *, use: int | None = None
+) -> list[str]:
+    """The airport/station codes to search for one end of a leg: the city's own from the built-in
+    list, else its nearest ones — the first `use` of them, if given (recorded in `nearby[side]` for
+    the reply)."""
+    if known:
+        return [known] if isinstance(known, str) else list(known)
+    found = (await nearby_stations(mode, city, db))[:use]
+    nearby[side] = {"place": city, "stations": found, "within_km": NEARBY_MAX_KM[mode]}
+    return [s["code"] for s in found]
+
+
+def _same_place_error(mode: str, from_city: str, to_city: str, code: str, nearby: dict) -> HTTPException:
+    what = "airport" if mode == TravelRequestMode.FLIGHT.value else "station"
+    if not nearby:
+        return HTTPException(status_code=422, detail=f"From and to are the same {what}")
+    shared = next((s for side in nearby.values() for s in side["stations"] if s["code"] == code), {})
+    name = shared.get("name") or shared.get("city") or code
+    return HTTPException(
+        status_code=422,
+        detail=f"{from_city} and {to_city} are both nearest to the same {what}, {name} ({code})",
+    )
+
+
 async def _search_trains_in_timetable(
     *, from_city: str, to_city: str, travel_date: date, windows: list[str], allowed: list[str], labels: list[str],
     db: AsyncSession,
 ) -> dict:
     """Every train between the two cities that day, from the railway timetable (rail_timetable.py):
     one request per route and date, saved and filtered here for each time window. No fares: the
-    timetable has none. Raises TimetableUnavailable when the timetable can't answer."""
+    timetable has none. A city with no station in the list is searched from its nearest station /
+    to its two nearest (nearby_stations, listed in the reply's "nearby"; see TRAIN_FROM_STATIONS):
+    one request per pair of stations, nearest first. Raises TimetableUnavailable when the timetable
+    can't answer."""
     from app.services import rail_timetable
 
-    from_code, to_code = rail_timetable.station_code(from_city), rail_timetable.station_code(to_city)
-    for city, code in ((from_city, from_code), (to_city, to_code)):
-        if not code:
-            raise TimetableUnavailable(f"no station code for {city!r}")
-    if from_code == to_code:
-        raise HTTPException(status_code=422, detail="From and to are the same station")
-
-    async def fetch() -> list:
-        try:
-            payload = await rail_timetable.fetch_trains_between(
-                from_code, to_code, travel_date, api_key=settings.rapidapi_key, host=settings.rapidapi_irctc_host
-            )
-        except rail_timetable.RailSearchError as e:
-            if e.pause:
-                _pause_provider(TravelRequestMode.TRAIN.value)
-            raise TimetableUnavailable(str(e)) from e
-        return rail_timetable.parse_trains(payload, travel_date)
-
-    key = hashlib.sha256(f"TRAIN|timetable|{from_code}|{to_code}|{travel_date}".encode()).hexdigest()
-    trains, searched_at = await _saved_search(
-        key, fetch, mode=TravelRequestMode.TRAIN.value, from_label=from_city, to_label=to_city,
-        travel_date=travel_date, note=f"timetable|{from_code}|{to_code}", db=db,
+    nearby: dict[str, dict] = {}
+    from_codes = await _codes_for(
+        TravelRequestMode.TRAIN.value, "from", from_city, rail_timetable.station_code(from_city), nearby, db,
+        use=TRAIN_FROM_STATIONS,
     )
+    to_codes = await _codes_for(TravelRequestMode.TRAIN.value, "to", to_city, rail_timetable.station_code(to_city), nearby, db)
+    result = {"classes": labels, "windows": windows, "failed_windows": [], "source": "timetable", "nearby": nearby}
+    if not from_codes or not to_codes:
+        # No station within reach of one of them: nothing to search.
+        return {**result, "options": [], "searched_at": now_ist()}
+    if from_codes[0] == to_codes[0]:
+        raise _same_place_error(TravelRequestMode.TRAIN.value, from_city, to_city, from_codes[0], nearby)
+
+    trains: list = []
+    searched: list = []
+    failures: list[TimetableUnavailable] = []
+    pairs = [(f, t) for f in from_codes for t in to_codes if f != t]
+    for from_code, to_code in pairs:
+
+        async def fetch(from_code: str = from_code, to_code: str = to_code) -> list:
+            try:
+                payload = await rail_timetable.fetch_trains_between(
+                    from_code, to_code, travel_date, api_key=settings.rapidapi_key, host=settings.rapidapi_irctc_host
+                )
+            except rail_timetable.RailSearchError as e:
+                if e.pause:
+                    _pause_provider(TravelRequestMode.TRAIN.value)
+                raise TimetableUnavailable(str(e)) from e
+            return rail_timetable.parse_trains(payload, travel_date)
+
+        key = hashlib.sha256(f"TRAIN|timetable|{from_code}|{to_code}|{travel_date}".encode()).hexdigest()
+        try:
+            found, at = await _saved_search(
+                key, fetch, mode=TravelRequestMode.TRAIN.value,
+                from_label=from_code if "from" in nearby else from_city,
+                to_label=to_code if "to" in nearby else to_city,
+                travel_date=travel_date, note=f"timetable|{from_code}|{to_code}", db=db,
+            )
+        except TimetableUnavailable as e:
+            # With nearby stations, a pair that can't be searched leaves the others.
+            logger.warning("Train timetable for %s → %s unavailable: %s", from_code, to_code, e)
+            failures.append(e)
+            if _provider_paused(TravelRequestMode.TRAIN.value):
+                break  # out of requests (or the key's refused): the other pairs would fail too
+            continue
+        trains += found
+        searched.append(at)
+    if not searched:
+        raise failures[0]
+    # A train found between two pairs of stations is shown once, from the nearer pair (searched first).
+    seen: set[str] = set()
+    unique = []
+    for train in trains:
+        number = (train.get("number") or "").replace(" ", "")
+        if number in seen:
+            continue
+        seen.add(number)
+        unique.append(train)
     return {
-        "options": timetable_options(trains, windows=windows, allowed=allowed),
-        "classes": labels,
-        "windows": windows,
-        "failed_windows": [],
-        "searched_at": searched_at,
-        "source": "timetable",
+        **result,
+        "options": timetable_options(unique, windows=windows, allowed=allowed),
+        "searched_at": min(searched),
     }
 
 
@@ -428,45 +550,68 @@ async def _search_flights_in_schedule(
     """Every flight from the origin city's airport to the destination city that day, from airline
     schedules (flight_schedule.py). Departures are fetched per half-day per airport — every
     destination at once — and saved, so other routes from that airport and date reuse them. No
-    fares. Raises TimetableUnavailable when the schedules can't answer."""
+    fares. A city with no airport in the list is flown from/to its nearest airports (nearby_stations,
+    listed in the reply's "nearby"). Raises TimetableUnavailable when the schedules can't answer."""
     from app.services import flight_schedule
 
-    origin = flight_schedule.origin_airport(from_city)
-    destinations = flight_schedule.destination_airports(to_city)
-    if not origin or not destinations:
-        raise TimetableUnavailable(f"no airport for {from_city!r} or {to_city!r}")
-    if origin in destinations:
-        raise HTTPException(status_code=422, detail="From and to are the same airport")
+    flight = TravelRequestMode.FLIGHT.value
+    nearby: dict[str, dict] = {}
+    origins = await _codes_for(flight, "from", from_city, flight_schedule.origin_airport(from_city), nearby, db)
+    destinations = await _codes_for(flight, "to", to_city, flight_schedule.destination_airports(to_city), nearby, db)
+    result = {"classes": labels, "windows": windows, "failed_windows": [], "source": "schedule", "nearby": nearby}
+    if not origins or not destinations:
+        # No airport with regular flights within reach of one of them: nothing to fly.
+        return {**result, "options": [], "searched_at": now_ist()}
+    if origins[0] == destinations[0]:
+        raise _same_place_error(flight, from_city, to_city, origins[0], nearby)
+    # An airport on both sides has no flights to itself: don't spend requests on its departures.
+    origins = [code for code in origins if code not in destinations] or origins
 
     flights: list = []
     searched: list = []
-    for half in sorted({flight_schedule.HALF_OF_WINDOW[w] for w in windows}):
+    failures: list[TimetableUnavailable] = []
+    answered = 0
+    for airport in origins:
+        found_here: list = []
+        searched_here: list = []
+        try:
+            for half in sorted({flight_schedule.HALF_OF_WINDOW[w] for w in windows}):
 
-        async def fetch(half: str = half) -> list:
-            try:
-                payload = await flight_schedule.fetch_departures(
-                    origin, travel_date, half, api_key=settings.rapidapi_key, host=settings.rapidapi_aerodatabox_host
+                async def fetch(airport: str = airport, half: str = half) -> list:
+                    try:
+                        payload = await flight_schedule.fetch_departures(
+                            airport, travel_date, half, api_key=settings.rapidapi_key,
+                            host=settings.rapidapi_aerodatabox_host,
+                        )
+                    except flight_schedule.FlightSearchError as e:
+                        if e.pause:
+                            _pause_provider(TravelRequestMode.FLIGHT.value)
+                        raise TimetableUnavailable(str(e)) from e
+                    return flight_schedule.parse_departures(payload, airport)
+
+                key = hashlib.sha256(f"FLIGHT|schedule|{airport}|{travel_date}|{half}".encode()).hexdigest()
+                found, at = await _saved_search(
+                    key, fetch, mode=TravelRequestMode.FLIGHT.value, from_label=airport, to_label="(all departures)",
+                    travel_date=travel_date, note=f"schedule|{airport}|{half}", db=db,
                 )
-            except flight_schedule.FlightSearchError as e:
-                if e.pause:
-                    _pause_provider(TravelRequestMode.FLIGHT.value)
-                raise TimetableUnavailable(str(e)) from e
-            return flight_schedule.parse_departures(payload, origin)
-
-        key = hashlib.sha256(f"FLIGHT|schedule|{origin}|{travel_date}|{half}".encode()).hexdigest()
-        found, at = await _saved_search(
-            key, fetch, mode=TravelRequestMode.FLIGHT.value, from_label=origin, to_label="(all departures)",
-            travel_date=travel_date, note=f"schedule|{origin}|{half}", db=db,
-        )
-        flights += found
-        searched.append(at)
+                found_here += found
+                searched_here.append(at)
+        except TimetableUnavailable as e:
+            # With two airports near the starting point, one that can't be searched leaves the other.
+            logger.warning("Flight schedules for %s unavailable: %s", airport, e)
+            failures.append(e)
+            if _provider_paused(TravelRequestMode.FLIGHT.value):
+                break  # out of requests (or the key's refused): the other airport would fail too
+            continue
+        flights += found_here
+        searched += searched_here
+        answered += 1
+    if not answered:
+        raise failures[0]
     return {
+        **result,
         "options": schedule_options(flights, destinations=destinations, windows=windows, labels=labels),
-        "classes": labels,
-        "windows": windows,
-        "failed_windows": [],
         "searched_at": min(searched),
-        "source": "schedule",
     }
 
 
@@ -1267,14 +1412,13 @@ async def create_travel_request(
     )
 
     # Build the (possibly multi-stage, admin-configured) approval chain and notify its first
-    # approver(s) — replaces the old hardcoded "just notify the reporting manager" block.
-    try:
-        from app.services.workflow_service import init_travel_request_approval_chain
+    # approver(s), then save the request, its legs and its chain together in one commit: quicker
+    # than committing each, and if the chain can't be built nothing is saved (the traveler sees the
+    # error and can retry) instead of a request being left with no approvers.
+    from app.services.workflow_service import init_travel_request_approval_chain
 
-        await init_travel_request_approval_chain(row, db)
-        await db.commit()
-    except Exception as e:
-        print(f"Failed to initialize approval chain: {e}")
+    await init_travel_request_approval_chain(row, db)
+    await db.commit()
 
     # The site visit email (notify_project_stakeholders_if_applicable) goes out once the Travel
     # Desk has fully booked the trip — not here at submission, while it could still be rejected.
@@ -1300,6 +1444,8 @@ async def _insert_travel_request_row(
     status_value: str,
     db: AsyncSession,
 ) -> TravelRequest:
+    """Adds the request and its legs without committing: the caller commits them together with
+    what goes with them (its approval chain, or its exception request)."""
     row = TravelRequest(
         **(ident or {}),
         employee_user_id=user_id,
@@ -1317,8 +1463,8 @@ async def _insert_travel_request_row(
         status=status_value,
     )
     db.add(row)
-    await db.commit()
-    await db.refresh(row)
+    await db.flush()  # gives it its id
+    await db.refresh(row)  # and loads what the database fills in (created_at, ...) for what follows
 
     if legs and trip_type == TripType.MULTI_CITY.value:
         for i, leg in enumerate(legs):
@@ -1331,14 +1477,20 @@ async def _insert_travel_request_row(
                 travel_date=leg.travel_date,
                 preferred_time=leg.preferred_time
             ))
-        await db.commit()
-        await db.refresh(row)
+        await db.flush()
 
     return row
 
 
 async def _reload_travel_request_with_legs(request_id: int, db: AsyncSession) -> TravelRequest:
-    stmt = select(TravelRequest).options(selectinload(TravelRequest.legs), selectinload(TravelRequest.tickets)).where(TravelRequest.id == request_id)
+    # populate_existing: the request may still be in this session from saving it (the session keeps
+    # objects after commit), so load what the database now has rather than what was in memory.
+    stmt = (
+        select(TravelRequest)
+        .options(selectinload(TravelRequest.legs), selectinload(TravelRequest.tickets))
+        .where(TravelRequest.id == request_id)
+        .execution_options(populate_existing=True)
+    )
     return (await db.execute(stmt)).scalar_one()
 
 

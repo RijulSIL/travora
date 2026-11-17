@@ -55,6 +55,7 @@ from app.models.travel_booking import (
 )
 from app.models.relocation import RelocationApprovalStage, RelocationRequest
 from app.models.travel_request import (
+    NearbyStations,
     ProjectNotificationRecipient,
     TravelOptionSearch,
     TravelRequest,
@@ -121,6 +122,7 @@ __all__ = [
     "TravelRequestSupportingDocument",
     "TravelRequestTicket",
     "TravelOptionSearch",
+    "NearbyStations",
     "TravelTrip",
     "TripStatus",
     "User",

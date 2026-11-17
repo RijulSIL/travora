@@ -220,9 +220,7 @@ export default function HomeDashboard() {
             </>
           ) : m.toPayCount ? (
             `${inr(m.toPay)} approved, awaiting payment`
-          ) : (
-            'Nothing waiting'
-          ),
+          ) : null,
         },
         {
           label: `Paid to you · ${m.fyLabel}`,
@@ -233,9 +231,7 @@ export default function HomeDashboard() {
               {plural(m.paidCount, 'claim')}
               {m.lastPaid ? ` · last paid ${shortDate(m.lastPaid)}` : ''} · <Link to="/claims/my?tab=paid">See paid</Link>
             </>
-          ) : (
-            'No payments yet this year'
-          ),
+          ) : null,
         },
         {
           label: 'Invoices not on a claim',

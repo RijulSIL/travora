@@ -1,4 +1,4 @@
-import { ArrowRight } from 'lucide-react';
+import { ArrowRight, Eye, EyeOff } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
@@ -13,6 +13,7 @@ export default function LoginPage() {
   const navigate = useNavigate();
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const [mfaToken, setMfaToken] = useState(null);
   const [otpCode, setOtpCode] = useState('');
   
@@ -138,17 +139,29 @@ export default function LoginPage() {
                     Forgot password?
                   </Link>
                 </div>
-                <input
-                  id="login-password"
-                  type="password"
-                  autoComplete="current-password"
-                  required
-                  className="field w-full h-12"
-                  value={form.values.password}
-                  onChange={(event) => form.handleChange('password', event.target.value)}
-                  onBlur={() => form.handleBlur('password')}
-                  placeholder="••••••••"
-                />
+                <div className="relative">
+                  <input
+                    id="login-password"
+                    type={showPassword ? 'text' : 'password'}
+                    autoComplete="current-password"
+                    required
+                    className="field w-full h-12 !pr-11"
+                    value={form.values.password}
+                    onChange={(event) => form.handleChange('password', event.target.value)}
+                    onBlur={() => form.handleBlur('password')}
+                    placeholder="••••••••"
+                  />
+                  <button
+                    type="button"
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    aria-pressed={showPassword}
+                    title={showPassword ? 'Hide password' : 'Show password'}
+                    onClick={() => setShowPassword((v) => !v)}
+                    className="absolute inset-y-0 right-0 grid w-11 place-items-center text-slate-400 transition-colors hover:text-slate-600"
+                  >
+                    {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
+                </div>
                 {form.errors.password ? <p className="mt-1 text-xs text-red-600 font-medium">{form.errors.password}</p> : null}
               </div>
 

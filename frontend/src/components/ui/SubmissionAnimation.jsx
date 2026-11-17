@@ -1,42 +1,63 @@
 import { Bus, Plane, ReceiptIndianRupee, TrainFront } from 'lucide-react';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 const MODE_ICONS = { BUS: Bus, TRAIN: TrainFront, FLIGHT: Plane, CLAIM: ReceiptIndianRupee };
 
+// Starts the moment the request is sent and plays while the server saves it: the vehicle forms
+// (morphing), the card slides out saying it's sending (settled, at least SETTLED_MS), and only once
+// `status` is 'success' does it say submitted (confirmed) and drive off. A slower server holds it in
+// `settled`, engine running. The parent unmounts it if the request fails.
+const MORPH_MS = 600;
+const SETTLED_MS = 1200;
+const CONFIRMED_MS = 500;
+const ANTICIPATION_MS = 400;
+const DRIVING_MS = 800;
+
 export default function SubmissionAnimation({ mode, status, onComplete }) {
   const [phase, setPhase] = useState('idle');
+  const settledAt = useRef(0);
+  // A ref, so the parent re-rendering (e.g. reloading its list) doesn't restart the timers.
+  const onCompleteRef = useRef(onComplete);
+  onCompleteRef.current = onComplete;
+  const confirmed = status === 'success';
 
   useEffect(() => {
     let t;
 
-    if (status === 'submitting' && phase === 'idle') {
-      setPhase('submitting');
-    } else if (status === 'success' && phase === 'submitting') {
+    if (phase === 'idle' && status !== 'idle') {
       setPhase('morphing');
     } else if (phase === 'morphing') {
-      t = setTimeout(() => setPhase('settled'), 600);
-    } else if (phase === 'settled') {
-      t = setTimeout(() => setPhase('anticipation'), 2400);
+      t = setTimeout(() => {
+        settledAt.current = performance.now();
+        setPhase('settled');
+      }, MORPH_MS);
+    } else if (phase === 'settled' && confirmed) {
+      const shown = performance.now() - settledAt.current;
+      t = setTimeout(() => setPhase('confirmed'), Math.max(0, SETTLED_MS - shown));
+    } else if (phase === 'confirmed') {
+      t = setTimeout(() => setPhase('anticipation'), CONFIRMED_MS);
     } else if (phase === 'anticipation') {
-      t = setTimeout(() => setPhase('driving'), 400);
+      t = setTimeout(() => setPhase('driving'), ANTICIPATION_MS);
     } else if (phase === 'driving') {
       t = setTimeout(() => {
         setPhase('done');
-        if (onComplete) onComplete();
-      }, 800);
+        onCompleteRef.current?.();
+      }, DRIVING_MS);
     }
 
     return () => clearTimeout(t);
-  }, [status, phase, onComplete]);
+  }, [status, phase, confirmed]);
 
   // Derived animation states
-  const isSubmitting = phase === 'submitting';
   const isMorphing = phase === 'morphing';
-  const isSettled = phase === 'settled';
+  const isSending = phase === 'settled';
+  const isConfirmed = phase === 'confirmed';
+  const isSettled = isSending || isConfirmed;
   const isAnticipation = phase === 'anticipation';
   const isDriving = phase === 'driving';
   const isVehiclePhase = isMorphing || isSettled || isAnticipation || isDriving;
+  const submitted = isConfirmed || isAnticipation || isDriving;
 
   // Wrapper translation (Moves right when card emerges, zooms off screen when driving)
   let wrapperTransform = 'translateX(0) scale(1)';
@@ -54,11 +75,7 @@ export default function SubmissionAnimation({ mode, status, onComplete }) {
   let coreRadius = '8px';
   let coreBg = '#0F6B52';
 
-  if (isSubmitting) {
-    coreWidth = '240px';
-    coreHeight = '14px';
-    coreRadius = '7px';
-  } else if (isVehiclePhase) {
+  if (isVehiclePhase) {
     if (mode === 'FLIGHT') {
       coreWidth = '240px';
       coreHeight = '90px';
@@ -143,17 +160,30 @@ export default function SubmissionAnimation({ mode, status, onComplete }) {
                 const ModeIcon = MODE_ICONS[mode] || ReceiptIndianRupee;
                 return <ModeIcon size={18} className="shrink-0" />;
               })()}
-              Request Submitted
+              {submitted ? 'Request Submitted' : 'Sending your request…'}
             </h3>
-            <p className="text-[#2E8B74] text-[13px] font-medium leading-relaxed opacity-90">
-              Your {mode === 'CLAIM' ? 'claim' : 'trip'} is on its way.<br/>
-              We&apos;ll notify you once it&apos;s approved.
+            <p className="text-[#2E8B74] text-[13px] font-medium leading-relaxed opacity-90" aria-live="polite">
+              {submitted ? (
+                <>
+                  Your {mode === 'CLAIM' ? 'claim' : 'trip'} is on its way.<br />
+                  We&apos;ll notify you once it&apos;s approved.
+                </>
+              ) : (
+                <>
+                  Saving it now.<br />
+                  This only takes a moment.
+                </>
+              )}
             </p>
           </div>
           <div className="w-12 h-12 bg-emerald-50 rounded-full flex items-center justify-center border border-emerald-100 shadow-inner">
-            <svg className="w-6 h-6 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-            </svg>
+            {submitted ? (
+              <svg className="w-6 h-6 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            ) : (
+              <span className="h-5 w-5 rounded-full border-[2.5px] border-emerald-200 border-t-emerald-600 motion-safe:animate-spin" aria-hidden="true" />
+            )}
           </div>
         </div>
 
@@ -170,15 +200,6 @@ export default function SubmissionAnimation({ mode, status, onComplete }) {
             overflow: !isVehiclePhase ? 'hidden' : 'visible'
           }}
         >
-          {/* Progress Shimmer (Only visible during submitting) */}
-          <div 
-            className="absolute inset-0 bg-white/20 transition-opacity duration-300 z-50"
-            style={{ 
-              opacity: isSubmitting ? 1 : 0,
-              animation: isSubmitting ? 'progress-shimmer 1.5s infinite linear' : 'none' 
-            }}
-          />
-
           {/* ----- BUS SPECIFIC DETAILS ----- */}
           {mode === 'BUS' && (
             <div 

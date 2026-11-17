@@ -241,6 +241,23 @@ async def _rename_employee_id(old_id: str, new_id: str, db: AsyncSession) -> Non
     await db.execute(delete(Employee).where(Employee.employee_id == old_id))
 
 
+async def _give_employee_id(user: User, new_id: str, db: AsyncSession) -> None:
+    """A user added without an employee ID gets one: like adding a user with an ID, they get an
+    employee record under it — or take over the record already there if no other user has it (e.g.
+    one loaded for the org before they had an account). Nothing references a brand-new ID yet, so
+    there's nothing to move."""
+    taken = (await db.execute(select(User.id).where(User.employee_id == new_id))).scalar_one_or_none()
+    if taken is not None:
+        raise HTTPException(status_code=409, detail="A user with this employee ID already exists")
+    employee = await db.get(Employee, new_id)
+    if employee is None:
+        db.add(Employee(employee_id=new_id, full_name=user.full_name or user.email, is_active=True))
+    else:
+        employee.is_active = True
+    await db.flush()
+    user.employee_id = new_id
+
+
 async def _assert_impact_level(level_id: int | None, db: AsyncSession) -> None:
     if level_id and await db.get(ImpactLevel, level_id) is None:
         raise HTTPException(status_code=422, detail=f"Impact level {level_id} doesn't exist — pick one from the list")
@@ -768,8 +785,17 @@ async def admin_update_user(
         team = await _team_of(user, db)
         if team:
             raise _team_still_reports(user, team)
+    new_employee_id = None
+    if payload.employee_id is not None:
+        new_employee_id = payload.employee_id.strip()
+        if not new_employee_id:
+            raise HTTPException(status_code=422, detail="Employee ID can't be blank")
+    # A user without one gets their first employee ID (and record); otherwise it's a rename.
+    adding_employee_id = bool(new_employee_id) and not user.employee_id
     if payload.reporting_manager_id is not None:
-        await _assert_can_report_to(payload.reporting_manager_id.strip() or None, user.employee_id, db)
+        await _assert_can_report_to(
+            payload.reporting_manager_id.strip() or None, user.employee_id or new_employee_id, db
+        )
 
     new_email = None
     if payload.email is not None:
@@ -780,20 +806,25 @@ async def admin_update_user(
         if new_email != user.email:
             await _assert_email_free(new_email, user.id, db)
 
-    new_employee_id = None
-    if payload.employee_id is not None:
-        new_employee_id = payload.employee_id.strip()
-        if not new_employee_id:
-            raise HTTPException(status_code=422, detail="Employee ID can't be blank")
-        if not user.employee_id:
-            raise HTTPException(status_code=422, detail="This user has no employee record to rename")
-
     if payload.full_name is not None:
         user.full_name = payload.full_name
     if new_email is not None:
         user.email = new_email
     user.role = role
     user.is_manager = manager
+
+    if adding_employee_id:
+        # First, so the level, manager, department and office below fill in the new record.
+        await _give_employee_id(user, new_employee_id, db)
+        await log_event(
+            entity_type="user",
+            entity_id=str(user.id),
+            action="employee_id_added",
+            actor_id=int(claims["sub"]),
+            old={"employee_id": None},
+            new={"employee_id": new_employee_id},
+            db=db,
+        )
 
     if user.employee_id:
         employee = await db.get(Employee, user.employee_id)
@@ -814,7 +845,7 @@ async def admin_update_user(
 
     # Last: renaming the employee's own id. Everything above is keyed by the OLD id and must be
     # written first — see _rename_employee_id's docstring for why this one statement is enough.
-    if new_employee_id and new_employee_id != user.employee_id:
+    if new_employee_id and not adding_employee_id and new_employee_id != user.employee_id:
         old_employee_id = user.employee_id
         await _rename_employee_id(old_employee_id, new_employee_id, db)
         await log_event(

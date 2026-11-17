@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,10 +12,12 @@ from app.core.rbac import (
     require_any_permission,
     require_permission,
 )
+from app.core.timing import log_if_slow
 from app.models.auth import Role
 from app.models.reimbursement import ClaimDraft, ClaimExpense, ClaimInvoice, ClaimTrip
 from app.schemas.reimbursement import ClaimDraftIn, ClaimDraftOut, ClaimSubmitIn, PolicyCheckOut
 from app.services.reimbursement_service import (
+    budget_check_after_submit,
     create_or_update_claim_draft,
     delete_claim_draft,
     get_claim_bundle,
@@ -311,19 +313,24 @@ async def team_spend(
 )
 async def submit_employee_claim(
     claim_id: int,
+    background_tasks: BackgroundTasks,
     payload: ClaimSubmitIn | None = None,
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     exception_reasons = [item.model_dump() for item in payload.exceptions] if payload else []
-    claim = await submit_claim(
-        claim_id,
-        int(claims["sub"]),
-        db,
-        exception_reasons=exception_reasons,
-        undertaking_accepted=bool(payload and payload.undertaking_accepted),
-    )
-    _claim, expenses, invoice_ids, trip_ids = await get_claim_bundle(claim.id, int(claims["sub"]), db)
+    async with log_if_slow(f"claim {claim_id} submission"):
+        claim = await submit_claim(
+            claim_id,
+            int(claims["sub"]),
+            db,
+            exception_reasons=exception_reasons,
+            undertaking_accepted=bool(payload and payload.undertaking_accepted),
+        )
+        # Reloaded after submitting: its exceptions and statuses have just changed.
+        _claim, expenses, invoice_ids, trip_ids = await get_claim_bundle(claim.id, int(claims["sub"]), db)
+    # After the response has gone: the employee doesn't wait on their manager's budget alert.
+    background_tasks.add_task(budget_check_after_submit, claim.employee_user_id, claim.id)
     return _claim_response(_claim, expenses, invoice_ids, trip_ids)
 
 

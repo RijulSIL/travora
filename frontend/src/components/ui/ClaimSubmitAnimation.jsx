@@ -16,8 +16,13 @@ const PATH_OUT = [3500, 3700];
 const INBOX_PULSE = [3520, 3760];
 const TICK_IN = [3560, 3720];
 const CARD_IN = [3650, 3900];
+// It starts when the claim is sent and plays a little quicker than real time. Until the server
+// confirms, it stops with the plane folded and ready, just before take-off (a slower server keeps
+// it hovering there); the flight, inbox tick and card only play once the claim is saved.
+const SPEED = 1.25;
+const HOLD_AT = T.fly[0] - 20;
 
-function summarise(claim) {
+function summarise(claim, confirmed) {
   const lines = (claim?.expenses || [])
     .map((e) => ({ label: e.category_name || 'Expense', amount: Number(e.amount) || 0 }))
     .filter((e) => e.amount > 0)
@@ -25,7 +30,8 @@ function summarise(claim) {
   const total = lines.reduce((sum, e) => sum + e.amount, 0);
   const shown = lines.length > MAX_ROWS ? lines.slice(0, MAX_ROWS - 1) : lines;
   return {
-    reference: claim?.claim_reference || (claim?.id ? `CLM-${claim.id}` : ''),
+    // A draft may not have its claim number yet: never show a guessed one before it's saved.
+    reference: claim?.claim_reference || (confirmed && claim?.id ? `CLM-${claim.id}` : ''),
     rows: shown,
     more: lines.length - shown.length,
     total,
@@ -35,12 +41,15 @@ function summarise(claim) {
 /*
  * Claim submitted: the claim slip folds into a paper plane (one continuous sheet) and flies
  * into the approver's inbox, then a confirmation card shows the claimed total.
- * `claim` is the submitted claim as returned by POST /claims/{id}/submit.
+ * `claim` is the claim being sent, then the submitted one as returned by POST /claims/{id}/submit;
+ * `confirmed` turns true once that has returned. The parent unmounts it if submitting fails.
  */
-export default function ClaimSubmitAnimation({ claim, onComplete }) {
-  const summary = useMemo(() => summarise(claim), [claim]);
+export default function ClaimSubmitAnimation({ claim, confirmed = true, onComplete }) {
+  const summary = useMemo(() => summarise(claim, confirmed), [claim, confirmed]);
   const onCompleteRef = useRef(onComplete);
   onCompleteRef.current = onComplete;
+  const confirmedRef = useRef(confirmed);
+  confirmedRef.current = confirmed;
 
   const stageRef = useRef(null);
   const canvasRef = useRef(null);
@@ -106,13 +115,28 @@ export default function ClaimSubmitAnimation({ claim, onComplete }) {
 
     let timer = 0;
     if (reduce) {
-      frame(CARD_IN[1]);
-      timer = window.setTimeout(finish, 1600);
+      // No motion: the folded plane until it's saved, then the finished card.
+      const still = () => {
+        if (!confirmedRef.current) {
+          frame(HOLD_AT);
+          raf = requestAnimationFrame(still);
+          return;
+        }
+        frame(CARD_IN[1]);
+        timer = window.setTimeout(finish, 1600);
+      };
+      raf = requestAnimationFrame(still);
     } else {
-      const start = performance.now();
+      let t = 0;
+      let last = performance.now();
       const loop = (now) => {
-        const t = Math.min(T.total, now - start);
+        const step = (now - last) * SPEED;
+        last = now;
+        const waiting = !confirmedRef.current && t + step >= HOLD_AT;
+        t = waiting ? Math.max(t, HOLD_AT) : Math.min(T.total, t + step);
         frame(t);
+        // Waiting on the server: the plane hovers gently instead of freezing.
+        canvas.style.transform = waiting ? `translateY(${(Math.sin(now / 170) * 2.5).toFixed(2)}px)` : '';
         if (t >= T.total) finish();
         else raf = requestAnimationFrame(loop);
       };
@@ -129,7 +153,9 @@ export default function ClaimSubmitAnimation({ claim, onComplete }) {
   return createPortal(
     <div className="fixed inset-0 z-[9999] pointer-events-none flex items-center justify-center overflow-hidden" role="status" aria-live="polite">
       <div ref={backdropRef} className="absolute inset-0 bg-slate-900/60 backdrop-blur-md" style={{ opacity: 0 }} />
-      <span className="sr-only">Claim submitted{summary.total ? ` for ${inr.format(summary.total)}` : ''}.</span>
+      <span className="sr-only">
+        {confirmed ? `Claim submitted${summary.total ? ` for ${inr.format(summary.total)}` : ''}.` : 'Sending your claim…'}
+      </span>
 
       <div ref={stageRef} className="relative shrink-0" style={{ width: STAGE_W, height: STAGE_H }} aria-hidden="true">
         <div

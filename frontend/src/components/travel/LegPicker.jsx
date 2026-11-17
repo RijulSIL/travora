@@ -13,6 +13,9 @@ import { BUS_TYPES, leaveWindowsText, TIME_WINDOWS } from './travelRequestView';
  * Before anything is searched they choose when they want to leave (one or more time windows);
  * each window is searched on its own, so adding one only searches that window.
  *
+ * A place the search doesn't know (e.g. Paradeep) is searched from/to its nearest airports or
+ * railway stations; the reply's `nearby` says which, shown above the list.
+ *
  * Bus legs aren't searched (BusCard): they choose times and kinds of bus, and the desk books it.
  *
  * `segments`: [{ key, mode, from, to, date }];
@@ -42,14 +45,16 @@ const minutes = (clock) => {
   return m ? Number(m[1]) * 60 + Number(m[2]) : 0;
 };
 
-/** One search per chosen window; returns [{ code, status, options, ... }] in the day's order. */
-function useSearches(seg, windows) {
+/** One search per chosen window; returns [{ code, status, options, ... }] in the day's order.
+ * While `paused` (a city is still being typed) nothing new is searched: a half-typed name would be
+ * looked up as a place of its own. */
+function useSearches(seg, windows, paused) {
   const [, bump] = useState(0);
   const ready = segmentComplete(seg);
   const wanted = windows.join(',');
   useEffect(() => {
     const missing = wanted ? wanted.split(',').filter((w) => !results.has(`${seg.key}|${w}`)) : [];
-    if (!ready || !missing.length) return undefined;
+    if (!ready || paused || !missing.length) return undefined;
     // Wait for typing / clicking to settle before searching.
     const timer = setTimeout(() => {
       missing.forEach((w) => {
@@ -61,15 +66,53 @@ function useSearches(seg, windows) {
           .then(({ data }) => results.set(key, { status: 'done', ...data }))
           .catch((err) => {
             const d = err.response?.data?.detail;
-            results.set(key, { status: 'failed', message: typeof d === 'string' ? d : 'Couldn’t search right now — describe what you want instead' });
+            results.set(key, {
+              status: 'failed',
+              // 422: this route can't be searched (e.g. both places nearest the same airport) — another time won't help.
+              final: err.response?.status === 422,
+              message: typeof d === 'string' ? d : 'Couldn’t search right now — describe what you want instead',
+            });
           })
           .finally(() => bump((n) => n + 1));
       });
       bump((n) => n + 1);
     }, 700);
     return () => clearTimeout(timer);
-  }, [ready, wanted, seg.key, seg.mode, seg.from, seg.to, seg.date]);
-  return ready ? windows.map((code) => ({ code, ...(results.get(`${seg.key}|${code}`) || { status: 'loading' }) })) : [];
+  }, [ready, paused, wanted, seg.key, seg.mode, seg.from, seg.to, seg.date]);
+  return ready
+    ? windows.map((code) => ({ code, ...(results.get(`${seg.key}|${code}`) || { status: paused ? 'waiting' : 'loading' }) }))
+    : [];
+}
+
+const sentence = (text) => (/[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`);
+
+/** "Bhubaneswar (BBI), ~112 km" for each airport / station a search used instead of a place it doesn't know. */
+const nearbyText = (mode, stations) =>
+  stations
+    .map((s) => {
+      const name = mode === 'FLIGHT' ? s.city || s.name : s.name || s.city;
+      return `${name ? `${name} (${s.code})` : s.code}${s.distance_km != null ? `, ~${s.distance_km} km` : ''}`;
+    })
+    .join(' · ');
+
+/** What a search did about a place it doesn't know: { lines, unreachable } from the first finished search. */
+function nearbyNotes(mode, searches) {
+  const nearby = searches.find((s) => s.status === 'done' && s.nearby && Object.keys(s.nearby).length)?.nearby;
+  if (!nearby) return { lines: [], unreachable: null };
+  const what = mode === 'FLIGHT' ? 'airport' : 'station';
+  const lines = [];
+  let unreachable = null;
+  for (const side of ['from', 'to']) {
+    const n = nearby[side];
+    if (!n) continue;
+    if (!n.stations?.length) {
+      unreachable = `There’s no ${mode === 'FLIGHT' ? 'airport with regular flights' : 'railway station with regular trains'} within ${n.within_km} km of ${n.place}.`;
+      continue;
+    }
+    const plural = n.stations.length > 1 ? 's' : '';
+    lines.push(`${side === 'from' ? 'Leaving from' : 'Arriving at'} the nearest ${what}${plural} to ${n.place}: ${nearbyText(mode, n.stations)}`);
+  }
+  return { lines, unreachable };
 }
 
 function TimeChips({ seg, windows, onToggle }) {
@@ -171,22 +214,24 @@ function BusCard({ seg, index, count, pick, onPick, showErrors }) {
   );
 }
 
-function LegCard({ seg, index, count, pick, onPick, showErrors }) {
+function LegCard({ seg, index, count, pick, onPick, showErrors, paused }) {
   const windows = pick?.time_windows || [];
-  const searches = useSearches(seg, windows);
+  const searches = useSearches(seg, windows, paused);
   const done = pickDone(pick);
   const loading = searches.filter((s) => s.status === 'loading');
+  const waiting = searches.filter((s) => s.status === 'waiting');
   const failed = searches.filter((s) => s.status === 'failed');
+  const { lines: nearbyLines, unreachable } = nearbyNotes(seg.mode, searches);
   const options = searches
     .filter((s) => s.status === 'done')
-    .flatMap((s) => (s.options || []).map((o) => ({ ...o, searched_at: s.searched_at, in_policy: (s.classes || []).length > 0 })))
+    .flatMap((s) => (s.options || []).map((o) => ({ ...o, searched_at: s.searched_at })))
     .sort((a, b) => minutes(a.depart_time) - minutes(b.depart_time))
     // Two windows' searches can both return the same train/flight (with different times): keep the first.
     .filter((o, i, all) => {
       const number = (o.number || '').replace(/\s/g, '').toUpperCase();
       return !number || all.findIndex((x) => (x.number || '').replace(/\s/g, '').toUpperCase() === number) === i;
     });
-  const nothing = windows.length > 0 && !loading.length && !options.length;
+  const nothing = windows.length > 0 && !loading.length && !waiting.length && !options.length;
   const own = pick?.choice === 'own' || nothing;
   const title = count > 1 ? `Leg ${index + 1} · ${seg.from} → ${seg.to}` : `${seg.from} → ${seg.to}`;
   const windowText = leaveWindowsText(loading.map((s) => s.code)) || leaveWindowsText(windows);
@@ -229,11 +274,19 @@ function LegCard({ seg, index, count, pick, onPick, showErrors }) {
         <p className="px-3 py-3 text-xs text-slate-500">Choose a time to see {MODE_PLURAL[seg.mode] || 'options'}.</p>
       ) : null}
 
+      {windows.length && nearbyLines.length ? (
+        <div className="space-y-0.5 border-b border-slate-100 bg-sky-50/70 px-3 py-2 text-[11.5px] text-slate-600">
+          {nearbyLines.map((line) => (
+            <p key={line}>{line}</p>
+          ))}
+        </div>
+      ) : null}
+
       {options.length ? (
         <div role="radiogroup" aria-label={title}>
           {options.map((o, i) => {
             const checked = pick?.choice === 'option' && pick.option && pick.option.name === o.name && pick.option.number === o.number && pick.option.depart_time === o.depart_time;
-            const { searched_at: searchedAt, in_policy: inPolicy, ...option } = o;
+            const { searched_at: searchedAt, ...option } = o;
             return (
               <button
                 key={`${o.number}-${o.depart_time}-${i}`}
@@ -262,9 +315,6 @@ function LegCard({ seg, index, count, pick, onPick, showErrors }) {
                     </span>
                     {o.duration ? <span>· {o.duration}</span> : null}
                     {o.travel_class ? <span className="rounded-full bg-slate-100 px-1.5 py-px text-[10.5px] font-bold text-slate-600">{o.travel_class}</span> : null}
-                    {inPolicy ? (
-                      <span className="rounded-full bg-emerald-50 px-1.5 py-px text-[10.5px] font-bold text-emerald-700">In your policy</span>
-                    ) : null}
                   </span>
                 </span>
                 {/* Trains are shown without prices; timetable and schedule results have none. */}
@@ -288,14 +338,23 @@ function LegCard({ seg, index, count, pick, onPick, showErrors }) {
         </p>
       ) : null}
 
+      {waiting.length && !loading.length ? (
+        <p className="border-t border-slate-100 px-3 py-3 text-xs text-slate-500 first:border-t-0">
+          Finish typing where you’re going to see {MODE_PLURAL[seg.mode]}.
+        </p>
+      ) : null}
+
       {failed.length && !nothing ? (
         <p className="border-t border-slate-100 px-3 py-2 text-xs text-slate-500">Couldn’t search {leaveWindowsText(failed.map((s) => s.code))} right now.</p>
       ) : null}
 
       {nothing ? (
         <p className="border-t border-slate-100 px-3 py-2 text-xs text-slate-500">
-          {failed.length === windows.length ? failed[0].message : `No ${MODE_PLURAL[seg.mode]} found leaving ${leaveWindowsText(windows)} on this day.`}{' '}
-          Choose another time, or tell the travel desk what you’d like.
+          {unreachable
+            ? `${unreachable} Tell the travel desk what you’d like.`
+            : failed.length === windows.length
+              ? `${sentence(failed[0].message)} ${failed.every((s) => s.final) ? 'Tell the travel desk what you’d like.' : 'Choose another time, or tell the travel desk what you’d like.'}`
+              : `No ${MODE_PLURAL[seg.mode]} found leaving ${leaveWindowsText(windows)} on this day. Choose another time, or tell the travel desk what you’d like.`}
         </p>
       ) : null}
 
@@ -337,7 +396,7 @@ function LegCard({ seg, index, count, pick, onPick, showErrors }) {
   );
 }
 
-export default function LegPicker({ segments, picks, onChange, showErrors }) {
+export default function LegPicker({ segments, picks, onChange, showErrors, paused = false }) {
   const modes = new Set(segments.map((s) => s.mode));
   const allBus = modes.size === 1 && modes.has('BUS');
   const what = modes.size === 1 ? MODE_PLURAL[[...modes][0]] || 'options' : 'how you’ll travel';
@@ -358,6 +417,7 @@ export default function LegPicker({ segments, picks, onChange, showErrors }) {
             pick={picks[seg.key]}
             onPick={(pick) => onChange({ ...picks, [seg.key]: pick })}
             showErrors={showErrors}
+            paused={paused}
           />
         );
       })}

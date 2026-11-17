@@ -270,3 +270,21 @@ class TravelOptionSearch(Base):
     classes: Mapped[str] = mapped_column(String(128), nullable=False)
     results: Mapped[list] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
+
+
+class NearbyStations(Base):
+    """The airports (mode FLIGHT) or railway stations (mode TRAIN) nearest a place that has none in
+    the search's own list (flight_schedule / rail_timetable, e.g. Paradeep), found once by Gemini
+    with Google Search and reused, so that place can still be searched in airline schedules or the
+    train timetable. `stations` is nearest first: [{"code", "name", "city", "distance_km"}]; an
+    empty list means none within reach."""
+
+    __tablename__ = "nearby_stations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # "<mode>|<the place as typed, in lower case with single spaces>"
+    cache_key: Mapped[str] = mapped_column(String(160), nullable=False, unique=True)
+    mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    place: Mapped[str] = mapped_column(String(128), nullable=False)
+    stations: Mapped[list] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
