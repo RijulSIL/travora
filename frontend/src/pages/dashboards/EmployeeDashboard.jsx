@@ -9,6 +9,7 @@ import { hasPermission } from '../../services/permissions';
 import { reimbursementApi } from '../../services/reimbursementApi';
 import { useAuthStore } from '../../store/authStore';
 import { claimEditPath, claimNewPath } from '../../utils/claimRoutes';
+import { formatDate } from '../../utils/formatters';
 
 function money(value) {
   return Number(value || 0).toLocaleString('en-IN', {
@@ -247,7 +248,7 @@ export default function EmployeeDashboard() {
               {travelRequests.slice(0, 3).map(({ request }) => (
                 <tr key={request.id} className="border-b border-slate-50 last:border-none hover:bg-slate-50/50 transition-colors">
                   <td className="px-5 py-3.5 text-center font-medium text-slate-700">
-                    {request.trip_type === 'MULTI_CITY' && request.legs?.length > 0 ? request.legs[0].travel_date : request.travel_date}
+                    {formatDate(request.trip_type === 'MULTI_CITY' && request.legs?.length > 0 ? request.legs[0].travel_date : request.travel_date)}
                   </td>
                   <td className="px-5 py-3.5 text-center font-bold text-ink">
                     {request.trip_type === 'MULTI_CITY' && request.legs && request.legs.length > 0 ? (

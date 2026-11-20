@@ -58,6 +58,30 @@ def _effective_grand_total(fields: list[InvoiceField]) -> Decimal:
     return Decimal("0")
 
 
+def _invoice_day(value: str | None) -> date | None:
+    """The invoice date as a calendar day (stored 'YYYY-MM-DD'); None when it isn't one."""
+    try:
+        return date.fromisoformat(str(value).strip()[:10]) if value else None
+    except ValueError:
+        return None
+
+
+def _field_text(fields: list[InvoiceField], key: str) -> str | None:
+    for field in fields:
+        if field.field_key == key:
+            return (field.final_value or field.original_value or "").strip() or None
+    return None
+
+
+def _with_summary(invoice: Invoice, fields: list[InvoiceField]) -> Invoice:
+    """What a bill is at a glance — its rupee total, vendor and date — so a list can show
+    "Marina Bay Hotel · 07/11/2026" instead of the file name (plain attributes, not columns)."""
+    invoice.total_amount = _effective_grand_total(fields)
+    invoice.vendor_name = _field_text(fields, "vendor_name")
+    invoice.invoice_date = _invoice_day(_field_text(fields, "invoice_date"))
+    return invoice
+
+
 @router.post(
     "/upload",
     response_model=InvoiceOut,
@@ -71,7 +95,7 @@ async def upload_invoice(
 ) -> Invoice:
     try:
         content = await file.read()
-        return await store_invoice_upload(
+        invoice = await store_invoice_upload(
             user_id=int(claims["sub"]),
             filename=file.filename or "invoice",
             content_type=file.content_type or "application/octet-stream",
@@ -79,6 +103,8 @@ async def upload_invoice(
             db=db,
             reimbursement_category=reimbursement_category,
         )
+        fields = (await db.execute(select(InvoiceField).where(InvoiceField.invoice_id == invoice.id))).scalars().all()
+        return _with_summary(invoice, fields)
     except HTTPException:
         # A deliberate refusal (wrong file type 415, too big 413, empty 422 ...) goes back
         # to the employee as-is — only unexpected failures become a 500.
@@ -140,6 +166,8 @@ async def list_invoices(
 
     grand_total_field = aliased(InvoiceField)
     inr_estimate_field = aliased(InvoiceField)
+    vendor_field = aliased(InvoiceField)
+    date_field = aliased(InvoiceField)
     query = (
         select(
             Invoice,
@@ -150,6 +178,10 @@ async def list_invoices(
             ClaimDraft.id,
             ClaimDraft.status,
             ClaimDraft.claim_reference,
+            vendor_field.final_value,
+            vendor_field.original_value,
+            date_field.final_value,
+            date_field.original_value,
         )
         .outerjoin(
             grand_total_field,
@@ -167,6 +199,15 @@ async def list_invoices(
                 inr_estimate_field.invoice_id == Invoice.id,
                 inr_estimate_field.field_key == "grand_total_inr_estimate",
             ),
+        )
+        # The vendor and invoice date, so the lists can name a bill by what it is.
+        .outerjoin(
+            vendor_field,
+            and_(vendor_field.invoice_id == Invoice.id, vendor_field.field_key == "vendor_name"),
+        )
+        .outerjoin(
+            date_field,
+            and_(date_field.invoice_id == Invoice.id, date_field.field_key == "invoice_date"),
         )
         .outerjoin(
             ClaimInvoice,
@@ -193,7 +234,20 @@ async def list_invoices(
     rows = result.all()
 
     invoices_list = []
-    for invoice, final_val, orig_val, est_final_val, est_orig_val, claim_id, claim_status, claim_reference in rows:
+    for (
+        invoice,
+        final_val,
+        orig_val,
+        est_final_val,
+        est_orig_val,
+        claim_id,
+        claim_status,
+        claim_reference,
+        vendor_final,
+        vendor_orig,
+        date_final,
+        date_orig,
+    ) in rows:
         amount_str = est_final_val or est_orig_val or final_val or orig_val or "0"
         try:
             total_amount = Decimal(amount_str)
@@ -212,6 +266,8 @@ async def list_invoices(
             "extraction_error": invoice.extraction_error,
             "created_at": invoice.created_at,
             "total_amount": total_amount,
+            "vendor_name": (vendor_final or vendor_orig or "").strip() or None,
+            "invoice_date": _invoice_day(date_final or date_orig),
             "reimbursement_category": invoice.reimbursement_category,
             "linked_claim_id": claim_id,
             "linked_claim_reference": claim_reference,
@@ -282,6 +338,8 @@ async def invoice_extraction(
 
     invoice_dict = InvoiceOut.model_validate(invoice).model_dump()
     invoice_dict["total_amount"] = total_amount
+    invoice_dict["vendor_name"] = _field_text(fields, "vendor_name")
+    invoice_dict["invoice_date"] = _invoice_day(_field_text(fields, "invoice_date"))
     invoice_dict["linked_claim_id"] = claim_id
     invoice_dict["linked_claim_reference"] = claim_reference
     invoice_dict["linked_claim_status"] = claim_status.value if claim_status else None
@@ -330,8 +388,7 @@ async def confirm_invoice_fields(
     refreshed = (
         await db.execute(select(InvoiceField).where(InvoiceField.invoice_id == invoice_id))
     ).scalars().all()
-    invoice.total_amount = _effective_grand_total(refreshed)
-    return invoice
+    return _with_summary(invoice, refreshed)
 
 
 @router.delete(

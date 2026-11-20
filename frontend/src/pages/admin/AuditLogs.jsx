@@ -3,11 +3,13 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 
 import { Pill } from '../../components/approvals/ApprovalQueueParts';
 import { BTN_GHOST, BTN_SM, CARD, ErrorNote, FIELD, PolicyHead } from '../../components/policy/PolicyAdminParts';
+import DateInput from '../../components/ui/DateInput';
 import Pagination from '../../components/ui/Pagination';
 import Skeleton from '../../components/ui/Skeleton';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import useToast from '../../hooks/useToast';
 import { adminApi } from '../../services/adminApi';
+import { formatDate, formatDatetime, formatTime, toDate } from '../../utils/formatters';
 
 /*
  * Audit logs: every change made in Travora, newest first, one page at a time from the server.
@@ -81,10 +83,13 @@ const refOf = (entry) => {
   return `#${entry.entity_id}`;
 };
 
-const day = (value) => (value ? new Date(value).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—');
-const time = (value) => new Date(value).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
-const fullTime = (value) =>
-  new Date(value).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit' });
+const day = (value) => formatDate(value) || '—';
+const time = (value) => formatTime(value);
+// With seconds ("04/11/2026, 2:05:07 pm"): entries saved in the same minute stay apart.
+const fullTime = (value) => {
+  const d = toDate(value);
+  return d ? `${formatDate(d)}, ${formatTime(d).replace(' ', `:${String(d.getSeconds()).padStart(2, '0')} `)}` : '';
+};
 
 function gapText(gap) {
   switch (gap.kind) {
@@ -179,6 +184,9 @@ function Changes({ entry, gap }) {
   const show = (has, value) => {
     if (!has) return <span className="text-slate-300">—</span>;
     if (value === null || value === '') return <span className="italic text-slate-400">empty</span>;
+    // Dates are stored as ISO in the record; show them as DD/MM/YYYY like everywhere else.
+    if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return formatDate(value);
+    if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value)) return formatDatetime(value);
     return typeof value === 'object' ? JSON.stringify(value) : String(value);
   };
 
@@ -380,9 +388,9 @@ export default function AuditLogs() {
             ))}
           </select>
           <span className="inline-flex items-center gap-1.5">
-            <input type="date" aria-label="From" className={FILTER} value={filters.from_date} max={filters.to_date || undefined} onChange={(event) => setFilter('from_date', event.target.value)} />
+            <DateInput aria-label="From" className={FILTER} value={filters.from_date} max={filters.to_date || undefined} onChange={(event) => setFilter('from_date', event.target.value)} />
             <span className="text-xs text-slate-400">to</span>
-            <input type="date" aria-label="To" className={FILTER} value={filters.to_date} min={filters.from_date || undefined} onChange={(event) => setFilter('to_date', event.target.value)} />
+            <DateInput aria-label="To" className={FILTER} value={filters.to_date} min={filters.from_date || undefined} onChange={(event) => setFilter('to_date', event.target.value)} />
           </span>
           {hasFilters ? (
             <button type="button" className={BTN_SM} onClick={clear}>

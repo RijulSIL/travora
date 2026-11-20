@@ -16,6 +16,7 @@ import {
   waitingOnYou,
 } from '../approvals/ApprovalDetail';
 import { reimbursementApi } from '../../services/reimbursementApi';
+import { SelfBookedTickets } from './SelfTicketSlots';
 import TravelPicksSummary from './TravelPicksSummary';
 import TravellerId from './TravellerId';
 import { formatDate, formatDatetime, formatRole } from '../../utils/formatters';
@@ -88,6 +89,16 @@ export function travelRouteItems(request, chain, { employeeName, decided, now })
   }
 
   const status = request.status;
+  if (request.booked_by === 'SELF') {
+    // The employee booked it: approved, it's booked with their tickets — no travel desk step.
+    items.push({
+      key: 'self-booked',
+      state: status === 'BOOKED' ? 'done' : status === 'CANCELLED' ? 'cancelled' : 'todo',
+      title: `Booked by ${employeeName || 'the employee'}`,
+      sub: status === 'BOOKED' ? 'Booked with their tickets' : rejected ? 'Not reached' : 'Booked with their tickets once approved',
+    });
+    return items;
+  }
   items.push({
     key: 'desk',
     state: status === 'BOOKED' ? 'done' : status === 'APPROVED' || status === 'PARTIALLY_BOOKED' ? 'current' : status === 'CANCELLED' ? 'cancelled' : 'todo',
@@ -183,6 +194,7 @@ export default function TravelApprovalPanel({
           ]}
         />
         <TravellerId request={request} />
+        <SelfBookedTickets request={request} name={name} />
         <TravelPicksSummary request={request} name={name} />
         <Quote title={`Notes from ${name}`} text={request.notes} />
       </DetailColumn>
@@ -215,6 +227,8 @@ export default function TravelApprovalPanel({
                 <>
                   Approving passes it to <b className="text-ink">{next.label}</b>.
                 </>
+              ) : request.booked_by === 'SELF' ? (
+                <>Yours is the last approval: approving books the trip with the tickets {name} attached.</>
               ) : (
                 <>Yours is the last approval: approving sends it to the travel desk for booking.</>
               )}{' '}

@@ -188,6 +188,9 @@ class ClaimDraft(Base):
     undertaking_text: Mapped[str | None] = mapped_column(Text)
     claim_reference: Mapped[str | None] = mapped_column(String(32), index=True)
     current_approval_stage: Mapped[int | None] = mapped_column(Integer)
+    # "CEO_REQUESTS" on the CEO's own claims (they follow the Approval Matrix's CEO's requests
+    # route, then Finance); NULL = the claim category's route. Set when the route is set up.
+    approval_route: Mapped[str | None] = mapped_column(String(32))
     approved_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     payment_utr: Mapped[str | None] = mapped_column(String(128))
     payment_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))

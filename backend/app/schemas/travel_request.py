@@ -21,6 +21,9 @@ class TravelRequestTicketAttachmentOut(BaseModel):
     file_size_bytes: int
     pnr_or_booking_ref: str | None = None
     notes_for_employee: str | None = None
+    # The fare and who it's with (the airline / railway / operator a self-booked ticket names).
+    ticket_amount: Decimal | None = None
+    external_booking_source: str | None = None
 
 
 class TravelRequestSupportingDocumentOut(BaseModel):
@@ -110,6 +113,31 @@ class TravelRequestCreate(BaseModel):
     id_type: str | None = Field(default=None, max_length=32)
     id_proof_ref: str | None = Field(default=None, max_length=80)
     id_proof_filename: str | None = Field(default=None, max_length=255)
+    # "Save this as my ID for next time": the ID above also becomes the one on their profile.
+    save_id_to_profile: bool = False
+    # VEG / NON_VEG for this trip (the profile's when left out).
+    meal_preference: str | None = Field(default=None, max_length=16)
+    # Optional — needed for international travel (travel_id_proof_service.clean_passport).
+    passport_number: str | None = Field(default=None, max_length=32)
+    passport_expiry: date | None = None
+    # COMPANY (the travel agent books it once approved) or SELF (the employee already booked it and
+    # attaches a ticket for every leg in `self_tickets`, uploaded first to /self-tickets).
+    booked_by: str = Field(default="COMPANY", max_length=16)
+    self_tickets: list["SelfTicketIn"] = Field(default_factory=list, max_length=12)
+
+
+class SelfTicketIn(BaseModel):
+    """One leg's ticket on a self-booked request."""
+
+    seq: int = Field(..., ge=1, le=12)
+    ref: str = Field(..., max_length=80)
+    filename: str | None = Field(default=None, max_length=255)
+    pnr_or_booking_ref: str | None = Field(default=None, max_length=128)
+    provider: str | None = Field(default=None, max_length=64)
+    ticket_amount: str | None = Field(default=None, max_length=32)
+
+
+TravelRequestCreate.model_rebuild()
 
 
 class TravelRequestExceptionCreate(TravelRequestCreate):
@@ -155,6 +183,13 @@ class TravelRequestOut(BaseModel):
     id_type: str | None = None
     has_id_proof: bool = False
     id_proof_filename: str | None = None
+    # VEG / NON_VEG for this trip, and the optional passport (empty on older requests).
+    meal_preference: str | None = None
+    passport_number: str | None = None
+    passport_expiry: date | None = None
+    # COMPANY / SELF (who books the tickets), and when the Travel Desk cancelled it once booked.
+    booked_by: str = "COMPANY"
+    desk_cancelled_at: datetime | None = None
     status: str
     rejection_reason: str | None = None
     requested_at: datetime
@@ -188,6 +223,12 @@ class TravelRejectIn(BaseModel):
 
 class TravelApproveIn(BaseModel):
     comment: str | None = Field(default=None, max_length=2000)
+
+
+class TravelDeskCancelIn(BaseModel):
+    """Travel Desk cancelling a booked trip: an optional reason, passed on to the traveller."""
+
+    reason: str | None = Field(default=None, max_length=500)
 
 
 class EntitlementNoteOut(BaseModel):
@@ -305,6 +346,10 @@ class PublicAgentBookingOut(BaseModel):
     id_name: str | None = None
     id_type: str | None = None
     has_id_proof: bool = False
+    # "Veg" / "Non-veg", and the passport for an international booking (when given).
+    meal_preference: str | None = None
+    passport_number: str | None = None
+    passport_expiry: date | None = None
     """Everything (and only this) the agent's public booking page may show — see
     travel_request_service.agent_booking_summary. No employee id, exception, or other request's
     data is ever included here."""

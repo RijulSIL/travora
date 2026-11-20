@@ -3,10 +3,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { BTN_GHOST, BTN_MAIN, BTN_NO, BTN_SM, CARD, FIELD, LABEL } from '../../components/policy/PolicyAdminParts';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
+import DateInput from '../../components/ui/DateInput';
 import Skeleton from '../../components/ui/Skeleton';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import useToast from '../../hooks/useToast';
 import { adminApi } from '../../services/adminApi';
+import { formatDate } from '../../utils/formatters';
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const SHORT = MONTHS.map((m) => m.slice(0, 3));
@@ -17,7 +19,7 @@ const pad = (n) => String(n).padStart(2, '0');
 const isoOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const parse = (s) => new Date(`${s}T00:00:00`);
 const isWeekend = (d) => d.getDay() === 0 || d.getDay() === 6;
-const longDate = (d) => `${WEEKDAYS[d.getDay()]}, ${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+const longDate = (d) => `${WEEKDAYS[d.getDay()]}, ${formatDate(d)}`;
 const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
 function errorText(err, fallback) {
@@ -66,7 +68,7 @@ function Month({ year, month, byDate, todayIso, selected, onPick }) {
               type="button"
               onClick={() => onPick(key)}
               aria-label={`${holiday ? `${holiday.name}, ` : ''}${longDate(d)}${weekend ? ' (weekend)' : ''}`}
-              title={`${holiday ? `${holiday.name} · ` : ''}${d.getDate()} ${MONTHS[month]}${weekend ? ' (weekend)' : ''}`}
+              title={`${holiday ? `${holiday.name} · ` : ''}${formatDate(d)}${weekend ? ' (weekend)' : ''}`}
               className={`grid aspect-square place-items-center rounded-md text-[11px] ${tone} ${ring}`}
             >
               {i + 1}
@@ -218,7 +220,7 @@ export default function HolidayCalendar() {
             <span className="text-[11.5px] font-semibold text-slate-500">Holidays in {year}</span>
           </div>
           <div className="min-w-[110px] max-w-[200px] rounded-xl border border-slate-200 bg-white px-3 py-[7px]">
-            <b className="block text-[17px] text-ink">{upcoming ? `${parse(upcoming.holiday_date).getDate()} ${SHORT[parse(upcoming.holiday_date).getMonth()]}` : '—'}</b>
+            <b className="block text-[17px] text-ink">{upcoming ? formatDate(upcoming.holiday_date) : '—'}</b>
             <span className="block truncate text-[11.5px] font-semibold text-slate-500" title={upcoming?.name}>
               {upcoming ? upcoming.name : 'Next holiday'}
             </span>
@@ -299,7 +301,7 @@ export default function HolidayCalendar() {
               <div className="flex flex-col gap-2.5 px-4 py-3.5">
                 <label className="block">
                   <span className={LABEL}>Date</span>
-                  <input type="date" className={FIELD} value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
+                  <DateInput className={FIELD} value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
                 </label>
                 <label className="block">
                   <span className={LABEL}>Name</span>

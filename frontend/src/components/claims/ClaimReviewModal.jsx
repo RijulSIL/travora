@@ -50,6 +50,12 @@ const POLICY_STYLES = {
 const money = (v) =>
   Number(v || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+/** An extracted invoice field's value as shown: the invoice date as DD/MM/YYYY. */
+const fieldText = (field) => {
+  const value = field.final_value || field.original_value;
+  return (field.field_key === 'invoice_date' && formatDate(value)) || value || '—';
+};
+
 const TABS = [
   { key: 'summary', label: 'Summary', icon: FileText },
   { key: 'invoices', label: 'Invoices', icon: ReceiptIndianRupee },
@@ -267,7 +273,7 @@ export default function ClaimReviewModal({ claimId, onClose }) {
       : TABS;
 
   return createPortal(
-    <div className="fixed inset-0 z-[95] grid place-items-center bg-slate-900/55 p-4 backdrop-blur-[1px]" onClick={onClose}>
+    <div className="fixed inset-0 z-[95] grid place-items-center bg-slate-900/60 p-4 backdrop-blur-sm" onClick={onClose}>
       <div
         className="flex h-[90vh] w-full max-w-[1320px] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
         onClick={(event) => event.stopPropagation()}
@@ -493,7 +499,7 @@ export default function ClaimReviewModal({ claimId, onClose }) {
                                       {field.field_key.replace(/_/g, ' ')}
                                     </td>
                                     <td className="px-3.5 py-2 text-center font-semibold text-ink">
-                                      {field.final_value || field.original_value || '—'}
+                                      {fieldText(field)}
                                     </td>
                                   </tr>
                                 ))}
@@ -550,7 +556,7 @@ export default function ClaimReviewModal({ claimId, onClose }) {
                   {linkedTrips.map((trip) => (
                     <div key={trip.id} className="flex items-center justify-between rounded-lg border border-line p-3 text-sm">
                       <span className="font-medium text-slate-700">
-                        {trip.from_city} → {trip.to_city} · {trip.travel_date}
+                        {trip.from_city} → {trip.to_city} · {formatDate(trip.travel_date)}
                       </span>
                       {trip.desk_ticket_id ? (
                         <button

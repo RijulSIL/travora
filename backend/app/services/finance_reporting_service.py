@@ -15,7 +15,13 @@ from pydantic import ValidationError
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.timezone import now_ist
+from app.core.timezone import (
+    EXCEL_DATE_FORMAT,
+    EXCEL_DATETIME_FORMAT,
+    format_date,
+    format_datetime,
+    now_ist,
+)
 from app.models.auth import Role, User
 from app.models.claim_workflow import ClaimApprovalStage, ExceptionApproval, ExceptionRequest
 from app.models.employee import AuditLog, Employee
@@ -539,6 +545,21 @@ async def delete_report_schedule(schedule_id: int, user_id: int, sees_all: bool,
     await db.commit()
 
 
+def _cell_text(value) -> str:
+    """A report value as people read it in an export: dates as DD/MM/YYYY (with the time for a
+    timestamp), anything else as its plain text."""
+    if isinstance(value, datetime):
+        return format_datetime(value)
+    if isinstance(value, date):
+        return format_date(value)
+    return str(value)
+
+
+def readable_report_rows(rows: list[dict]) -> list[dict]:
+    """Report rows for a CSV download: date values written DD/MM/YYYY, the rest untouched."""
+    return [{k: _cell_text(v) if isinstance(v, date) else v for k, v in row.items()} for row in rows]
+
+
 def _rows_to_csv_bytes(rows: list[dict]) -> bytes:
     """Same shape as the CSV branch of the /reports/{type}/export endpoint, factored out so
     the scheduler can build an identical attachment without going through the HTTP layer."""
@@ -546,7 +567,7 @@ def _rows_to_csv_bytes(rows: list[dict]) -> bytes:
     if rows:
         writer = csv.DictWriter(output, fieldnames=list(rows[0].keys()))
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows(readable_report_rows(rows))
     return output.getvalue().encode("utf-8")
 
 
@@ -712,7 +733,7 @@ def stored_report_filters(raw: dict | None) -> FinanceFilterParams:
         return FinanceFilterParams(**clean)
     except ValidationError as exc:
         raise HTTPException(
-            status_code=422, detail="Check the report filters — dates are written like 2026-01-31"
+            status_code=422, detail="Check the report filters — one of the dates isn't a real date"
         ) from exc
 
 
@@ -881,15 +902,24 @@ def generate_excel_report(report_type: str, data: list[dict]) -> bytes:
         return output.getvalue()
         
     header_fmt = workbook.add_format({"bold": True, "bg_color": "#F1F5F9", "border": 1})
+    date_fmt = workbook.add_format({"num_format": EXCEL_DATE_FORMAT})
+    datetime_fmt = workbook.add_format({"num_format": EXCEL_DATETIME_FORMAT})
     headers = list(data[0].keys())
-    
+
     for col, h in enumerate(headers):
         worksheet.write(0, col, h.replace("_", " ").title(), header_fmt)
         worksheet.set_column(col, col, 20)
-        
+
     for row_idx, row_data in enumerate(data, start=1):
         for col_idx, key in enumerate(headers):
-            worksheet.write(row_idx, col_idx, str(row_data.get(key, "")))
+            value = row_data.get(key, "")
+            # Dates go in as real date cells (sortable / filterable), shown DD/MM/YYYY.
+            if isinstance(value, datetime) and value.tzinfo is None:
+                worksheet.write_datetime(row_idx, col_idx, value, datetime_fmt)
+            elif isinstance(value, date) and not isinstance(value, datetime):
+                worksheet.write_datetime(row_idx, col_idx, value, date_fmt)
+            else:
+                worksheet.write(row_idx, col_idx, _cell_text(value))
             
     workbook.close()
     return output.getvalue()
@@ -901,7 +931,7 @@ def generate_pdf_report(report_type: str, data: list[dict]) -> bytes:
     pdf.set_font("helvetica", "B", 16)
     pdf.cell(0, 10, f"SIL - {report_type.replace('-', ' ').title()}", ln=True, align="C")
     pdf.set_font("helvetica", "", 10)
-    pdf.cell(0, 10, f"Generated on: {now_ist().strftime('%Y-%m-%d %H:%M')} IST", ln=True, align="C")
+    pdf.cell(0, 10, f"Generated on: {format_datetime(now_ist())} IST", ln=True, align="C")
     pdf.ln(10)
     
     if not data:
@@ -919,7 +949,7 @@ def generate_pdf_report(report_type: str, data: list[dict]) -> bytes:
     pdf.set_font("helvetica", "", 9)
     for row in data:
         for key in headers:
-            pdf.cell(col_width, 10, str(row.get(key, ""))[:20], border=1)
+            pdf.cell(col_width, 10, _cell_text(row.get(key, ""))[:20], border=1)
         pdf.ln()
         
     return pdf.output()

@@ -5,6 +5,7 @@ import { useParams } from 'react-router-dom';
 
 import SegmentUploadForm, { EMPTY_UPLOAD_FIELDS, ModeIcon, TravelerPick } from '../../components/travel/SegmentUploadForm';
 import useToast from '../../hooks/useToast';
+import { formatDate, formatWeekdayDate } from '../../utils/formatters';
 
 /**
  * The travel agent's public, unauthenticated booking page: /book/:token. No login, no sidebar, no
@@ -27,15 +28,12 @@ const TRIP_TYPE_LABEL = { ONE_WAY: 'One way', ROUND_TRIP: 'Round trip', MULTI_CI
 const MODE_LABEL = { TRAIN: 'Train', FLIGHT: 'Flight', BUS: 'Bus' };
 const EYEBROW = 'text-[10.5px] font-extrabold uppercase tracking-[0.08em] text-slate-400';
 
-/** 'Onward: Delhi NCR → Mumbai' -> 'Onward' (the route is shown on its own line). */
-const shortLegLabel = (label) => (label && label.includes(':') ? label.split(':')[0].trim() : 'Journey');
+/** The small heading over a leg: "1 of 2" ("Journey" for one) — its route and date have their own lines. */
+const legPosition = (index, count) => (count > 1 ? `${index + 1} of ${count}` : 'Journey');
 
 function formatDay(iso) {
   if (!iso) return 'Date to be confirmed';
-  const d = new Date(`${iso}T00:00:00`);
-  return Number.isNaN(d.getTime())
-    ? iso
-    : d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+  return formatWeekdayDate(iso) || iso;
 }
 
 /** 'Impact level L6C; Eligible flight cabins: Not eligible; Eligible train classes: 3A, CC.' -> chips. */
@@ -303,18 +301,34 @@ export default function AgentBookingPage() {
                   ) : null}
                 </div>
               ) : null}
+              {trip.meal_preference || trip.passport_number ? (
+                <dl className="mt-2 grid gap-2 sm:grid-cols-2">
+                  {trip.meal_preference ? (
+                    <div className="rounded-xl border border-slate-200 bg-white px-3.5 py-2">
+                      <dt className="text-[11px] font-semibold text-slate-500">Meal preference</dt>
+                      <dd className="text-sm font-extrabold text-ink">{trip.meal_preference}</dd>
+                    </div>
+                  ) : null}
+                  {trip.passport_number ? (
+                    <div className="rounded-xl border border-slate-200 bg-white px-3.5 py-2">
+                      <dt className="text-[11px] font-semibold text-slate-500">Passport{trip.passport_expiry ? ` · valid till ${formatDate(trip.passport_expiry)}` : ''}</dt>
+                      <dd className="font-mono text-sm font-extrabold text-ink">{trip.passport_number}</dd>
+                    </div>
+                  ) : null}
+                </dl>
+              ) : null}
             </div>
 
             <div className="px-5 py-5">
               <h2 className={EYEBROW}>Itinerary</h2>
               <ol className="mt-3 space-y-3">
-                {trip.segments.map((seg) => (
+                {trip.segments.map((seg, segIndex) => (
                   <li key={seg.seq} className={`rounded-xl border p-3.5 ${seg.ticketed ? 'border-emerald-200 bg-emerald-50/40' : 'border-slate-200'}`}>
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <span className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-slate-500">
                           <ModeIcon mode={seg.mode} className="text-slate-400" />
-                          {shortLegLabel(seg.label)} · {MODE_LABEL[seg.mode] || seg.mode}
+                          {legPosition(segIndex, trip.segments.length)} · {MODE_LABEL[seg.mode] || seg.mode}
                         </span>
                         <p className="mt-1 flex flex-wrap items-center gap-x-2 text-base font-bold text-ink">
                           <span>{seg.from_city}</span>

@@ -17,13 +17,24 @@ export const reimbursementApi = {
   uploadTravelIdProof: (formData) =>
     api.post('travel-requests/id-proof', formData, { headers: { 'Content-Type': 'multipart/form-data' }, suppressErrorToast: true }),
   lastTravelIdProof: () => api.get('travel-requests/id-proof/last'),
+  // A ticket the employee booked themselves, attached to a self-booked request before it's raised.
+  uploadSelfTicket: (formData) =>
+    api.post('travel-requests/self-tickets', formData, { headers: { 'Content-Type': 'multipart/form-data' }, suppressErrorToast: true }),
   travelIdProofBlob: (requestId) => api.get(`travel-requests/${requestId}/id-proof`, { responseType: 'blob' }),
+  // The traveller profile: meal preference + ID, asked for after the first sign-in, changeable on
+  // My profile. Upload the ID copy first (returns its ref), then save; the saved copy to view.
+  uploadMyIdProof: (formData) =>
+    api.post('me/id-proof', formData, { headers: { 'Content-Type': 'multipart/form-data' }, suppressErrorToast: true }),
+  saveTravellerProfile: (payload) => api.put('me/traveller-profile', payload, { suppressErrorToast: true }),
+  myIdProofBlob: () => api.get('me/id-proof', { responseType: 'blob' }),
   travelRequestsManagerPending: () => api.get('travel-requests/manager/pending'),
   travelRequestsTeamCalendar: () => api.get('travel-requests/manager/team-calendar'),
   travelRequestsCreate: (payload, config) => api.post('travel-requests', payload, config),
   travelRequestsCreateWithException: (payload, config) =>
     api.post('travel-requests/request-with-exception', payload, config),
   travelRequestDelete: (id) => api.delete(`travel-requests/${id}`),
+  // Travel Desk: cancel a booked trip that hasn't started (an optional reason goes to the traveller).
+  travelDeskCancel: (id, reason) => api.post(`travel-requests/${id}/desk-cancel`, { reason: reason || null }, { suppressErrorToast: true }),
   travelEntitlementNote: () => api.get('travel-requests/entitlement-note'),
   travelOptions: () => api.get('travel-requests/options'),
   // Real flight/train/bus options for one leg, found with Google by Gemini (in-policy classes only).
@@ -61,8 +72,10 @@ export const reimbursementApi = {
   travelAgentEmailConfigured: () => api.get('travel-requests/agent-email-configured'),
 
   invoices: (params) => api.get('invoices', { params }),
-  uploadInvoice: (formData) =>
+  // `config` takes extra axios options, e.g. onUploadProgress for a progress bar.
+  uploadInvoice: (formData, config = {}) =>
     api.post('invoices/upload', formData, {
+      ...config,
       headers: { 'Content-Type': 'multipart/form-data' },
     }),
   invoiceExtraction: (invoiceId) => api.get(`invoices/${invoiceId}/extraction`),

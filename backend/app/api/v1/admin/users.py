@@ -1036,6 +1036,13 @@ async def delete_user(
         user.must_change_password = False
         user.welcome_email_sent_at = None
         user.auto_approve_threshold = None
+        # Their traveller profile (meal preference, ID). Their travel requests keep their own copy.
+        user.meal_preference = None
+        user.id_name = None
+        user.id_type = None
+        user.id_proof_ref = None
+        user.id_proof_filename = None
+        user.id_proof_content_type = None
         user.password_changed_at = now.replace(microsecond=0)
         user.deleted_at = now
         employee = await db.get(Employee, employee_id, populate_existing=True) if employee_id else None

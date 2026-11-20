@@ -1,7 +1,8 @@
-import { AlertCircle, Check, Eye, EyeOff, KeyRound, Lock, LogOut } from 'lucide-react';
+import { AlertCircle, Check, Eye, EyeOff, Lock, LogOut } from 'lucide-react';
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
+import AuthBrandPanel, { AuthMobileLogo } from '../../components/auth/AuthBrandPanel';
 import useToast from '../../hooks/useToast';
 import api, { currentRefreshToken } from '../../services/api';
 import { clearSession, useAuthStore } from '../../store/authStore';
@@ -76,24 +77,8 @@ export default function SetInitialPasswordPage() {
 
   return (
     <div className="flex min-h-screen w-full bg-slate-50">
-      {/* Left Image Panel (Hidden on mobile) — same as the sign-in and reset-password pages */}
-      <div className="relative hidden w-1/2 lg:block overflow-hidden">
-        <img
-          src="https://images.unsplash.com/photo-1436491865332-7a61a109cc05?q=80&w=2074&auto=format&fit=crop"
-          alt="Corporate Travel"
-          className="absolute inset-0 h-full w-full object-cover transition-transform duration-10000 hover:scale-105"
-        />
-        <div className="absolute inset-0 bg-brand/60 mix-blend-multiply" />
-        <div className="absolute inset-0 bg-gradient-to-t from-slate-900/90 via-slate-900/40 to-transparent" />
-
-        <div className="absolute bottom-16 left-16 right-16 text-white">
-          <h2 className="text-4xl font-extrabold tracking-tight mb-4 leading-tight">Simplify Your Corporate Travel & Expenses</h2>
-          <p className="text-lg text-white/80 font-medium leading-relaxed max-w-xl">
-            Experience a seamless, unified platform for booking trips, managing approvals, and settling reimbursements instantly. Built for the modern
-            enterprise.
-          </p>
-        </div>
-      </div>
+      {/* Left photo panel with the logo (hidden on mobile) — shared by every sign-in screen */}
+      <AuthBrandPanel />
 
       {/* Right Content Panel */}
       <div className="flex w-full items-center justify-center lg:w-1/2 p-6 lg:p-12 relative overflow-hidden bg-white">
@@ -102,11 +87,8 @@ export default function SetInitialPasswordPage() {
         </div>
 
         <div className="relative z-10 w-full max-w-[400px]">
-          <div className="mb-10 text-left">
-            <img src="/assets/travora-si-logo.png" alt="Travora" className="h-11 w-auto object-contain mb-8" />
-            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-brand/10 text-brand mb-6 shadow-sm border border-brand/20">
-              <KeyRound size={24} />
-            </div>
+          <div className="mb-8 text-left">
+            <AuthMobileLogo />
             <h1 className="text-3xl font-extrabold tracking-tight text-slate-900">Set Your Password</h1>
             <p className="mt-2 text-sm text-slate-500 font-medium">
               Welcome{firstName ? `, ${firstName}` : ''}. You signed in with a temporary password — choose your own to continue. You&apos;ll use it from now
@@ -175,9 +157,9 @@ export default function SetInitialPasswordPage() {
               </div>
             </div>
 
-            <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-4 text-[11px] font-medium text-slate-500 space-y-2.5 shadow-sm">
-              <p className="font-bold text-slate-800 text-xs mb-1">Password Requirements:</p>
-              <div className="space-y-1.5">
+            <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-4 text-[11px] font-medium text-slate-500 shadow-sm">
+              <p className="font-bold text-slate-800 text-xs mb-2.5">Password Requirements:</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-2">
                 {rules.map(([ok, label]) => (
                   <div key={label} className={`flex items-center gap-2 transition-colors ${ok ? 'text-emerald-600' : 'text-red-500'}`}>
                     {ok ? <Check size={14} strokeWidth={3} className="shrink-0" /> : <div className="h-1.5 w-1.5 rounded-full bg-red-400 ml-1 mr-0.5 shrink-0" />}
@@ -196,7 +178,7 @@ export default function SetInitialPasswordPage() {
             </button>
           </form>
 
-          <div className="mt-10 text-center lg:text-left">
+          <div className="mt-6 text-center lg:text-left">
             <button
               type="button"
               onClick={signOut}

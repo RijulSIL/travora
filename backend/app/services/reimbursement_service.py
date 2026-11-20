@@ -37,7 +37,7 @@ from app.models.reimbursement import (
     InvoiceStatus,
     ReimbursementCategory,
 )
-from app.models.travel_booking import TravelMode, TravelTrip
+from app.models.travel_booking import TravelMode, TravelTrip, TripStatus
 from app.models.travel_request import TravelOptionType, TravelRequest, TravelRequestTravelType
 from app.schemas.reimbursement import ClaimDraftIn, InvoiceFieldsUpdateRequest
 from app.services.budget_alert_service import check_and_notify_budget_threshold
@@ -1170,7 +1170,7 @@ def _validate_invoice_field_values(payload: InvoiceFieldsUpdateRequest) -> None:
                     raise ValueError
             except ValueError:
                 raise HTTPException(
-                    status_code=422, detail="Invoice date must be a real date (YYYY-MM-DD)"
+                    status_code=422, detail="Invoice date must be a real date"
                 ) from None
         elif key == "nights":
             try:
@@ -1568,6 +1568,13 @@ def _hotel_nights(invoice_ids: set[int], bill_nights: dict[int, int], claim: Cla
     return 1
 
 
+async def _claimant_is_ceo(claim: ClaimDraft, db: AsyncSession) -> bool:
+    """The CEO has no policy limits: nothing on their claims is capped or flagged as an exception."""
+    from app.services.workflow_service import is_ceo_user
+
+    return await is_ceo_user(getattr(claim, "employee_user_id", None), db)
+
+
 async def _build_claim_expenses(
     claim: ClaimDraft, invoice_ids: list[int], db: AsyncSession
 ) -> tuple[list[ClaimExpense], dict]:
@@ -1645,8 +1652,13 @@ async def _build_claim_expenses(
         "incidental": "INCIDENTAL_DEVIATION",
         "day_visit": "DAY_VISIT_EXTERNAL_MEETING",
     }
-    # Policy exceptions don't apply to relocation claims (for now): no caps, no flags.
-    no_policy_checks = claim.reimbursement_category == ReimbursementCategory.RELOCATION
+    # Policy exceptions don't apply to relocation claims (for now) or general reimbursements
+    # (there's no policy for them, so the wizard has no policy-check step), nor to anything the
+    # CEO claims (the CEO has no limits): no caps, no flags.
+    no_policy_checks = claim.reimbursement_category in (
+        ReimbursementCategory.RELOCATION,
+        ReimbursementCategory.GENERAL,
+    ) or await _claimant_is_ceo(claim, db)
     expenses: list[ClaimExpense] = []
     for (category_id, category_name), amount in grouped.items():
         cap_amount = None
@@ -1837,8 +1849,9 @@ async def trip_ids_on_claims(
     trip_ids: list[int], db: AsyncSession, *, exclude_claim_id: int | None = None
 ) -> dict[int, str]:
     """Which of these trips already sit on a claim — any claim but a rejected one (a deleted
-    draft leaves no link behind) — mapped to that claim's reference, for "still to claim" and
-    the one-claim-per-trip rule."""
+    draft leaves no link behind) — mapped to one such claim's reference, for "not claimed yet"
+    (Home, My Travel Requests) and the desk-cancel check. A trip can be on several claims; see
+    trip_claim_references for all of them."""
     if not trip_ids:
         return {}
     query = (
@@ -1852,18 +1865,46 @@ async def trip_ids_on_claims(
     return {trip_id: reference or f"claim #{claim_id}" for trip_id, claim_id, reference in rows}
 
 
-async def assert_trips_not_on_other_claim(trip_ids: list[int], claim_id: int, db: AsyncSession) -> None:
-    """A booked trip is claimed once: refuse (409) a trip already on another claim, naming it."""
-    linked = await trip_ids_on_claims(trip_ids, db, exclude_claim_id=claim_id)
-    if not linked:
-        return
-    trip_id, where = next(iter(linked.items()))
-    trip = await db.get(TravelTrip, trip_id)
-    label = (trip.reference_id if trip is not None and trip.reference_id else None) or f"Trip {trip_id}"
-    raise HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail=f"{label} is already on {where}. A trip can only be claimed once.",
+async def trip_claim_references(
+    trip_ids: list[int], db: AsyncSession, *, exclude_claim_id: int | None = None
+) -> dict[int, list[str]]:
+    """Every claim (but a rejected one) each of these trips is already on, by reference — the
+    claim form shows them ("Also on CLM-2026-0013") so a second claim for a trip is deliberate."""
+    if not trip_ids:
+        return {}
+    query = (
+        select(ClaimTrip.trip_id, ClaimDraft.id, ClaimDraft.claim_reference, ClaimDraft.status)
+        .join(ClaimDraft, ClaimDraft.id == ClaimTrip.claim_id)
+        .where(ClaimTrip.trip_id.in_(trip_ids), ClaimDraft.status != ClaimStatus.REJECTED)
+        .order_by(ClaimDraft.id)
     )
+    if exclude_claim_id is not None:
+        query = query.where(ClaimDraft.id != exclude_claim_id)
+    out: dict[int, list[str]] = defaultdict(list)
+    for trip_id, claim_id, reference, claim_status in (await db.execute(query)).all():
+        label = reference or ("an unfinished draft claim" if claim_status == ClaimStatus.DRAFT else f"claim #{claim_id}")
+        if label not in out[trip_id]:
+            out[trip_id].append(label)
+    return dict(out)
+
+
+async def assert_trips_claimable(trip_ids: list[int], claim_id: int, db: AsyncSession) -> None:
+    """A trip can go on any number of claims until it's archived (the claim window, checked at
+    submit), but never one the Travel Desk cancelled: refuse (409) that, naming it."""
+    if not trip_ids:
+        return
+    cancelled = (
+        await db.execute(
+            select(TravelTrip.reference_id, TravelTrip.id).where(
+                TravelTrip.id.in_(trip_ids), TravelTrip.status == TripStatus.CANCELLED
+            )
+        )
+    ).first()
+    if cancelled is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"{cancelled[0] or f'Trip {cancelled[1]}'} was cancelled, so it can't be claimed.",
+        )
 
 
 async def trip_end_dates(trips: list, db: AsyncSession) -> dict[int, date]:
@@ -1965,6 +2006,9 @@ async def claim_window_for(claim: ClaimDraft, expenses: list, cfg: dict, db: Asy
     state, days = claim_lateness(trip_end, cfg, now_ist().date())
     if claim.status != ClaimStatus.DRAFT:
         state = CLAIM_LATE if await _has_late_claim_item(claim.id, db) else CLAIM_ON_TIME
+    if state == CLAIM_LATE and await _claimant_is_ceo(claim, db):
+        # The CEO has no limits, so a late claim isn't an exception for them (archiving still applies).
+        state = CLAIM_ON_TIME
     window = {
         "status": state,
         "days_since_trip": days,
@@ -2142,7 +2186,7 @@ async def _create_or_update_claim_draft_impl(
             exclude_claim_id=claim.id,
             claim_category=payload.reimbursement_category,
         )
-    await assert_trips_not_on_other_claim(list(payload.trip_ids), claim.id, db)
+    await assert_trips_claimable(list(payload.trip_ids), claim.id, db)
     _assert_trip_dates_in_order(payload)
 
     # Validated the same way _validate_request_details validates a travel request — the Travel
@@ -2410,7 +2454,7 @@ async def submit_claim(
     if claim.status not in (ClaimStatus.DRAFT, ClaimStatus.SENT_BACK):
         raise HTTPException(status_code=409, detail="Only draft or sent-back claims can be submitted")
     assert_claim_complete_for_submit(claim, invoice_ids, expenses)
-    await assert_trips_not_on_other_claim(list(trip_ids), claim.id, db)
+    await assert_trips_claimable(list(trip_ids), claim.id, db)
     if invoice_ids:
         await assert_invoices_eligible_for_claim(
             list(invoice_ids),

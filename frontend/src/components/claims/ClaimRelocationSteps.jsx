@@ -2,6 +2,7 @@ import { ArrowLeft, ArrowRight, Check, ChevronDown, Eye, FileCheck2, Send, Truck
 import { useState } from 'react';
 
 import { formatDate, formatDatetime, formatRole } from '../../utils/formatters';
+import DateInput from '../ui/DateInput';
 
 /** The trip purpose every relocation claim carries — seeded by backend migration f4c1a7e2b905, see
  * relocation_service.RELOCATION_TRIP_PURPOSE. Relocation has its own form, so the Travel Claim and
@@ -286,9 +287,8 @@ function RelocationForm({ hasApproval, travelOptions, routeText, busy, onSubmit 
         </label>
         <label className="space-y-1">
           <span className={LABEL}>Travel date *</span>
-          <input
+          <DateInput
             className={INPUT}
-            type="date"
             min={hasApproval ? undefined : today}
             value={values.travel_date}
             onChange={set('travel_date')}

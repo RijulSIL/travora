@@ -1,5 +1,6 @@
 import { CheckCircle2, Clock, Plane, Train, Bus, FileText } from 'lucide-react';
 
+import { formatDate } from '../../utils/formatters';
 import { busTypesText, leaveWindowsText } from './travelRequestView';
 
 /**
@@ -29,8 +30,7 @@ export const EMPTY_UPLOAD_FIELDS = {
 export function TravelerPick({ pick }) {
   if (!pick || (pick.choice !== 'own' && pick.choice !== 'bus' && !pick.option)) return null;
   const o = pick.option;
-  const found = pick.searched_at ? new Date(pick.searched_at) : null;
-  const foundOn = found && !Number.isNaN(found.getTime()) ? found.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : null;
+  const foundOn = formatDate(pick.searched_at) || null;
   const own = pick.choice === 'own';
   const when = leaveWindowsText(pick.time_windows);
   if (pick.choice === 'bus') {

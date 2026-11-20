@@ -2,6 +2,7 @@ import { Navigate, Outlet } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 
 import SetInitialPasswordPage from '../pages/auth/SetInitialPasswordPage';
+import TravellerSetupPage from '../pages/auth/TravellerSetupPage';
 import api, { refreshSession } from '../services/api';
 import { showToast } from '../store/toastStore';
 import { useAuthStore } from '../store/authStore';
@@ -119,6 +120,11 @@ export default function ProtectedRoute() {
   // Still on the temporary password from their welcome email: they set their own before anything else.
   if (profile?.must_change_password) {
     return <SetInitialPasswordPage />;
+  }
+
+  // Then their meal preference and ID (asked once; travel requests are filled in from them).
+  if (profile?.needs_traveller_profile) {
+    return <TravellerSetupPage />;
   }
 
   return <Outlet />;

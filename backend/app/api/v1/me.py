@@ -1,14 +1,23 @@
 from datetime import date, datetime, time
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.rbac import get_current_claims, is_manager
 from app.models.auth import Delegation, Role, User
-from app.schemas.me import AutoApproveThresholdIn, DelegationIn, DelegationOut, MeOut, MyPolicyLimitsOut
+from app.schemas.me import (
+    AutoApproveThresholdIn,
+    DelegationIn,
+    DelegationOut,
+    MeOut,
+    MyPolicyLimitsOut,
+    TravellerProfileIn,
+)
+from app.services.audit_service import log_event
 from app.services.claim_submission_rules import parse_auto_approve_threshold
 from app.services.me_service import build_me_profile, build_my_policy_limits
 from app.services.workflow_service import get_workflow_config
@@ -29,6 +38,78 @@ async def read_me(
         return await build_me_profile(int(claims["sub"]), db)
     except ValueError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found") from None
+
+
+@router.post("/me/id-proof")
+async def upload_my_id_proof(
+    file: UploadFile = File(...),
+    claims: dict = Depends(get_current_claims),
+) -> dict:
+    """Upload a copy of your ID for your traveller profile; PUT /me/traveller-profile then refers
+    to it by `ref`. Stored like a travel request's ID, so requests can reuse the same file."""
+    from app.services.travel_id_proof_service import store_id_proof
+
+    return await store_id_proof(int(claims["sub"]), file)
+
+
+@router.get("/me/id-proof")
+async def download_my_id_proof(
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> FileResponse:
+    """The ID copy saved on your own profile."""
+    from app.services.travel_id_proof_service import id_proof_path
+
+    user = await db.get(User, int(claims["sub"]))
+    path = id_proof_path(user.id, user.id_proof_ref) if user else None
+    if path is None:
+        raise HTTPException(status_code=404, detail="No ID is saved on your profile")
+    return FileResponse(
+        path,
+        media_type=user.id_proof_content_type or "application/octet-stream",
+        headers={"Content-Disposition": f'inline; filename="{user.id_proof_filename or path.name}"'},
+    )
+
+
+@router.put("/me/traveller-profile", response_model=MeOut)
+async def save_traveller_profile(
+    payload: TravellerProfileIn,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> MeOut:
+    """Your meal preference and ID: asked for once after your first sign-in (the app waits for
+    them), and changeable on My profile. New travel requests are filled in from them."""
+    from app.services.travel_id_proof_service import (
+        clean_meal_preference,
+        clean_traveller_id,
+        save_traveller_id_to_profile,
+    )
+
+    user_id = int(claims["sub"])
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    meal = clean_meal_preference(payload.meal_preference)
+    ident = clean_traveller_id(
+        user_id, payload.id_name, payload.id_type, payload.id_proof_ref, payload.id_proof_filename
+    )
+    old = {"meal_preference": user.meal_preference, "id_name": user.id_name, "id_type": user.id_type}
+    user.meal_preference = meal
+    save_traveller_id_to_profile(user, ident)
+    await log_event(
+        entity_type="user",
+        entity_id=str(user_id),
+        action="traveller_profile_saved",
+        actor_id=user_id,
+        old=old,
+        new={"meal_preference": meal, "id_name": ident["id_name"], "id_type": ident["id_type"]},
+        db=db,
+    )
+    await db.commit()
+    try:
+        return await build_me_profile(user_id, db)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="User not found") from None
 
 
 @router.get("/me/policy-limits", response_model=MyPolicyLimitsOut)

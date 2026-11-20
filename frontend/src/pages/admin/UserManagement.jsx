@@ -16,7 +16,7 @@ import useToast from '../../hooks/useToast';
 import { usePagination } from '../../hooks/usePagination';
 import { adminApi } from '../../services/adminApi';
 import { reimbursementApi } from '../../services/reimbursementApi';
-import { formatRole } from '../../utils/formatters';
+import { formatDate, formatDatetime, formatRole } from '../../utils/formatters';
 
 // A role is someone's job; being a manager is the separate Manager setting (is_manager), so
 // Reporting Manager is no longer a role. Older CSV files may still say REPORTING_MANAGER — it's
@@ -72,7 +72,7 @@ const initials = (name, email) => {
   return (parts.length > 1 ? parts[0][0] + parts[1][0] : parts[0].slice(0, 2)).toUpperCase();
 };
 const money = (v) => `₹${Number(v || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-const day = (v) => (v ? new Date(v).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '');
+const day = (v) => formatDate(v);
 const errorText = (err, fallback) => {
   const detail = err?.response?.data?.detail;
   return typeof detail === 'string' ? detail : fallback;
@@ -756,7 +756,7 @@ export default function UserManagement() {
               <div>
                 <b className="text-ink">Hasn&apos;t signed in yet.</b> Their password is still <span className="font-mono">{TEMPORARY_PASSWORD}</span>.{' '}
                 {selected.welcome_email_sent_at
-                  ? `Welcome email sent ${new Date(selected.welcome_email_sent_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}.`
+                  ? `Welcome email sent ${formatDatetime(selected.welcome_email_sent_at)}.`
                   : 'Their welcome email hasn’t been sent.'}
               </div>
               <div>
@@ -1086,7 +1086,7 @@ export default function UserManagement() {
         onConfirm={() => confirmDelete && deleteUser(confirmDelete)}
       />
       {reactivating ? (
-        <div className="fixed inset-0 z-[95] grid grid-cols-[minmax(0,1fr)] place-items-center bg-slate-900/40 p-4" onMouseDown={() => !reactivating.saving && setReactivating(null)}>
+        <div className="fixed inset-0 z-[95] grid grid-cols-[minmax(0,1fr)] place-items-center bg-slate-900/60 p-4 backdrop-blur-sm" onMouseDown={() => !reactivating.saving && setReactivating(null)}>
           <div
             role="dialog"
             aria-modal="true"
@@ -1157,7 +1157,7 @@ export default function UserManagement() {
         </div>
       ) : null}
       {moveBeforeDeactivate ? (
-        <div className="fixed inset-0 z-[95] grid grid-cols-[minmax(0,1fr)] place-items-center bg-slate-900/40 p-4" onMouseDown={() => setMoveBeforeDeactivate(null)}>
+        <div className="fixed inset-0 z-[95] grid grid-cols-[minmax(0,1fr)] place-items-center bg-slate-900/60 p-4 backdrop-blur-sm" onMouseDown={() => setMoveBeforeDeactivate(null)}>
           <div
             role="dialog"
             aria-modal="true"

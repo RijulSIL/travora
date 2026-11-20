@@ -2,15 +2,19 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Search, FileText, CheckCircle2,
   ArrowRight, UploadCloud, Send,
-  Clock, AlertCircle, Paperclip, ChevronDown, ChevronUp
+  Clock, AlertCircle, Paperclip, ChevronDown, ChevronUp, Ban
 } from 'lucide-react';
 
 import SegmentUploadForm, { EMPTY_UPLOAD_FIELDS, ModeIcon } from '../../components/travel/SegmentUploadForm';
 import TravellerId from '../../components/travel/TravellerId';
+import { deskCanCancel, isCancelledBooking } from '../../components/travel/travelRequestView';
+import ConfirmDialog from '../../components/ui/ConfirmDialog';
+import DateInput from '../../components/ui/DateInput';
 import TicketPreviewDrawer from '../../components/ui/TicketPreviewDrawer';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import useToast from '../../hooks/useToast';
 import { reimbursementApi } from '../../services/reimbursementApi';
+import { formatDate, formatDatetime } from '../../utils/formatters';
 
 const SUPPORTING_DOC_STATUSES = ['APPROVED', 'PARTIALLY_BOOKED', 'BOOKED'];
 
@@ -212,6 +216,10 @@ export default function TravelDeskPage() {
   // is disabled (with a tooltip) until it does.
   const [agentEmailConfigured, setAgentEmailConfigured] = useState(false);
   const [sendingToAgent, setSendingToAgent] = useState(false);
+  // Cancelling a booked trip that hasn't started: { request, label } while the confirm is open.
+  const [cancelTarget, setCancelTarget] = useState(null);
+  const [cancelReason, setCancelReason] = useState('');
+  const [cancelling, setCancelling] = useState(false);
 
   const selectedRow = useMemo(() => queue.find((e) => e.request.id === selectedKey) || null, [queue, selectedKey]);
 
@@ -423,6 +431,33 @@ export default function TravelDeskPage() {
     else await loadAll();
   }
 
+  function askCancel(request, employeeName) {
+    const route =
+      request.trip_type === 'MULTI_CITY' && request.legs?.length
+        ? [request.legs[0].from_city, ...request.legs.map((l) => l.to_city)].join(' → ')
+        : `${request.from_city} → ${request.to_city}`;
+    setCancelReason('');
+    setCancelTarget({ request, label: `${employeeName ? `${employeeName}'s trip ` : 'The trip '}${route} on ${formatDate(primaryTravelDate(request))}` });
+  }
+
+  async function confirmCancel() {
+    if (!cancelTarget) return;
+    setCancelling(true);
+    try {
+      await reimbursementApi.travelDeskCancel(cancelTarget.request.id, cancelReason.trim());
+      showToast('Trip cancelled. The traveller has been told.', 'success');
+      if (selectedRow?.request.id === cancelTarget.request.id) setSelectedKey(null);
+      setCancelTarget(null);
+      if (mode === 'queue') await loadQueue();
+      else await loadAll();
+    } catch (e) {
+      const d = e.response?.data?.detail;
+      showToast(typeof d === 'string' ? d : 'Could not cancel the trip', 'error');
+    } finally {
+      setCancelling(false);
+    }
+  }
+
   async function onUpload(e, seq) {
     e.preventDefault();
     if (!selectedRow || (selectedRow.request.status !== 'APPROVED' && selectedRow.request.status !== 'PARTIALLY_BOOKED')) return;
@@ -549,8 +584,7 @@ export default function TravelDeskPage() {
               <div className="panel flex flex-wrap items-end gap-3 rounded-xl border border-slate-200 bg-white p-3.5">
                 <div className="space-y-1">
                   <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">From Date</span>
-                  <input
-                    type="date"
+                  <DateInput
                     className="h-9 rounded-lg border border-slate-250 px-2.5 text-xs outline-none focus:border-slate-400 transition-all"
                     value={queueDateFrom}
                     onChange={(e) => setQueueDateFrom(e.target.value)}
@@ -558,8 +592,7 @@ export default function TravelDeskPage() {
                 </div>
                 <div className="space-y-1">
                   <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">To Date</span>
-                  <input
-                    type="date"
+                  <DateInput
                     className="h-9 rounded-lg border border-slate-250 px-2.5 text-xs outline-none focus:border-slate-400 transition-all"
                     value={queueDateTo}
                     onChange={(e) => setQueueDateTo(e.target.value)}
@@ -638,7 +671,7 @@ export default function TravelDeskPage() {
                                 <span>{leg.from_city}</span>
                                 <ArrowRight size={10} className="text-slate-400" />
                                 <span>{leg.to_city}</span>
-                                <span className="text-slate-400 font-normal ml-1">({leg.travel_date})</span>
+                                <span className="text-slate-400 font-normal ml-1">({formatDate(leg.travel_date)})</span>
                               </div>
                             ))
                           ) : (
@@ -655,7 +688,7 @@ export default function TravelDeskPage() {
                         </div>
                         
                         <div className="text-[10px] font-medium text-slate-500 flex items-center gap-2">
-                          <span className="bg-slate-100 rounded px-1.5 py-0.5">{row.request.travel_date}</span>
+                          <span className="bg-slate-100 rounded px-1.5 py-0.5">{formatDate(row.request.travel_date)}</span>
                           <span>•</span>
                           <span>Impact: <strong className="text-slate-700">{row.impact_level_code}</strong></span>
                         </div>
@@ -745,7 +778,7 @@ export default function TravelDeskPage() {
                             <div className="absolute -top-3.5 bg-slate-50 p-1 rounded-full text-slate-400 border border-slate-200">
                               <ModeIcon mode={leg.travel_mode || selectedRow.request.travel_mode} />
                             </div>
-                            <div className="absolute -top-6 text-[9px] font-bold text-slate-400 bg-slate-50 px-1">{leg.travel_date}</div>
+                            <div className="absolute -top-6 text-[9px] font-bold text-slate-400 bg-slate-50 px-1">{formatDate(leg.travel_date)}</div>
                           </div>
                           <div className="text-center">
                             <div className="text-xs font-bold text-slate-800">{leg.to_city}</div>
@@ -775,12 +808,12 @@ export default function TravelDeskPage() {
                   <div className="grid grid-cols-2 gap-4 mt-4 border-t border-slate-200/60 pt-3 text-[11px] font-medium text-slate-600">
                     <div>
                       <span className="text-slate-400 font-semibold block uppercase text-[9px]">Travel Date</span>
-                      <span className="font-bold text-slate-700">{primaryTravelDate(selectedRow.request)}</span>
+                      <span className="font-bold text-slate-700">{formatDate(primaryTravelDate(selectedRow.request))}</span>
                     </div>
                     {selectedRow.request.return_date && (
                       <div>
                         <span className="text-slate-400 font-semibold block uppercase text-[9px]">Return Date</span>
-                        <span className="font-bold text-slate-700">{selectedRow.request.return_date}</span>
+                        <span className="font-bold text-slate-700">{formatDate(selectedRow.request.return_date)}</span>
                       </div>
                     )}
                     <div>
@@ -804,6 +837,19 @@ export default function TravelDeskPage() {
 
                 {/* Book in the name as per the traveller's ID. */}
                 <TravellerId request={selectedRow.request} compact />
+
+                {deskCanCancel(selectedRow.request) ? (
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-rose-100 bg-rose-50/40 px-3 py-2">
+                    <span className="text-[11px] font-medium text-slate-600">Trip called off? Cancel it so it can&apos;t be claimed.</span>
+                    <button
+                      type="button"
+                      onClick={() => askCancel(selectedRow.request, selectedRow.employee_display_name)}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-white px-2.5 py-1 text-[11px] font-bold text-rose-700 hover:bg-rose-50"
+                    >
+                      <Ban size={12} /> Cancel trip
+                    </button>
+                  </div>
+                ) : null}
 
                 {selectedRow.request.purpose && (
                   <div className="space-y-0.5">
@@ -954,8 +1000,7 @@ export default function TravelDeskPage() {
 
             <div className="space-y-1 shrink-0">
               <span className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">From Date</span>
-              <input
-                type="date"
+              <DateInput
                 className="h-9 rounded-lg border border-slate-250 px-2.5 text-xs outline-none focus:border-slate-400 bg-white transition-all"
                 value={allDateFrom}
                 onChange={(e) => setAllDateFrom(e.target.value)}
@@ -963,8 +1008,7 @@ export default function TravelDeskPage() {
             </div>
             <div className="space-y-1 shrink-0">
               <span className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">To Date</span>
-              <input
-                type="date"
+              <DateInput
                 className="h-9 rounded-lg border border-slate-250 px-2.5 text-xs outline-none focus:border-slate-400 bg-white transition-all"
                 value={allDateTo}
                 onChange={(e) => setAllDateTo(e.target.value)}
@@ -1037,24 +1081,27 @@ export default function TravelDeskPage() {
                 ) : (
                   pagedAllRows.map(({ request: r, employee_display_name, impact_level_code }, index) => {
                     const statusDetails = getStatusDetails(r.status);
-                    const isExpanded = expandedAllId === r.id;
+                    // A booked trip the desk cancelled: greyed and struck through, and it doesn't open.
+                    const cancelledBooking = isCancelledBooking(r);
+                    const isExpanded = expandedAllId === r.id && !cancelledBooking;
+                    const struck = cancelledBooking ? 'line-through decoration-slate-500 opacity-50' : '';
 
                     return (
                       <Fragment key={r.id}>
-                      <tr className="hover:bg-slate-50/50 transition-colors">
+                      <tr className={cancelledBooking ? 'bg-slate-50' : 'hover:bg-slate-50/50 transition-colors'}>
                         <td className="px-5 py-3 text-center text-slate-500">
                           {(allPage - 1) * QUEUE_PAGE_SIZE + index + 1}
                         </td>
-                        <td className="whitespace-nowrap px-5 py-3 text-center font-bold text-slate-800">
+                        <td className={`whitespace-nowrap px-5 py-3 text-center font-bold text-slate-800 ${struck}`}>
                           {employee_display_name || '—'}
                         </td>
-                        <td className="whitespace-nowrap px-5 py-3 text-center">
-                          {r.requested_at ? new Date(r.requested_at).toLocaleString('en-IN') : '—'}
+                        <td className={`whitespace-nowrap px-5 py-3 text-center ${struck}`}>
+                          {r.requested_at ? formatDatetime(r.requested_at) : '—'}
                         </td>
-                        <td className="whitespace-nowrap px-5 py-3 text-center">
-                          {r.trip_type === 'MULTI_CITY' && r.legs?.length > 0 ? r.legs[0].travel_date : r.travel_date}
+                        <td className={`whitespace-nowrap px-5 py-3 text-center ${struck}`}>
+                          {formatDate(r.trip_type === 'MULTI_CITY' && r.legs?.length > 0 ? r.legs[0].travel_date : r.travel_date)}
                         </td>
-                        <td className="px-5 py-3 text-center">
+                        <td className={`px-5 py-3 text-center ${struck}`}>
                           {r.trip_type === 'MULTI_CITY' && r.legs && r.legs.length > 0 ? (
                             <div className="flex flex-col items-center gap-1">
                               {r.legs.map((leg, i) => (
@@ -1062,7 +1109,7 @@ export default function TravelDeskPage() {
                                   <span>{leg.from_city}</span>
                                   <ArrowRight size={8} className="text-slate-400" />
                                   <span>{leg.to_city}</span>
-                                  <span className="text-slate-400 font-normal ml-1">({leg.travel_date})</span>
+                                  <span className="text-slate-400 font-normal ml-1">({formatDate(leg.travel_date)})</span>
                                 </div>
                               ))}
                               <div className="mt-0.5"><span className="inline-flex items-center rounded-sm bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600">Multi City</span></div>
@@ -1078,7 +1125,7 @@ export default function TravelDeskPage() {
                             </div>
                           )}
                         </td>
-                        <td className="px-5 py-3 text-center">
+                        <td className={`px-5 py-3 text-center ${struck}`}>
                           {r.trip_type === 'MULTI_CITY' && r.legs?.length > 0 ? (
                             <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
                               {[...new Set(r.legs.map((leg) => leg.travel_mode || r.travel_mode))].map((m) => (
@@ -1095,7 +1142,7 @@ export default function TravelDeskPage() {
                             </div>
                           )}
                         </td>
-                        <td className="px-5 py-3 text-center">
+                        <td className={`px-5 py-3 text-center ${cancelledBooking ? 'opacity-50' : ''}`}>
                           <span className="badge badge-draft text-[10px]">
                             {impact_level_code || '—'}
                           </span>
@@ -1110,10 +1157,25 @@ export default function TravelDeskPage() {
                                 With agent
                               </span>
                             ) : null}
+                            {cancelledBooking ? <span className="text-[10px] font-semibold text-slate-400">after booking</span> : null}
+                            {r.booked_by === 'SELF' ? (
+                              <span className="inline-flex items-center whitespace-nowrap rounded-full bg-sky-50 px-2 py-0.5 text-[9px] font-bold uppercase tracking-tight text-sky-700">
+                                Self-booked
+                              </span>
+                            ) : null}
+                            {deskCanCancel(r) ? (
+                              <button
+                                type="button"
+                                onClick={() => askCancel(r, employee_display_name)}
+                                className="mt-0.5 inline-flex items-center gap-1 rounded-md border border-rose-200 bg-white px-1.5 py-0.5 text-[10px] font-bold text-rose-700 hover:bg-rose-50"
+                              >
+                                <Ban size={10} /> Cancel trip
+                              </button>
+                            ) : null}
                           </div>
                         </td>
                         <td className="px-2 py-3 text-center">
-                          {SUPPORTING_DOC_STATUSES.includes(r.status) || r.supporting_documents?.length ? (
+                          {!cancelledBooking && (SUPPORTING_DOC_STATUSES.includes(r.status) || r.supporting_documents?.length) ? (
                             <button
                               type="button"
                               className="flex h-6 w-6 items-center justify-center rounded-lg text-amber-600 hover:bg-amber-50 transition-colors"
@@ -1176,6 +1238,30 @@ export default function TravelDeskPage() {
           ) : null}
         </div>
       ) : null}
+
+      <ConfirmDialog
+        open={Boolean(cancelTarget)}
+        title="Cancel this booked trip?"
+        description={`${cancelTarget?.label || 'This trip'} will be cancelled and can't be claimed. The traveller is told, and it moves to their past trips as cancelled. Cancel the tickets with the airline, railway or bus operator yourself.`}
+        confirmLabel={cancelling ? 'Cancelling…' : 'Cancel trip'}
+        busy={cancelling}
+        onCancel={() => (cancelling ? null : setCancelTarget(null))}
+        onConfirm={confirmCancel}
+      >
+        <label className="mt-3 block text-xs font-bold text-slate-700" htmlFor="desk-cancel-reason">
+          Reason <span className="font-medium text-slate-400">(optional, shown to the traveller)</span>
+        </label>
+        <textarea
+          id="desk-cancel-reason"
+          rows={2}
+          maxLength={500}
+          className="mt-1 w-full rounded-lg border border-slate-200 px-2.5 py-2 text-[13px] outline-none focus:border-brand focus:ring-2 focus:ring-brand/15"
+          placeholder="e.g. Meeting postponed"
+          value={cancelReason}
+          onChange={(e) => setCancelReason(e.target.value)}
+          disabled={cancelling}
+        />
+      </ConfirmDialog>
 
       <TicketPreviewDrawer
         open={preview.open}

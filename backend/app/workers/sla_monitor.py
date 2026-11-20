@@ -9,6 +9,9 @@ stages, relocation request stages, and exception approval steps (claim and trave
   keep being reminded instead;
 * reminds the current approver every 4 working hours until they act.
 
+A step set to "No SLA" in the Approval Matrix (sla_hours null → no deadline) is left alone: the
+approver takes as long as they need — it's never passed on and gets no reminders.
+
 SLA deadlines and reminder spacing count working time only — Saturdays, Sundays and Holiday
 Calendar days don't count (app.services.working_time), and no reminders go out on those days.
 """
@@ -20,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import AsyncSessionLocal
-from app.core.timezone import now_ist
+from app.core.timezone import format_datetime, now_ist
 from app.models.claim_workflow import (
     ClaimApprovalStage,
     ClaimApprovalStageStatus,
@@ -65,7 +68,19 @@ async def _send(user_ids: list[int], title: str, body: str, link: str, category:
 
 
 def _deadline_text(deadline: datetime | None) -> str:
-    return deadline.strftime("%d %b, %I:%M %p") if deadline else "—"
+    return format_datetime(deadline, "—")
+
+
+def _deadline_sentence(deadline: datetime | None) -> str:
+    """" SLA deadline: …." for a reminder — nothing for a step with "No SLA" (no deadline)."""
+    return f" SLA deadline: {_deadline_text(deadline)}." if deadline is not None else ""
+
+
+def _backfill_deadline(row, hours: int | None, clock: "_Clock") -> None:
+    """A step activated before SLAs were tracked gets its deadline from the current settings —
+    none if its step now has "No SLA" (then it's never passed on or reminded)."""
+    if row.sla_deadline_at is None and hours is not None:
+        row.sla_deadline_at = add_working_hours(clock.now, hours, clock.holidays)
 
 
 # ---------------------------------------------------------------- claim stages
@@ -89,7 +104,7 @@ async def _claim_stages(db: AsyncSession, clock: _Clock) -> None:
 
     for claim, pending in by_claim.values():
         cfg = await ws.get_workflow_config(db, category=claim.reimbursement_category.value)
-        stage_defs = ws._normalize_stage_defs(cfg)
+        stage_defs = await ws.claim_stage_defs(claim, cfg, db)  # the CEO's own claims: the CEO's route
         ref = claim.claim_reference or f"CLM-{claim.id}"
         link = f"/claims/{claim.id}/review"
 
@@ -97,10 +112,8 @@ async def _claim_stages(db: AsyncSession, clock: _Clock) -> None:
             return await ws._user_ids_for_stage(_claim, {"route_role": row.required_role}, db)
 
         for row in pending:
-            if row.sla_deadline_at is None:  # activated before SLAs were tracked
-                row.sla_deadline_at = add_working_hours(
-                    clock.now, ws._stage_hours(stage_defs, row.stage_number), clock.holidays
-                )
+            if row.sla_deadline_at is None:  # activated before SLAs were tracked, or "No SLA"
+                _backfill_deadline(row, ws._stage_hours(stage_defs, row.stage_number), clock)
             if row.last_notified_at is None:
                 row.last_notified_at = clock.now
 
@@ -130,11 +143,12 @@ async def _claim_stages(db: AsyncSession, clock: _Clock) -> None:
             continue
 
         for r in pending:
-            if clock.reminder_due(r.last_notified_at):
+            # "No SLA" (no deadline): they take as long as they need, so no reminders either.
+            if r.sla_deadline_at is not None and clock.reminder_due(r.last_notified_at):
                 await _send(
                     await approvers(r),
                     f"Reminder: {ref} is waiting for your approval",
-                    f"{ref} ({r.stage_label}) is still waiting on you. SLA deadline: {_deadline_text(r.sla_deadline_at)}.",
+                    f"{ref} ({r.stage_label}) is still waiting on you.{_deadline_sentence(r.sla_deadline_at)}",
                     link, NotificationCategory.APPROVAL_REQUIRED.value, db,
                 )
                 r.last_notified_at = clock.now
@@ -195,13 +209,14 @@ async def _travel_stages(db: AsyncSession, clock: _Clock) -> None:
     ).all()
     if not rows:
         return
-    stage_defs = ws._travel_request_stage_defs(await ws.get_workflow_config(db))
+    travel_cfg = await ws.get_workflow_config(db)
     for row, req in rows:
+        stage_defs = await ws.travel_stage_defs(req, travel_cfg, db)  # the CEO's own: the CEO's route
         ref = f"TR-{req.id:04d}"
         link = "/claims/pending?tab=travel"
         recipients = await ws._user_ids_for_exception_role_for_travel(req, row.required_role or "", db)
         if row.sla_deadline_at is None:
-            row.sla_deadline_at = add_working_hours(clock.now, ws._stage_hours(stage_defs, row.stage_number), clock.holidays)
+            _backfill_deadline(row, ws._stage_hours(stage_defs, row.stage_number), clock)
         if row.last_notified_at is None:
             row.last_notified_at = clock.now
 
@@ -240,11 +255,11 @@ async def _travel_stages(db: AsyncSession, clock: _Clock) -> None:
                 row.last_notified_at = clock.now
             continue
 
-        if clock.reminder_due(row.last_notified_at):
+        if row.sla_deadline_at is not None and clock.reminder_due(row.last_notified_at):  # none for "No SLA"
             await _send(
                 recipients, f"Reminder: {ref} is waiting for your approval",
-                f"Travel request {ref} ({row.stage_label}) is still waiting on you. SLA deadline: "
-                f"{_deadline_text(row.sla_deadline_at)}.",
+                f"Travel request {ref} ({row.stage_label}) is still waiting on you."
+                f"{_deadline_sentence(row.sla_deadline_at)}",
                 link, NotificationCategory.APPROVAL_REQUIRED.value, db,
             )
             row.last_notified_at = clock.now
@@ -279,7 +294,7 @@ async def _relocation_stages(db: AsyncSession, clock: _Clock) -> None:
         owner = await db.get(User, req.employee_user_id)
         recipients = await ws._user_ids_for_role(row.required_role or "", owner.employee_id if owner else None, db)
         if row.sla_deadline_at is None:
-            row.sla_deadline_at = add_working_hours(clock.now, ws._stage_hours(stage_defs, row.stage_number), clock.holidays)
+            _backfill_deadline(row, ws._stage_hours(stage_defs, row.stage_number), clock)
         if row.last_notified_at is None:
             row.last_notified_at = clock.now
 
@@ -316,11 +331,11 @@ async def _relocation_stages(db: AsyncSession, clock: _Clock) -> None:
                 row.last_notified_at = clock.now
             continue
 
-        if clock.reminder_due(row.last_notified_at):
+        if row.sla_deadline_at is not None and clock.reminder_due(row.last_notified_at):  # none for "No SLA"
             await _send(
                 recipients, f"Reminder: {ref} is waiting for your approval",
-                f"Relocation request {ref} ({row.stage_label}) is still waiting on you. SLA deadline: "
-                f"{_deadline_text(row.sla_deadline_at)}.",
+                f"Relocation request {ref} ({row.stage_label}) is still waiting on you."
+                f"{_deadline_sentence(row.sla_deadline_at)}",
                 link, NotificationCategory.APPROVAL_REQUIRED.value, db,
             )
             row.last_notified_at = clock.now
@@ -362,11 +377,9 @@ async def _exception_steps(db: AsyncSession, clock: _Clock) -> None:
                 return await ws._user_ids_for_exception_role(_claim, role, db)
             return await ws._user_ids_for_exception_role_for_travel(_travel, role, db)
 
-        if step.sla_deadline_at is None:  # activated before SLAs were tracked
-            hours = ws.exception_step_sla_hours(
-                cfg, req.exception_types or [req.exception_type], step.required_role, req.route_key
-            )
-            step.sla_deadline_at = add_working_hours(clock.now, hours, clock.holidays)
+        if step.sla_deadline_at is None:  # activated before SLAs were tracked, or "No SLA"
+            hours = await ws.exception_step_hours(req, step.required_role, cfg, db)
+            _backfill_deadline(step, hours, clock)
         if step.last_notified_at is None:
             step.last_notified_at = clock.now
 
@@ -407,10 +420,10 @@ async def _exception_steps(db: AsyncSession, clock: _Clock) -> None:
                 step.last_notified_at = clock.now
             continue
 
-        if clock.reminder_due(step.last_notified_at):
+        if step.sla_deadline_at is not None and clock.reminder_due(step.last_notified_at):  # none for "No SLA"
             await _send(
                 await recipients_for(step.required_role), f"Reminder: {ref} has an exception waiting for you",
-                f"The {what} is still waiting on you. SLA deadline: {_deadline_text(step.sla_deadline_at)}.",
+                f"The {what} is still waiting on you.{_deadline_sentence(step.sla_deadline_at)}",
                 "/hr/exceptions", NotificationCategory.EXCEPTION.value, db,
             )
             step.last_notified_at = clock.now

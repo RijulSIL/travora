@@ -2,6 +2,7 @@ import { ArrowRight, Check, ShieldCheck } from 'lucide-react';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 
+import { formatDate, formatTime, formatWeekdayDate } from '../../utils/formatters';
 import { TipBody, useFloatingTip } from '../ui/FloatingTip';
 
 /*
@@ -33,8 +34,8 @@ export function today() {
 }
 
 export const daysBetween = (a, b) => Math.round((b - a) / DAY);
-export const shortDate = (d) => `${d.getDate()} ${MONTHS[d.getMonth()]}`;
-export const weekdayDate = (d) => `${WEEKDAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]}`;
+export const shortDate = (d) => formatDate(d);
+export const weekdayDate = (d) => formatWeekdayDate(d);
 export const plural = (n, word, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
 
 /** Weekends-only working days, the same rule the travel claim form uses for its deadline. */
@@ -54,7 +55,7 @@ export function slaText(deadline, now = Date.now()) {
   if (!deadline) return null;
   const at = new Date(deadline);
   if (Number.isNaN(at.getTime())) return null;
-  const time = at.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
+  const time = formatTime(at);
   const day = dayOf(deadline);
   const gap = daysBetween(today(), day);
   if (at.getTime() <= now) return { text: `SLA passed ${gap === 0 ? 'today' : shortDate(day)} ${time}`, tone: 'rose' };

@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import { Clock, X } from 'lucide-react';
 
 import { ApprovalChain, ChainMark, ExceptionSubject, Pill, Tabs, ago, inr, shortDay, shortType } from '../components/approvals/ApprovalQueueParts';
+import DateInput from '../components/ui/DateInput';
 import { TipBody, useFloatingTip } from '../components/ui/FloatingTip';
 import Pagination from '../components/ui/Pagination';
 import useBodyScrollLock from '../hooks/useBodyScrollLock';
@@ -265,11 +266,11 @@ export default function ComplianceDashboard() {
           <>
             <label className={selectBox(true)}>
               From
-              <input type="date" className={selectInput} value={filters.from} onChange={(e) => setFilter('from', e.target.value)} />
+              <DateInput className={selectInput} value={filters.from} onChange={(e) => setFilter('from', e.target.value)} />
             </label>
             <label className={selectBox(true)}>
               To
-              <input type="date" className={selectInput} value={filters.to} onChange={(e) => setFilter('to', e.target.value)} />
+              <DateInput className={selectInput} value={filters.to} onChange={(e) => setFilter('to', e.target.value)} />
             </label>
           </>
         ) : null}
@@ -530,7 +531,7 @@ export default function ComplianceDashboard() {
 
       {selectedCell
         ? createPortal(
-            <div className="fixed inset-0 z-[95] grid place-items-center bg-slate-900/45 p-4" onClick={() => setSelectedCell(null)}>
+            <div className="fixed inset-0 z-[95] grid place-items-center bg-slate-900/60 p-4 backdrop-blur-sm" onClick={() => setSelectedCell(null)}>
               <div
                 role="dialog"
                 aria-modal="true"

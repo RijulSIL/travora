@@ -19,7 +19,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.timezone import now_ist
+from app.core.timezone import format_date, now_ist
 from app.models.auth import Role, User
 from app.models.claim_workflow import (
     ClaimApprovalStageStatus,
@@ -262,7 +262,7 @@ async def _travel_waiting(req: TravelRequest, db: AsyncSession) -> Waiting | Non
             p
             for p in (
                 f"{req.from_city} → {req.to_city}" if req.to_city else "Travel request",
-                req.travel_date.strftime("%d %b %Y") if req.travel_date else None,
+                format_date(req.travel_date),
             )
             if p
         ),
@@ -500,7 +500,7 @@ async def _skip(w: Waiting, actor: User, reason: str, db: AsyncSession) -> None:
         if not later:
             raise HTTPException(status_code=409, detail="This is the last step — approve or reject it instead")
         cfg = await ws.get_workflow_config(db, category=claim.reimbursement_category.value)
-        stage_defs = ws._normalize_stage_defs(cfg)
+        stage_defs = await ws.claim_stage_defs(claim, cfg, db)
         for row in stages:
             if row.stage_number == current and row.status == ClaimApprovalStageStatus.PENDING.value:
                 row.status = ws.STAGE_STATUS_OVERRIDE_SKIPPED
@@ -538,7 +538,7 @@ async def _skip(w: Waiting, actor: User, reason: str, db: AsyncSession) -> None:
         pending.decided_by_user_id = actor.id
         pending.comment = note
         req.current_approval_stage = later[0]
-        stage_defs = ws._travel_request_stage_defs(await ws.get_workflow_config(db))
+        stage_defs = await ws.travel_stage_defs(req, await ws.get_workflow_config(db), db)
         await ws._activate_travel_stage_rows(req, stages, stage_defs, later[0], now, db, note=passed_on)
         entity_id, to_label = req.id, next(s.stage_label for s in stages if s.stage_number == later[0])
     else:

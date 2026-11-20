@@ -12,7 +12,7 @@ from app.core.rbac import (
     require_mfa,
     require_permission,
 )
-from app.core.timezone import now_ist, today_ist
+from app.core.timezone import format_date, now_ist, today_ist
 from app.models.auth import User
 from app.models.employee import Employee
 from app.models.expense_category import ExpenseCategory
@@ -808,7 +808,7 @@ async def approve_policy_version(
             detail=(
                 f"Version {stuck_active.version_number} is already approved and "
                 + (
-                    f"scheduled to take effect on {stuck_active.effective_from.isoformat()}"
+                    f"scheduled to take effect on {format_date(stuck_active.effective_from)}"
                     if stuck_active.effective_from
                     else "awaiting a scheduled date"
                 )

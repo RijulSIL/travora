@@ -13,6 +13,7 @@ import {
   shortType,
   slaLeft,
 } from '../../components/approvals/ApprovalQueueParts';
+import DateInput from '../../components/ui/DateInput';
 import Pagination from '../../components/ui/Pagination';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
@@ -230,9 +231,8 @@ export default function ExceptionRequestsPage() {
         </label>
         <label className={field}>
           From
-          <input
+          <DateInput
             className="bg-transparent text-[12.5px] text-ink outline-none"
-            type="date"
             aria-label="Requested from"
             value={filters.from_date}
             onChange={(e) => setFilters({ ...filters, from_date: e.target.value })}
@@ -240,9 +240,8 @@ export default function ExceptionRequestsPage() {
         </label>
         <label className={field}>
           To
-          <input
+          <DateInput
             className="bg-transparent text-[12.5px] text-ink outline-none"
-            type="date"
             aria-label="Requested to"
             value={filters.to_date}
             onChange={(e) => setFilters({ ...filters, to_date: e.target.value })}

@@ -2,6 +2,8 @@ import { Plane, CheckCircle2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 
+import { formatDate } from '../../utils/formatters';
+
 const ReceiptContent = ({ employeeName, destination, date }) => {
   return (
     <div className="w-[240px] h-[320px] p-5 flex flex-col bg-white rounded-md shadow-sm relative overflow-hidden transition-all duration-300">
@@ -26,7 +28,7 @@ const ReceiptContent = ({ employeeName, destination, date }) => {
         <div className="relative z-10 text-sm text-slate-800 font-bold mb-3">{destination || 'Singapore'}</div>
         
         <div className="relative z-10 text-[10px] text-slate-400 mb-0.5 uppercase tracking-wide font-semibold">Date</div>
-        <div className="relative z-10 text-sm text-slate-800 font-bold">{date || '2024-12-01'}</div>
+        <div className="relative z-10 text-sm text-slate-800 font-bold">{date ? formatDate(date) || date : '01/12/2024'}</div>
 
         {/* Subtle Bottom Bar */}
         <div className="absolute bottom-0 left-0 right-0 h-2 bg-gradient-to-r from-emerald-400 to-emerald-500 opacity-20"></div>

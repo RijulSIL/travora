@@ -54,7 +54,7 @@ const KIND_LABEL = { claims: 'Claim', travel: 'Travel request', relocation: 'Rel
 // Relocation tab only and holds none of these.
 const CLAIM_QUEUE_PERMISSIONS = ['approve_claims', 'process_payments', 'approve_exception'];
 
-/** "Delhi → Mumbai · 2026-10-02–2026-10-18" (the queue's trip_summary) → route + "2 Oct – 18 Oct". */
+/** "Delhi → Mumbai · 2026-10-02–2026-10-18" (the queue's trip_summary) → route + "02/10/2026 – 18/10/2026". */
 function tripParts(summary) {
   if (!summary || summary === '—') return { route: null, dates: null };
   const [route, span] = summary.split(' · ');

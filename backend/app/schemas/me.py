@@ -22,6 +22,25 @@ class ApproverScopeOut(BaseModel):
     policy: int = 0
 
 
+class TravellerIdOut(BaseModel):
+    """The ID saved on the user's profile (the copy opens at GET /me/id-proof)."""
+
+    id_name: str
+    id_type: str | None = None
+    id_proof_filename: str | None = None
+
+
+class TravellerProfileIn(BaseModel):
+    """The setup screen after the first sign-in, and My profile's Travel details card. The ID copy
+    is uploaded first (POST /me/id-proof) and referred to by its `ref`."""
+
+    meal_preference: str = Field(..., max_length=16)
+    id_name: str = Field(..., max_length=255)
+    id_type: str = Field(..., max_length=32)
+    id_proof_ref: str = Field(..., max_length=80)
+    id_proof_filename: str | None = Field(default=None, max_length=255)
+
+
 class MeOut(BaseModel):
     """Current user profile enriched for shell and dashboards."""
 
@@ -52,7 +71,7 @@ class MeOut(BaseModel):
     # A trip's claim window, in days after its to date: late (needs a late-claim exception) after
     # the first, archived (can't be claimed) after the second — claim_submission_rules.claim_windows.
     workflow_claim_late_after_days: int = 7
-    workflow_claim_archive_after_days: int = 15
+    workflow_claim_archive_after_days: int = 30
     is_acting_delegate: bool = False
     # Roles of everyone currently delegating to this user — must match frontend's
     # navConfig.js DELEGATABLE_NAV_BY_ROLE keys exactly, since the frontend uses this to decide
@@ -71,6 +90,13 @@ class MeOut(BaseModel):
     is_manager: bool = False
     # Still on the temporary password: the app shows "Set your password" before anything else.
     must_change_password: bool = False
+    # No meal preference or ID saved yet: the app asks for them next, before anything else.
+    needs_traveller_profile: bool = False
+    # VEG / NON_VEG, and the saved ID — travel requests are filled in from these.
+    meal_preference: str | None = None
+    traveller_id: TravellerIdOut | None = None
+    # Whether claim auto-approve is shown and used at all (hidden for now — settings.auto_approve_enabled).
+    auto_approve_enabled: bool = False
     # Only populated for managers: their personal claim auto-approve threshold
     # (null = disabled, always require manual review) and the org-wide ceiling it is capped at.
     auto_approve_threshold: str | None = None

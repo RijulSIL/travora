@@ -1,5 +1,7 @@
 import { AlertTriangle, BadgeCheck, Flag, HandCoins, IndianRupee, Info, RefreshCcw } from 'lucide-react';
 
+import { formatDate, formatTime, formatWeekdayDate } from '../../utils/formatters';
+
 // Label, colours and icon for each kind of notification (Notifications page and the bell panel).
 export const KIND = {
   APPROVAL_REQUIRED: ['Approvals', 'bg-sky-50 text-sky-700', 'bg-sky-600', BadgeCheck],
@@ -13,16 +15,11 @@ export const KIND = {
 export const kindOf = (category) => KIND[category] || KIND.SYSTEM;
 
 const dayStart = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
-/** "Today", "Yesterday", "Thursday, 15 October", or "2 October" once it's a week or more back. */
+/** "Today", "Yesterday", "Thu, 15/10/2026", or "02/10/2026" once it's a week or more back. */
 export function dayLabel(date, now) {
   const diff = Math.round((dayStart(now) - dayStart(date)) / 86400000);
   if (diff === 0) return 'Today';
   if (diff === 1) return 'Yesterday';
-  return date.toLocaleDateString('en-IN', {
-    weekday: diff < 7 ? 'long' : undefined,
-    day: 'numeric',
-    month: 'long',
-    year: date.getFullYear() === now.getFullYear() ? undefined : 'numeric',
-  });
+  return diff < 7 ? formatWeekdayDate(date) : formatDate(date);
 }
-export const timeOf = (d) => d.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
+export const timeOf = (d) => formatTime(d);

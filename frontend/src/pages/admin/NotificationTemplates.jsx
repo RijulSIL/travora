@@ -8,6 +8,7 @@ import useToast from '../../hooks/useToast';
 import { adminApi } from '../../services/adminApi';
 import { hasPermission } from '../../services/permissions';
 import { useAuthStore } from '../../store/authStore';
+import { formatDate } from '../../utils/formatters';
 
 /*
  * The wording of the emails Travora sends. Each template says when it's sent and to whom, and
@@ -43,8 +44,8 @@ const INFO = {
       project_code: 'PRJ-204',
       from_city: 'Delhi',
       to_city: 'Mumbai',
-      start_date: '2026-11-03',
-      end_date: '2026-11-05',
+      start_date: '03/11/2026',
+      end_date: '05/11/2026',
       purpose: 'Project Site Visit',
     },
   },
@@ -53,7 +54,7 @@ const infoOf = (t) => INFO[t.template_key] || { name: t.template_key, when: '', 
 const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
 const PLACEHOLDER = /\{\{\s*(\w+)\s*\}\}/g;
-const day = (v) => (v ? new Date(v).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—');
+const day = (v) => formatDate(v) || '—';
 const errorText = (err, fallback) => {
   const detail = err?.response?.data?.detail;
   return typeof detail === 'string' ? detail : fallback;

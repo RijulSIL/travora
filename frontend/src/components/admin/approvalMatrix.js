@@ -5,7 +5,7 @@
 // A trip's claim window, in calendar days after its to date (claim_submission_rules on the server):
 // a claim after the first needs a late-claim exception; after the second the trip is archived.
 export const DEFAULT_LATE_DAYS = 7;
-export const DEFAULT_ARCHIVE_DAYS = 15;
+export const DEFAULT_ARCHIVE_DAYS = 30;
 export const MAX_STEPS = 6;
 
 // Claim exception types, in plain words. Keys are the server's exception types.
@@ -109,12 +109,25 @@ export const STANDALONE_DEFAULTS = {
     { number: 3, label: 'HRBP Review', route_role: 'HRBP_HR', sla_hours: 48 },
     { number: 4, label: 'Payroll Review', route_role: 'PAYROLL', sla_hours: 48 },
   ],
+  // The CEO's own claims and travel requests (workflow_service.CEO_REQUESTS_DEFAULT_STAGES).
+  CEO_REQUESTS: [{ number: 1, label: 'HRBP Review', route_role: 'HRBP_HR', sla_hours: 48 }],
+  // Trips the employee booked themselves (workflow_service.SELF_BOOKED_DEFAULT_STAGES).
+  SELF_BOOKED_TRAVEL: [
+    { number: 1, label: 'HRBP Review', route_role: 'HRBP_HR', sla_hours: 48 },
+    { number: 2, label: 'CEO Approval', route_role: 'CEO', sla_hours: 48 },
+  ],
 };
+
+// Steps the CEO's route can't have: the CEO themselves, the per-person manager / department head
+// steps (the CEO reports to nobody), and Finance (a claim goes to Finance after the route on its own).
+export const CEO_ROUTE_EXCLUDED_ROLES = new Set(['CEO', 'FINANCE', 'REPORTING_MANAGER', 'DEPARTMENT_HEAD']);
 
 export const FLOW_NAMES = {
   CLAIMS: 'Claims',
   TRAVEL_REQUEST: 'Travel requests',
   RELOCATION_REQUEST: 'Relocation requests',
+  CEO_REQUESTS: "CEO's requests",
+  SELF_BOOKED_TRAVEL: 'Self-booked travel',
   POLICY_APPROVAL: 'Policy versions',
   [CLAIM_EXCEPTION_FLOW]: EXCEPTION_FLOWS[CLAIM_EXCEPTION_FLOW].name,
   [TRAVEL_EXCEPTION_FLOW]: EXCEPTION_FLOWS[TRAVEL_EXCEPTION_FLOW].name,
@@ -167,10 +180,18 @@ export function sanitizeDays(raw, fallback) {
   return Math.min(Math.floor(n), 365);
 }
 
+/** A step's SLA in working hours, or null for "No SLA" (the step is never passed on). Missing or unreadable: 48. */
 export function sanitizeSlaHours(raw) {
+  if (raw === null) return null;
   const n = typeof raw === 'number' && Number.isFinite(raw) ? Math.floor(raw) : parseInt(String(raw ?? '').trim(), 10);
   if (!Number.isFinite(n) || n < 1) return 48;
   return n;
+}
+
+/** The SLA saved for step `i` of an exception route: null stays "No SLA", missing is 48. */
+export function slaAt(hoursList, i) {
+  const v = hoursList?.[i];
+  return v === undefined ? 48 : v;
 }
 
 export function sanitizeAutoApprove(raw) {

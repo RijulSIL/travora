@@ -20,6 +20,7 @@ import {
   useCanConfigurePolicy,
   versionPhase,
 } from '../../components/policy/PolicyAdminParts';
+import DateInput from '../../components/ui/DateInput';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
 import { adminApi } from '../../services/adminApi';
@@ -289,7 +290,7 @@ function VersionCard({ version, versions, isViewOnly, myTurn, pendingRole, skipp
             <label className="sr-only" htmlFor={`start-${version.id}`}>
               Start date for {version.version_number}
             </label>
-            <input id={`start-${version.id}`} type="date" min={today} className={`${FIELD} h-7 w-[150px] text-xs`} value={date} onChange={(e) => setDate(e.target.value)} />
+            <DateInput id={`start-${version.id}`} min={today} className={`${FIELD} h-7 w-[150px] text-xs`} value={date} onChange={(e) => setDate(e.target.value)} />
             <button type="button" className={`${BTN_MAIN} h-7 rounded-lg px-2.5 text-[11.5px]`} disabled={!date || date === version.effective_from || actions.schedule.loading} onClick={() => actions.schedule.run(version.id, date).catch(() => {})}>
               {version.effective_from ? 'Move start date' : 'Set start date'}
             </button>

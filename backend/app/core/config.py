@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     travel_ticket_storage_dir: str = "storage/travel_tickets"
     relocation_evidence_storage_dir: str = "storage/relocation_evidence"
     travel_id_proof_storage_dir: str = "storage/travel_id_proofs"
+    # Claim auto-approve (the Approval Matrix's "Auto-approve up to" amount and each manager's own
+    # amount on My profile) is hidden for now (2026-11-19): while off, no claim is auto-approved and
+    # the settings aren't shown. Their saved values are kept, so turning this on brings it back.
+    auto_approve_enabled: bool = False
     travel_request_min_lead_working_days: int = 2
     flight_advance_booking_min_days: int = 7
     train_advance_booking_min_days: int = 2

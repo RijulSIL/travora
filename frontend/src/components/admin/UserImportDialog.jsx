@@ -671,7 +671,7 @@ export default function UserImportDialog({ users, roles, managerIds = [], levels
   }
 
   return (
-    <div className="fixed inset-0 z-[95] grid grid-cols-[minmax(0,1fr)] place-items-center bg-slate-900/40 p-4" onMouseDown={() => !busy && onClose()}>
+    <div className="fixed inset-0 z-[95] grid grid-cols-[minmax(0,1fr)] place-items-center bg-slate-900/60 p-4 backdrop-blur-sm" onMouseDown={() => !busy && onClose()}>
       <div
         role="dialog"
         aria-modal="true"

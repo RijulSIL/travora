@@ -6,17 +6,19 @@ import { PageHead, Pill, Tabs } from '../../components/approvals/ApprovalQueuePa
 import { Empty, day, errorText, money, rupees } from '../../components/finance/FinanceParts';
 import { CARD } from '../../components/policy/PolicyAdminParts';
 import { CLAIM_STAGE } from '../../components/reports/statusPalette';
+import DateInput from '../../components/ui/DateInput';
 import Pagination from '../../components/ui/Pagination';
 import Skeleton from '../../components/ui/Skeleton';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { usePagination } from '../../hooks/usePagination';
 import { reimbursementApi } from '../../services/reimbursementApi';
+import { formatDate } from '../../utils/formatters';
 
 const CATEGORY = { TRAVEL: ['Travel', 'sky'], GENERAL: ['General', 'violet'], RELOCATION: ['Relocation', 'orange'] };
 const TAB_ORDER = ['PENDING_EXCEPTION', 'IN_APPROVAL', 'ON_HOLD', 'READY_FOR_PAYMENT', 'PAID', 'SENT_BACK', 'REJECTED'];
 const INPUT = 'h-8 rounded-[10px] border border-slate-200 bg-white px-2.5 text-[12.5px] text-ink outline-none focus:border-brand';
 const COLS = 'lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_150px_130px]';
-const shortDay = (v) => (v ? new Date(v).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '');
+const shortDay = (v) => (v ? formatDate(v) : '');
 
 function StatusPill({ status }) {
   const [label, color] = CLAIM_STAGE[status] || [String(status || '').replace(/_/g, ' '), '#94a3b8'];
@@ -105,9 +107,9 @@ export default function AllClaimsPage() {
           <input className={`${INPUT} w-[230px] pl-8`} placeholder="Search claim, employee or city" value={query} onChange={(e) => setQuery(e.target.value)} />
         </label>
         <span className="text-xs text-slate-500">Submitted</span>
-        <input aria-label="Submitted from" type="date" className={INPUT} value={from} onChange={(e) => setFrom(e.target.value)} />
+        <DateInput aria-label="Submitted from" className={INPUT} value={from} onChange={(e) => setFrom(e.target.value)} />
         <span className="text-xs text-slate-500">to</span>
-        <input aria-label="Submitted until" type="date" className={INPUT} value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} />
+        <DateInput aria-label="Submitted until" className={INPUT} value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} />
         {category || query || from || to ? (
           <button
             type="button"

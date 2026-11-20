@@ -1,7 +1,8 @@
-import { AlertTriangle, ArrowLeft, Check, CheckCircle2, Download, Lock } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Check, CheckCircle2, Download, Lock, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
+import DateInput from '../components/ui/DateInput';
 import PdfPages from '../components/ui/PdfPages';
 import { useSetPageTitle } from '../context/PageTitleContext';
 import { useAsyncAction } from '../hooks/useAsyncAction';
@@ -142,8 +143,17 @@ function useDocumentView({ blob, contentType, filename, emptyText }) {
 
 export default function InvoiceReview() {
   const { invoiceId } = useParams();
-  const navigate = useNavigate();
   useSetPageTitle('Review invoice');
+  return <InvoiceReviewBody invoiceId={invoiceId} />;
+}
+
+/**
+ * The review itself: the document beside what we read. On its own page it goes back to the
+ * invoices after saving. `embedded` (opened over a claim form, see ClaimWizardStepEvidence)
+ * swaps the links out for a close button and hands the saved invoice to `onSaved` instead.
+ */
+export function InvoiceReviewBody({ invoiceId, embedded = false, intro = '', onSaved, onClose }) {
+  const navigate = useNavigate();
   const { showToast } = useToast();
   const [invoice, setInvoice] = useState(null);
   const [values, setValues] = useState({});
@@ -209,10 +219,15 @@ export default function InvoiceReview() {
         confirmed,
       };
     });
-    await reimbursementApi.updateInvoiceFields(invoiceId, {
+    const saved = await reimbursementApi.updateInvoiceFields(invoiceId, {
       duplicate_acknowledged: duplicateAcknowledged,
       fields: fieldsPayload,
     });
+    if (embedded) {
+      showToast(saved.data?.status === 'REVIEWED' ? 'Review saved. The bill can go on this claim' : 'Review saved', 'success');
+      onSaved?.(saved.data);
+      return;
+    }
     await load();
     showToast('Review saved successfully', 'success');
     setShowSuccessModal(true);
@@ -256,19 +271,19 @@ export default function InvoiceReview() {
       const tone = confidenceTone(field.confidence);
       const val = normalizeStr(values[field.field_key]);
       const state = actionState[field.field_key] || 'pending';
-      const orig = normalizeStr(originals[field.field_key]);
 
       if (tone === 'red' && !val) return false;
       if (tone === 'yellow' && state !== 'confirmed' && state !== 'edited') return false;
+      // Hard to read: correct it, or confirm what we read with "Looks right" when it's right.
+      // (It used to have to differ from what we read, which made a correct reading impossible
+      // to get past; the server only ever asked for it to be confirmed.)
       if (tone === 'orange') {
         if (!val) return false;
-        const corrected = orig === '' ? val.length > 0 : val !== orig;
-        if (!corrected) return false;
         if (state !== 'edited' && state !== 'confirmed') return false;
       }
     }
     return true;
-  }, [invoice, values, actionState, duplicateAcknowledged, originals, isLocked]);
+  }, [invoice, values, actionState, duplicateAcknowledged, isLocked]);
 
   /** What still stops the review from being saved — the same checks as canSave, one per item. */
   const blockers = useMemo(() => {
@@ -281,19 +296,16 @@ export default function InvoiceReview() {
       const label = FIELD_LABELS[field.field_key] || field.field_key;
       const state = actionState[field.field_key] || 'pending';
       const val = normalizeStr(values[field.field_key]);
-      const orig = normalizeStr(originals[field.field_key]);
       const k = field.field_key;
       if (tone === 'red' && !val) out.push({ key: k, text: `Fill in ${label.toLowerCase()}` });
       if (tone === 'yellow' && state !== 'confirmed' && state !== 'edited') out.push({ key: k, text: `Check ${label.toLowerCase()}` });
       if (tone === 'orange') {
-        const corrected = orig === '' ? val.length > 0 : val !== orig;
-        if (!val) out.push({ key: k, text: `Correct ${label.toLowerCase()}` });
-        else if (!corrected) out.push({ key: k, text: `Correct ${label.toLowerCase()} (it must differ from what we read)` });
-        else if (state !== 'edited' && state !== 'confirmed') out.push({ key: k, text: `Confirm ${label.toLowerCase()}` });
+        if (!val) out.push({ key: k, text: `Fill in ${label.toLowerCase()}` });
+        else if (state !== 'edited' && state !== 'confirmed') out.push({ key: k, text: `Check ${label.toLowerCase()} (it was hard to read)` });
       }
     }
     return out;
-  }, [invoice, values, actionState, duplicateAcknowledged, originals]);
+  }, [invoice, values, actionState, duplicateAcknowledged]);
 
   const onFieldChange = (fieldKey, newValue, field) => {
     setValues((current) => ({ ...current, [fieldKey]: newValue }));
@@ -303,11 +315,10 @@ export default function InvoiceReview() {
       setActionState((s) => ({ ...s, [fieldKey]: 'edited' }));
     }
     if (tone === 'orange' || tone === 'red') {
-      if (normalizeStr(newValue) !== normalizeStr(originals[fieldKey])) {
-        setActionState((s) => ({ ...s, [fieldKey]: 'edited' }));
-      } else if (tone === 'red') {
-        setActionState((s) => ({ ...s, [fieldKey]: 'pending' }));
-      }
+      // Typed back to exactly what we read: that isn't a correction, so it waits for
+      // "Looks right" again (rather than showing "Corrected" for an unchanged value).
+      const changed = normalizeStr(newValue) !== normalizeStr(originals[fieldKey]);
+      setActionState((s) => ({ ...s, [fieldKey]: changed ? 'edited' : 'pending' }));
     }
   };
 
@@ -342,9 +353,15 @@ export default function InvoiceReview() {
     return (
       <div className="rounded-lg border border-red-200 bg-red-50 p-6 text-center">
         <p className="text-sm font-semibold text-red-700">Invoice not found.</p>
-        <Link className="mt-4 inline-flex items-center text-sm font-medium text-red-700 underline" to="/invoices">
-          Back to uploads
-        </Link>
+        {embedded ? (
+          <button type="button" onClick={onClose} className="mt-4 inline-flex items-center text-sm font-medium text-red-700 underline">
+            Close
+          </button>
+        ) : (
+          <Link className="mt-4 inline-flex items-center text-sm font-medium text-red-700 underline" to="/invoices">
+            Back to uploads
+          </Link>
+        )}
       </div>
     );
   }
@@ -366,7 +383,8 @@ export default function InvoiceReview() {
     if (state === 'edited') return { tone: 'ok', text: tone === 'red' ? 'Filled in' : 'Corrected', icon: Check };
     if (tone === 'yellow' && OPTIONAL_FIELD_KEYS.has(k)) return { tone: 'muted', text: 'Optional · check if you like', action: () => confirmYellow(k) };
     if (tone === 'yellow') return { tone: 'amber', text: 'Check this', need: true, action: () => confirmYellow(k) };
-    if (tone === 'orange') return { tone: 'rose', text: 'Unclear, correct it', need: true };
+    if (tone === 'orange' && !val) return { tone: 'rose', text: 'Hard to read, fill it in', need: true };
+    if (tone === 'orange') return { tone: 'rose', text: 'Hard to read, check it', need: true, action: () => confirmYellow(k) };
     if (!val && !OPTIONAL_FIELD_KEYS.has(k)) return { tone: 'rose', text: 'Missing, fill it in', missing: true };
     if (!val) return { tone: 'muted', text: 'Not on the invoice?' };
     return { tone: 'muted', text: 'Couldn’t read · check it' };
@@ -387,6 +405,20 @@ export default function InvoiceReview() {
           />
           Booked under Tatkal
         </label>
+      );
+    }
+    if (k === 'invoice_date') {
+      // Held as 'YYYY-MM-DD'; shown and typed as DD/MM/YYYY.
+      return (
+        <DateInput
+          className={`w-full rounded-[9px] border border-slate-200 bg-white pl-2.5 text-ink outline-none transition-colors focus:border-brand disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500 ${
+            large ? 'h-10 font-mono text-lg font-semibold' : 'h-[34px] text-[13px]'
+          }`}
+          value={values[k] ?? ''}
+          onChange={(event) => onFieldChange(k, event.target.value, field)}
+          disabled={isLocked}
+          aria-label={FIELD_LABELS[k] || k}
+        />
       );
     }
     const isMoney = MONEY_FIELD_KEYS.has(k) && !(k === 'grand_total' && isForeignInvoice);
@@ -507,13 +539,30 @@ export default function InvoiceReview() {
   return (
     <section className="flex flex-col gap-3.5">
       <div>
-        <div className="flex min-w-0 items-center gap-1.5 text-xs text-slate-500">
-          <Link to="/invoices" className="inline-flex items-center gap-1 font-bold text-brand hover:underline">
-            <ArrowLeft size={13} /> Invoices
-          </Link>
-          <span>/</span>
-          <span className="truncate">{invoice.original_filename}</span>
-        </div>
+        {embedded ? (
+          <div className="flex min-w-0 items-center justify-between gap-2 text-xs text-slate-500">
+            <span className="truncate">
+              <b className="text-ink">Review the bill</b> · {invoice.original_filename}
+            </span>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close the review"
+              title="Close (your changes here aren't saved)"
+              className="grid h-8 w-8 flex-none place-items-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        ) : (
+          <div className="flex min-w-0 items-center gap-1.5 text-xs text-slate-500">
+            <Link to="/invoices" className="inline-flex items-center gap-1 font-bold text-brand hover:underline">
+              <ArrowLeft size={13} /> Invoices
+            </Link>
+            <span>/</span>
+            <span className="truncate">{invoice.original_filename}</span>
+          </div>
+        )}
         <div className="mt-0.5 flex flex-wrap items-end justify-between gap-3">
           <div className="min-w-0">
             <h1 className="truncate text-[21px] font-extrabold text-ink">{vendor}</h1>
@@ -539,6 +588,13 @@ export default function InvoiceReview() {
         </div>
       </div>
 
+      {embedded && intro ? (
+        <div className="flex items-start gap-2.5 rounded-xl border border-sky-200 bg-sky-50 px-3.5 py-2.5 text-[12.5px] text-sky-900" role="status">
+          <AlertTriangle size={15} className="mt-0.5 flex-none text-sky-600" />
+          <span>{intro}</span>
+        </div>
+      ) : null}
+
       {isLocked ? (
         <div className="flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-3 text-[12.5px] text-amber-900">
           <Lock size={15} className="mt-0.5 flex-none text-amber-600" />
@@ -554,7 +610,9 @@ export default function InvoiceReview() {
         {/* Document */}
         <section
           aria-label="Invoice document"
-          className="flex h-[520px] flex-col overflow-hidden rounded-[14px] border border-slate-200 bg-white lg:sticky lg:top-[72px] lg:h-[calc(100vh-88px)] lg:max-h-[900px]"
+          className={`flex h-[520px] flex-col overflow-hidden rounded-[14px] border border-slate-200 bg-white lg:sticky lg:max-h-[900px] ${
+            embedded ? 'lg:top-0 lg:h-[calc(100vh-96px)]' : 'lg:top-[72px] lg:h-[calc(100vh-88px)]'
+          }`}
         >
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-2.5 py-2">
             <span className="px-1.5 text-xs font-bold text-ink">Invoice</span>
@@ -771,10 +829,20 @@ export default function InvoiceReview() {
                   ? `On ${invoice.linked_claim_reference || 'a claim'}`
                   : blockers.length
                     ? blockers.map((b) => b.text).join(' · ')
-                    : 'You can now put this invoice on a claim.'}
+                    : embedded
+                      ? 'Save it and the bill is ready for this claim.'
+                      : 'You can now put this invoice on a claim.'}
               </span>
             </div>
-            {isLocked ? (
+            {isLocked && embedded ? (
+              <button
+                type="button"
+                onClick={onClose}
+                className="inline-flex h-[34px] items-center rounded-[9px] border border-slate-700 bg-slate-800 px-3 text-xs font-bold text-slate-200 hover:bg-slate-700"
+              >
+                Close
+              </button>
+            ) : isLocked ? (
               <Link to="/invoices" className="inline-flex h-[34px] items-center rounded-[9px] border border-slate-700 bg-slate-800 px-3 text-xs font-bold text-slate-200 hover:bg-slate-700">
                 Back to invoices
               </Link>

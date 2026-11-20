@@ -121,12 +121,26 @@ class TravelRequest(Base):
     id_proof_ref: Mapped[str | None] = mapped_column(String(80))
     id_proof_filename: Mapped[str | None] = mapped_column(String(255))
     id_proof_content_type: Mapped[str | None] = mapped_column(String(128))
+    # VEG / NON_VEG for this trip (filled in from the traveller's profile, changeable per request).
+    meal_preference: Mapped[str | None] = mapped_column(String(16))
+    # Optional — needed for international travel.
+    passport_number: Mapped[str | None] = mapped_column(String(32))
+    passport_expiry: Mapped[date | None] = mapped_column(Date)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default=TravelRequestStatus.PENDING.value, index=True)
     rejection_reason: Mapped[str | None] = mapped_column(Text)
     # Which TravelRequestApprovalStage.stage_number is currently active — mirrors
     # ClaimDraft.current_approval_stage. None once the request leaves PENDING (approved/
     # rejected/cancelled) or while it's gated behind an exception (same as claims).
     current_approval_stage: Mapped[int | None] = mapped_column(Integer)
+    # "CEO_REQUESTS" on the CEO's own requests (the Approval Matrix's CEO's requests route),
+    # "SELF_BOOKED_TRAVEL" on trips the employee booked themselves; NULL = the travel request
+    # route. Set when the route is set up.
+    approval_route: Mapped[str | None] = mapped_column(String(32))
+    # COMPANY: the travel agent books it once approved. SELF: the employee booked their own tickets
+    # and attached one per leg with the request — booked as soon as it's approved, no agent.
+    booked_by: Mapped[str] = mapped_column(String(16), nullable=False, default="COMPANY", server_default="COMPANY")
+    # When the Travel Desk cancelled this booked trip (travel_request_service.cancel_booked_trip).
+    desk_cancelled_at: Mapped[datetime | None] = mapped_column(DateTime)
     requested_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now(), onupdate=func.now()

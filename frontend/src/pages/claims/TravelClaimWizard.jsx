@@ -18,8 +18,10 @@ import ClaimExceptionsModal from '../../components/claims/ClaimExceptionsModal';
 import TicketPreviewDrawer from '../../components/ui/TicketPreviewDrawer';
 import ClaimSubmitAnimation from '../../components/ui/ClaimSubmitAnimation';
 import { useSetPageTitle } from '../../context/PageTitleContext';
+import useBillUploads from '../../components/claims/useBillUploads';
 import useToast from '../../hooks/useToast';
 import { reimbursementApi } from '../../services/reimbursementApi';
+import { formatDate } from '../../utils/formatters';
 
 const STEP_LABELS = ['Trip', 'Invoices', 'Policy check', 'Submit'];
 // The Relocation Claim form (`relocation`): raised against an approved relocation,
@@ -97,7 +99,15 @@ export default function TravelClaimWizard({ relocation = false }) {
   const [invoices, setInvoices] = useState([]);
   const [selectedTripIds, setSelectedTripIds] = useState(tripIdsFromUrl);
   const [selectedInvoiceIds, setSelectedInvoiceIds] = useState(invoiceIdsFromUrl);
-  const [uploadingInvoice, setUploadingInvoice] = useState(false);
+  // Bills uploaded from inside the form are tagged for this claim's type (Travel, or Relocation
+  // on a relocation claim) and ticked as each one comes in.
+  const { uploading: uploadingInvoice, uploadBills } = useBillUploads({
+    category: isRelocation ? 'RELOCATION' : 'TRAVEL',
+    onUploaded: (row) => {
+      setInvoices((prev) => [row, ...prev.filter((item) => item.id !== row.id)]);
+      setSelectedInvoiceIds((prev) => [...new Set([...prev, row.id])]);
+    },
+  });
   const [drawer, setDrawer] = useState({ open: false, blob: null, name: '', type: '', title: '' });
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -137,7 +147,9 @@ export default function TravelClaimWizard({ relocation = false }) {
     let cancelled = false;
     (async () => {
       const [tripOutcome, invoiceOutcome, meOutcome, optionsOutcome] = await Promise.allSettled([
-        reimbursementApi.bookingTripsMy({ unlinked_only: true, editing_claim_id: effectiveEditId || undefined }),
+        // Every trip still in its claim window, including ones already on other claims (a trip can
+        // go on several claims); each carries claim_references so the list can say so.
+        reimbursementApi.bookingTripsMy({ claimable: true, editing_claim_id: effectiveEditId || undefined }),
         reimbursementApi.invoices({ unlinked: true, editing_claim_id: effectiveEditId || undefined }),
         reimbursementApi.me(),
         reimbursementApi.travelOptions(),
@@ -285,12 +297,15 @@ export default function TravelClaimWizard({ relocation = false }) {
     [invoices, isRelocation],
   );
 
-  const reviewWarning = useMemo(() => {
-    const selected = invoices.filter((invoice) => selectedInvoiceIds.includes(invoice.id));
-    return selected.some((invoice) => invoice.status !== 'REVIEWED')
-      ? 'Review this invoice before submitting'
-      : '';
-  }, [invoices, selectedInvoiceIds]);
+  // A bill reviewed from the Invoices step: take its new status and amount, and tick it.
+  const onInvoiceReviewed = (row) => {
+    setInvoices((prev) =>
+      prev.map((item) =>
+        item.id === row.id ? { ...item, status: row.status, total_amount: row.total_amount, extraction_error: row.extraction_error } : item,
+      ),
+    );
+    if (row.status === 'REVIEWED') setSelectedInvoiceIds((prev) => [...new Set([...prev, row.id])]);
+  };
 
   const sentBackHint = claim?.status === 'SENT_BACK' ? 'Invoice missing — add hotel invoice.' : '';
 
@@ -314,6 +329,8 @@ export default function TravelClaimWizard({ relocation = false }) {
           legs: sortedLegs,
           tripIds: sortedLegs.map((leg) => leg.id),
           hasIssuedTicket: sortedLegs.some((leg) => leg.desk_ticket_id != null),
+          // Other claims this trip is already on (any of its legs).
+          claimRefs: [...new Set(sortedLegs.flatMap((leg) => leg.claim_references || []))],
           // The request's actual trip_type (ONE_WAY/ROUND_TRIP/MULTI_CITY) — leg count alone
           // can't tell a round trip (2 legs, same pair of cities) apart from a genuine
           // multi-city itinerary (2+ legs through different cities).
@@ -444,7 +461,7 @@ export default function TravelClaimWizard({ relocation = false }) {
       setDeadlineWarning({
         tone: 'amber',
         title: 'Late claim',
-        text: `The trip ended more than ${windowDays.lateDays} days ago. You can still claim it until ${claimState.lastDay.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}: you'll give a reason when you submit, and it goes to the exception approvers.`,
+        text: `The trip ended more than ${windowDays.lateDays} days ago. You can still claim it until ${formatDate(claimState.lastDay)}: you'll give a reason when you submit, and it goes to the exception approvers.`,
       });
     } else {
       setDeadlineWarning(null);
@@ -517,34 +534,6 @@ export default function TravelClaimWizard({ relocation = false }) {
     } finally {
       setSaving(false);
     }
-  };
-
-  const onUploadInvoice = () => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.pdf,.jpg,.jpeg,.png';
-    input.onchange = async () => {
-      const file = input.files?.[0];
-      if (!file) return;
-      const formData = new FormData();
-      formData.append('file', file);
-      // Quick-uploading from inside the wizard tags the invoice for this claim's type — Travel,
-      // or Relocation on a relocation claim.
-      formData.append('reimbursement_category', isRelocation ? 'RELOCATION' : 'TRAVEL');
-      setUploadingInvoice(true);
-      try {
-        const uploaded = await reimbursementApi.uploadInvoice(formData);
-        const row = uploaded.data;
-        setInvoices((prev) => [row, ...prev.filter((item) => item.id !== row.id)]);
-        setSelectedInvoiceIds((prev) => [...new Set([...prev, row.id])]);
-        showToast('Invoice uploaded', 'success');
-      } catch {
-        showToast('Invoice upload failed', 'error');
-      } finally {
-        setUploadingInvoice(false);
-      }
-    };
-    input.click();
   };
 
   const previewTicket = async (trip) => {
@@ -760,6 +749,7 @@ export default function TravelClaimWizard({ relocation = false }) {
           onNext={goStep2}
           onResolveCityGroup={resolveDestinationCity}
           tripGroups={tripGroups}
+          windowDays={windowDays}
           selectedTripIds={selectedTripIds}
           onToggleTripGroup={(tripIds, checked) =>
             setSelectedTripIds((prev) =>
@@ -781,10 +771,10 @@ export default function TravelClaimWizard({ relocation = false }) {
               checked ? [...new Set([...prev, invoiceId])] : prev.filter((item) => item !== invoiceId),
             )
           }
-          onUploadInvoice={onUploadInvoice}
+          onUploadFiles={uploadBills}
+          onInvoiceReviewed={onInvoiceReviewed}
           uploading={uploadingInvoice}
           busy={saving}
-          reviewWarning={reviewWarning}
           sentBackHint={sentBackHint}
           onBack={() => setCurrentStep(1)}
           onNext={goStep3}
@@ -815,7 +805,7 @@ export default function TravelClaimWizard({ relocation = false }) {
           onToggle={setUndertakingAccepted}
           onBack={() => setCurrentStep(3)}
           onSubmit={submit}
-          submitting={submitting || saving || uploadingInvoice}
+          submitting={submitting || saving || Boolean(uploadingInvoice)}
         />
       ) : null}
 
@@ -839,7 +829,7 @@ export default function TravelClaimWizard({ relocation = false }) {
           onToggleDeclaration={setDeclarationChecked}
           onBack={() => setCurrentStep(3)}
           onSubmit={submit}
-          submitting={submitting || saving || uploadingInvoice}
+          submitting={submitting || saving || Boolean(uploadingInvoice)}
         />
       ) : null}
 

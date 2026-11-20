@@ -2,6 +2,7 @@ import { ArrowRight, Eye, EyeOff } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
+import AuthBrandPanel, { AuthMobileLogo } from '../../components/auth/AuthBrandPanel';
 import useFormValidation from '../../hooks/useFormValidation';
 import api from '../../services/api';
 import { setSession } from '../../store/authStore';
@@ -70,28 +71,8 @@ export default function LoginPage() {
 
   return (
     <div className="flex min-h-screen w-full bg-slate-50">
-      {/* Left Image Panel (Hidden on mobile) */}
-      <div className="relative hidden w-1/2 lg:block overflow-hidden">
-        {/* Background Image: Corporate Travel / Airport */}
-        <img 
-          src="https://images.unsplash.com/photo-1436491865332-7a61a109cc05?q=80&w=2074&auto=format&fit=crop" 
-          alt="Corporate Travel" 
-          className="absolute inset-0 h-full w-full object-cover transition-transform duration-10000 hover:scale-105"
-        />
-        {/* Overlays for contrast and branding */}
-        <div className="absolute inset-0 bg-brand/60 mix-blend-multiply" />
-        <div className="absolute inset-0 bg-gradient-to-t from-slate-900/90 via-slate-900/40 to-transparent" />
-        
-        {/* Overlay Content */}
-        <div className="absolute bottom-16 left-16 right-16 text-white">
-          <h2 className="text-4xl font-extrabold tracking-tight mb-4 leading-tight">
-            Simplify Your Corporate Travel & Expenses
-          </h2>
-          <p className="text-lg text-white/80 font-medium leading-relaxed max-w-xl">
-            Experience a seamless, unified platform for booking trips, managing approvals, and settling reimbursements instantly. Built for the modern enterprise.
-          </p>
-        </div>
-      </div>
+      {/* Left photo panel with the logo (hidden on mobile) — shared by every sign-in screen */}
+      <AuthBrandPanel />
 
       {/* Right Login Panel */}
       <div className="flex w-full items-center justify-center lg:w-1/2 p-6 lg:p-12 relative overflow-hidden bg-white">
@@ -101,8 +82,8 @@ export default function LoginPage() {
         </div>
 
         <div className="relative z-10 w-full max-w-[400px]">
-          <div className="mb-10 text-left">
-            <img src="/assets/travora-si-logo.png" alt="Travora" className="mx-auto mb-6 h-28 w-auto object-contain" />
+          <div className="mb-8 text-left">
+            <AuthMobileLogo />
             <h1 className="text-3xl font-extrabold tracking-tight text-slate-900">
               {mfaToken ? 'Verify your identity' : 'Welcome back'}
             </h1>
@@ -244,8 +225,8 @@ export default function LoginPage() {
             </form>
           )}
 
-          <div className="mt-10 text-center lg:text-left">
-            <Link to="/" className="inline-flex items-center gap-1 text-[13px] font-semibold text-slate-400 hover:text-slate-600 transition-colors">
+          <div className="mt-6 text-center lg:text-left">
+            <Link to="/"className="inline-flex items-center gap-1 text-[13px] font-semibold text-slate-400 hover:text-slate-600 transition-colors">
               &larr; Back to Landing Page
             </Link>
           </div>

@@ -1,5 +1,7 @@
 import { Check } from 'lucide-react';
 
+import { formatDatetime } from '../../utils/formatters';
+
 export default function ClaimApprovalStepper({
   stages = [],
   currentStageNumber,
@@ -67,9 +69,9 @@ export default function ClaimApprovalStepper({
                     : ownSkipped
                     ? "Skipped — can't approve own claim"
                     : s.status === 'PENDING' && s.sla_deadline_at
-                    ? `SLA ${new Date(s.sla_deadline_at).toLocaleString()}`
+                    ? `SLA ${formatDatetime(s.sla_deadline_at)}`
                     : s.decided_at
-                      ? new Date(s.decided_at).toLocaleString()
+                      ? formatDatetime(s.decided_at)
                       : '—'}
                 </div>
               </div>

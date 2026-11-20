@@ -2,9 +2,11 @@ import { Clock, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
+import DateInput from '../../components/ui/DateInput';
 import { TipBody, useFloatingTip } from '../../components/ui/FloatingTip';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { reimbursementApi } from '../../services/reimbursementApi';
+import { formatDate } from '../../utils/formatters';
 
 /*
  * Team Spend: what a manager's team has claimed and where it goes. Everything is worked out from
@@ -309,7 +311,7 @@ export default function TeamSpend() {
   const periodLabel =
     filters.period === 'custom'
       ? filters.from || filters.to
-        ? `${filters.from || '…'} to ${filters.to || 'today'}`
+        ? `${formatDate(filters.from) || '…'} to ${formatDate(filters.to) || 'today'}`
         : 'Custom dates'
       : PERIODS.find(([k]) => k === filters.period)?.[1];
   const chips = [
@@ -357,11 +359,11 @@ export default function TeamSpend() {
           <>
             <label className={selectBox(true)}>
               From
-              <input type="date" className={selectInput} value={filters.from} onChange={(e) => setFilter('from', e.target.value)} />
+              <DateInput className={selectInput} value={filters.from} onChange={(e) => setFilter('from', e.target.value)} />
             </label>
             <label className={selectBox(true)}>
               To
-              <input type="date" className={selectInput} value={filters.to} onChange={(e) => setFilter('to', e.target.value)} />
+              <DateInput className={selectInput} value={filters.to} onChange={(e) => setFilter('to', e.target.value)} />
             </label>
           </>
         ) : null}
@@ -597,7 +599,7 @@ export default function TeamSpend() {
                       <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${TYPES[c.type]?.pill || TYPES.TRAVEL.pill}`}>{TYPES[c.type]?.label || c.type}</span>
                       <div className="mt-0.5 text-xs text-slate-500">
                         {c.person} · {claimSub(c)}
-                        {c.submitted ? ` · submitted ${c.submitted.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}` : ''}
+                        {c.submitted ? ` · submitted ${formatDate(c.submitted)}` : ''}
                       </div>
                     </div>
                     <span className={`col-start-1 row-start-2 justify-self-start whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-bold sm:col-start-2 sm:row-start-1 ${statusPill}`}>

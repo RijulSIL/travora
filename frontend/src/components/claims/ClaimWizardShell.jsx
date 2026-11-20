@@ -1,5 +1,7 @@
 import { AlertTriangle, ArrowLeft, ArrowRight, Check, CheckCircle2, Info, MapPin } from 'lucide-react';
 
+import { formatDate } from '../../utils/formatters';
+
 /** ₹12,345.67 */
 export function inr(value) {
   return `₹${Number(value || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -12,18 +14,17 @@ export function foreignAmount(invoice) {
   return `${match[1]} ${Number(match[2].replace(/,/g, '')).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 }
 
-/** "14 Oct" */
+/** "14/10/2026" */
 export function dayMonth(value) {
-  return value ? new Date(`${String(value).slice(0, 10)}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '';
+  return value ? formatDate(String(value).slice(0, 10)) : '';
 }
 
-/** "14 – 16 Oct 2026" style span, or one date. */
+/** "14/10/2026 – 16/10/2026" span, or one date. */
 export function dateSpan(start, end) {
   if (!start) return '';
-  const fmt = (v, withYear) =>
-    new Date(`${String(v).slice(0, 10)}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', ...(withYear ? { year: 'numeric' } : {}) });
-  if (!end || String(end).slice(0, 10) === String(start).slice(0, 10)) return fmt(start, true);
-  return `${fmt(start, false)} – ${fmt(end, true)}`;
+  const fmt = (v) => formatDate(String(v).slice(0, 10));
+  if (!end || String(end).slice(0, 10) === String(start).slice(0, 10)) return fmt(start);
+  return `${fmt(start)} – ${fmt(end)}`;
 }
 
 export const FIELD =
@@ -164,10 +165,13 @@ function Row({ label, children }) {
 
 /**
  * "Your claim" — what's on the claim so far.
+ * policyStep: the step that checks policy; leave it out for a form with no policy (general
+ * reimbursement) and there's no Policy line.
  * policy: null (not checked yet) or { over, blocked, approved } counts.
  */
 export function ClaimSummaryCard({ trip, bookings, invoiceCount, invoiceTotal, policyStep, policy, advance, payable }) {
-  const checked = policy != null;
+  const hasPolicy = policyStep != null;
+  const checked = hasPolicy && policy != null;
   return (
     <section className="overflow-hidden rounded-[14px] border border-slate-200 bg-white" aria-label="Your claim">
       <div className="border-b border-slate-100 px-4 py-[13px]">
@@ -191,21 +195,23 @@ export function ClaimSummaryCard({ trip, bookings, invoiceCount, invoiceTotal, p
         <Row label="Invoices">
           {invoiceCount} · <span className="font-mono tabular-nums">{inr(invoiceTotal)}</span>
         </Row>
-        <Row label="Policy">
-          {!checked ? (
-            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-500">Checked at step {policyStep}</span>
-          ) : policy.blocked ? (
-            <span className="rounded-full bg-rose-50 px-2 py-0.5 text-[11px] font-bold text-rose-700">{policy.blocked} not allowed</span>
-          ) : policy.over ? (
-            <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-700">
-              {policy.over} need{policy.over === 1 ? 's' : ''} an exception
-            </span>
-          ) : (
-            <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700">
-              {policy.approved ? 'Exceptions in place' : 'All within policy'}
-            </span>
-          )}
-        </Row>
+        {hasPolicy ? (
+          <Row label="Policy">
+            {!checked ? (
+              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-500">Checked at step {policyStep}</span>
+            ) : policy.blocked ? (
+              <span className="rounded-full bg-rose-50 px-2 py-0.5 text-[11px] font-bold text-rose-700">{policy.blocked} not allowed</span>
+            ) : policy.over ? (
+              <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-700">
+                {policy.over} need{policy.over === 1 ? 's' : ''} an exception
+              </span>
+            ) : (
+              <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-bold text-emerald-700">
+                {policy.approved ? 'Exceptions in place' : 'All within policy'}
+              </span>
+            )}
+          </Row>
+        ) : null}
         {Number(advance) > 0 ? (
           <Row label="Advance received">
             <span className="font-mono tabular-nums">− {inr(advance)}</span>

@@ -7,6 +7,8 @@ from __future__ import annotations
 from datetime import date
 from html import escape
 
+from app.core.timezone import format_weekday_date
+
 BRAND = "#116149"
 BRAND_DARK = "#0b4434"
 INK = "#1f2a37"
@@ -32,7 +34,7 @@ MODE_LABELS = {"TRAIN": "Train", "FLIGHT": "Flight", "BUS": "Bus"}
 
 
 def _day(d: date | None) -> str:
-    return d.strftime("%a, %d %b %Y") if d else "Date to be confirmed"
+    return format_weekday_date(d, "Date to be confirmed")
 
 
 def _windows(codes) -> str:
@@ -118,11 +120,15 @@ def build_agent_booking_email(
     legs: list[dict],
     id_name: str | None = None,
     id_type: str | None = None,
+    meal: str | None = None,
+    has_passport: bool = False,
     eligibility: str,
     notes: str | None,
     link: str,
 ) -> tuple[str, str, str]:
-    """(subject, plain text, html). `legs`: [{label, mode, from_city, to_city, travel_date, pick}]."""
+    """(subject, plain text, html). `legs`: [{label, mode, from_city, to_city, travel_date, pick}].
+    `meal`: "Veg" / "Non-veg". The passport number itself is only on the booking page, never in
+    the email — `has_passport` just says it's there."""
     first = legs[0] if legs else {}
     route = f"{first.get('from_city') or '—'} → {first.get('to_city') or '—'}"
     subject = f"Tickets needed: {traveller}, {route} — {reference}"
@@ -135,6 +141,8 @@ def build_agent_booking_email(
         f"Reference: {reference}",
         f"Traveller: {traveller}",
         *([f"Name as per ID: {id_name}" + (f" ({id_type})" if id_type else "")] if id_name else []),
+        *([f"Meal preference: {meal}"] if meal else []),
+        *(["Passport: on the booking page"] if has_passport else []),
         f"Trip: {trip}",
         f"Eligible for: {eligibility}",
         "",
@@ -195,6 +203,8 @@ def build_agent_booking_email(
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
         {_fact("Traveller", escape(traveller), False)}
         {_fact("Name as per ID", escape(id_name + (f" ({id_type})" if id_type else "")), True) if id_name else ""}
+        {_fact("Meal preference", escape(meal), True) if meal else ""}
+        {_fact("Passport", "Number and expiry are on the booking page", True) if has_passport else ""}
         {_fact("Trip", escape(trip), True)}
         {_fact("Eligible for", _eligibility_html(eligibility), True)}
       </table>

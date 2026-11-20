@@ -45,11 +45,15 @@ const addDays = (date, days) => {
   return next;
 };
 
-/** The claim window settings from the profile (Approval Matrix): late after, archived after. */
+/**
+ * The claim window settings from the profile (Approval Matrix): late after, archived after. The
+ * CEO has no limits, so a late claim is never an exception for them: on time until archived.
+ */
 export function claimWindowDays(profile) {
+  const archiveDays = profile?.workflow_claim_archive_after_days || 30;
   return {
-    lateDays: profile?.workflow_claim_late_after_days || 7,
-    archiveDays: profile?.workflow_claim_archive_after_days || 15,
+    lateDays: profile?.role === 'CEO' ? archiveDays : profile?.workflow_claim_late_after_days || 7,
+    archiveDays,
   };
 }
 
@@ -114,10 +118,21 @@ export function describeRequest(request, chain, { trips = [], unclaimedIds = new
   const excStages = (chain?.exception_stages || []).filter((s) => !exc || s.exception_request_id === exc.id);
   const stages = chain?.stages || [];
   const past = Boolean(end && end < now);
+  // A booked trip the Travel Desk cancelled: listed under Past, greyed and struck through, and it
+  // doesn't open. (A request cancelled before it was booked stays under Cancelled & rejected.)
+  const cancelledBooking = isCancelledBooking(request);
+  const selfBooked = request.booked_by === 'SELF';
   // A trip more than the archive window past its to date is archived: it can no longer be claimed.
-  const claimState = past ? claimWindow(end, windowDays, now) : null;
-  const bucket =
-    status === 'CANCELLED' || status === 'REJECTED' ? 'cancelled' : claimState?.state === 'archived' ? 'archived' : past ? 'past' : 'upcoming';
+  const claimState = past && !cancelledBooking ? claimWindow(end, windowDays, now) : null;
+  const bucket = cancelledBooking
+    ? 'past'
+    : status === 'CANCELLED' || status === 'REJECTED'
+      ? 'cancelled'
+      : claimState?.state === 'archived'
+        ? 'archived'
+        : past
+          ? 'past'
+          : 'upcoming';
 
   let pill = cap(String(status || '').replace(/_/g, ' ').toLowerCase());
   let tone = 'slate';
@@ -153,6 +168,7 @@ export function describeRequest(request, chain, { trips = [], unclaimedIds = new
     pill = 'Booked';
     tone = 'ok';
     note = ticketed.length === 1 && ticketed[0].ticket?.pnr_or_booking_ref ? `PNR ${ticketed[0].ticket.pnr_or_booking_ref}` : `${ticketed.length} of ${segs.length} tickets`;
+    if (selfBooked) note = `Booked by you · ${note}`;
   } else if (status === 'REJECTED') {
     pill = 'Rejected';
     tone = 'rose';
@@ -160,6 +176,7 @@ export function describeRequest(request, chain, { trips = [], unclaimedIds = new
     note = rej ? `At the ${rej.required_role ? formatRole(rej.required_role) : rej.label} step` : request.rejection_reason || '';
   } else if (status === 'CANCELLED') {
     pill = 'Cancelled';
+    if (cancelledBooking) note = 'Cancelled by the travel desk';
   }
   const stale = past && ['PENDING', 'PENDING_EXCEPTION', 'APPROVED', 'PARTIALLY_BOOKED'].includes(status);
 
@@ -188,10 +205,27 @@ export function describeRequest(request, chain, { trips = [], unclaimedIds = new
     stale,
     claim,
     ticketed,
-    onNow: Boolean(start && end && start <= now && end >= now),
+    onNow: !cancelledBooking && Boolean(start && end && start <= now && end >= now),
     cancellable: status === 'PENDING' || status === 'PENDING_EXCEPTION',
+    cancelledBooking,
+    selfBooked,
   };
 }
+
+/** Whether the Travel Desk can still cancel this booked trip: booked (or partly) and not started. */
+export function deskCanCancel(request) {
+  if (request.status !== 'BOOKED' && request.status !== 'PARTIALLY_BOOKED') return false;
+  const { start } = requestDates(request);
+  return !start || start >= today();
+}
+
+/**
+ * A booked trip the Travel Desk cancelled (its tickets stay on record). A self-booked request the
+ * employee withdrew before approval also has tickets, but it was never booked.
+ */
+export const isCancelledBooking = (request) =>
+  request.status === 'CANCELLED' &&
+  (Boolean(request.desk_cancelled_at) || (request.booked_by !== 'SELF' && (request.segments || []).some((s) => s.ticket)));
 
 /** The opened request's status banner: tone, title and one line of text. */
 export function requestBanner(request, view) {
@@ -211,7 +245,11 @@ export function requestBanner(request, view) {
     return { tone: 'ok', title: 'Booked', text: `${view.ticketed.length} ticket${view.ticketed.length === 1 ? '' : 's'} uploaded by the travel desk.` };
   }
   if (request.status === 'REJECTED') return { tone: 'rose', title: 'Rejected', text: view.note || request.rejection_reason || '' };
-  if (request.status === 'CANCELLED') return { tone: 'slate', title: 'Cancelled', text: 'This request was cancelled before it was decided.' };
+  if (request.status === 'CANCELLED') {
+    return view.cancelledBooking
+      ? { tone: 'slate', title: 'Cancelled', text: 'The travel desk cancelled this booked trip. It can’t be claimed.' }
+      : { tone: 'slate', title: 'Cancelled', text: 'This request was cancelled before it was decided.' };
+  }
   if (request.status === 'APPROVED' || request.status === 'PARTIALLY_BOOKED') return { tone: 'sky', title: view.pill, text: view.note };
   return { tone: 'amber', title: view.pill, text: view.note || 'Waiting on a decision' };
 }

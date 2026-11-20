@@ -6,10 +6,10 @@ from decimal import Decimal
 # How long after a trip ends it can be claimed, in calendar days from its to date (the last leg,
 # or the return date). Up to LATE_AFTER days it's an ordinary claim; after that the claim needs a
 # late-claim exception (LATE_CLAIM); after ARCHIVE_AFTER days the trip is archived and can't be
-# claimed at all. Admin-editable as workflow config submission.late_after_days /
-# submission.archive_after_days (Approval Matrix).
+# claimed at all. Until then a trip can go on any number of claims. Admin-editable as workflow
+# config submission.late_after_days / submission.archive_after_days (Approval Matrix).
 DEFAULT_LATE_AFTER_DAYS = 7
-DEFAULT_ARCHIVE_AFTER_DAYS = 15
+DEFAULT_ARCHIVE_AFTER_DAYS = 30
 
 CLAIM_ON_TIME = "ON_TIME"
 CLAIM_LATE = "LATE"

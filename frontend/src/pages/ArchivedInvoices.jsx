@@ -10,11 +10,13 @@ import Skeleton from '../components/ui/Skeleton';
 import { useSetPageTitle } from '../context/PageTitleContext';
 import { usePagination } from '../hooks/usePagination';
 import { reimbursementApi } from '../services/reimbursementApi';
+import { billDate, billMatches, billName } from '../utils/bills';
+import { formatDate } from '../utils/formatters';
 
 const TYPE = { TRAVEL: ['Travel', 'sky'], GENERAL: ['General', 'violet'], RELOCATION: ['Relocation', 'orange'] };
 const STATUS = { PAID: ['Paid', 'ok'], REJECTED: ['Rejected', 'rose'] };
 const money = (v) => `₹${Number(v || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-const uploaded = (v) => (v ? new Date(v).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '');
+const uploaded = (v) => formatDate(v);
 const isPdf = (invoice) => (invoice.original_filename || '').toLowerCase().endsWith('.pdf') || invoice.content_type === 'application/pdf';
 const titleCase = (s) => String(s || '').replaceAll('_', ' ').replace(/\w\S*/g, (w) => w[0] + w.slice(1).toLowerCase());
 
@@ -43,7 +45,7 @@ export default function ArchivedInvoices() {
     return all.filter(
       (i) =>
         (tab === 'all' || i.reimbursement_category === tab) &&
-        (!q || [i.original_filename, i.linked_claim_reference].some((v) => String(v || '').toLowerCase().includes(q))),
+        (!q || billMatches(i, q) || String(i.linked_claim_reference || '').toLowerCase().includes(q)),
     );
   }, [all, tab, query]);
   const { page, setPage, totalPages, pageItems, startIndex, pageSize, total } = usePagination(shown);
@@ -115,7 +117,7 @@ export default function ArchivedInvoices() {
           <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
             className="h-[34px] w-full rounded-[10px] border border-slate-200 bg-white pl-8 pr-2.5 text-[12.5px] text-ink outline-none focus:border-brand"
-            placeholder="Search file name or claim"
+            placeholder="Search vendor, amount, file name or claim"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
@@ -172,9 +174,11 @@ export default function ArchivedInvoices() {
                       </span>
                       <div className="min-w-0">
                         <div className="truncate text-[13.5px] font-bold text-ink" title={invoice.original_filename}>
-                          {invoice.original_filename}
+                          {billName(invoice)}
+                          {billDate(invoice) ? <span className="font-semibold text-slate-500"> · {billDate(invoice)}</span> : null}
                         </div>
-                        <div className="mt-0.5 text-xs text-slate-500">
+                        <div className="mt-0.5 truncate text-xs text-slate-500">
+                          {invoice.vendor_name ? `${invoice.original_filename} · ` : ''}
                           Uploaded {uploaded(invoice.created_at)} · {(Number(invoice.file_size_bytes || 0) / 1024).toFixed(1)} KB
                         </div>
                       </div>

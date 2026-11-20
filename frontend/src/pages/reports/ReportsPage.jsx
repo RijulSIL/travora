@@ -3,11 +3,13 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { CLAIM_STAGE, TRAVEL_MODES, TRAVEL_STATUS, allRows } from '../../components/reports/statusPalette';
+import DateInput from '../../components/ui/DateInput';
 import { TipBody, useFloatingTip } from '../../components/ui/FloatingTip';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import useBodyScrollLock from '../../hooks/useBodyScrollLock';
 import useToast from '../../hooks/useToast';
 import { reimbursementApi } from '../../services/reimbursementApi';
+import { formatDate, formatDatetime } from '../../utils/formatters';
 
 /*
  * Compliance reports: run one of the four server reports (GET reports/{type}), download it, or
@@ -269,7 +271,7 @@ function apiError(e, fallback) {
   return fallback;
 }
 
-const when = (iso) => (iso ? new Date(iso).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : null);
+const when = (iso) => formatDatetime(iso) || null;
 
 /** One schedule: pause / resume it, or delete it (asks first, right in the row). */
 function ScheduleRow({ schedule: s, onChanged }) {
@@ -391,7 +393,7 @@ function ScheduleModal({ open, defaults, levelLabel, onClose, onSaved }) {
   };
   const chosen = REPORTS[form.report];
   return createPortal(
-    <div className="fixed inset-0 z-[95] grid place-items-center bg-slate-900/45 p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-[95] grid place-items-center bg-slate-900/60 p-4 backdrop-blur-sm" onClick={onClose}>
       <div role="dialog" aria-modal="true" aria-label="New schedule" className="w-full max-w-[560px] overflow-hidden rounded-2xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-4 py-[13px]">
           <div>
@@ -552,7 +554,7 @@ export default function ReportsPage() {
 
   const report = REPORTS[reportKey];
   const periodLabel =
-    period === 'custom' ? (custom.from || custom.to ? `${custom.from || '…'} to ${custom.to || 'today'}` : 'all time') : PERIODS.find(([k]) => k === period)?.[1];
+    period === 'custom' ? (custom.from || custom.to ? `${formatDate(custom.from) || '…'} to ${formatDate(custom.to) || 'today'}` : 'all time') : PERIODS.find(([k]) => k === period)?.[1];
   const levelLabel = level ? `level ${level}` : 'all levels';
   const scheduleDefaults = useMemo(
     () => ({
@@ -678,11 +680,11 @@ export default function ReportsPage() {
                     <>
                       <label className={selectBox(true)}>
                         From
-                        <input type="date" className={selectInput} value={custom.from} onChange={(e) => setCustom((c) => ({ ...c, from: e.target.value }))} />
+                        <DateInput className={selectInput} value={custom.from} onChange={(e) => setCustom((c) => ({ ...c, from: e.target.value }))} />
                       </label>
                       <label className={selectBox(true)}>
                         To
-                        <input type="date" className={selectInput} value={custom.to} onChange={(e) => setCustom((c) => ({ ...c, to: e.target.value }))} />
+                        <DateInput className={selectInput} value={custom.to} onChange={(e) => setCustom((c) => ({ ...c, to: e.target.value }))} />
                       </label>
                     </>
                   ) : null}

@@ -51,6 +51,9 @@ class InvoiceOut(BaseModel):
     extraction_error: str | None = None
     created_at: datetime
     total_amount: Decimal | None = None
+    # What the bill is, at a glance (from its read fields): shown instead of the file name.
+    vendor_name: str | None = None
+    invoice_date: date | None = None
     reimbursement_category: ReimbursementCategory = ReimbursementCategory.TRAVEL
     linked_claim_id: int | None = None
     linked_claim_reference: str | None = None

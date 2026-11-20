@@ -30,6 +30,8 @@ import {
   sanitizeNoticeDays,
   TRAVEL_NOTICE,
   sanitizeSlaHours,
+  slaAt,
+  CEO_ROUTE_EXCLUDED_ROLES,
 } from '../../components/admin/approvalMatrix';
 import { BTN_GHOST, BTN_SM, CARD, EYEBROW, FIELD } from '../../components/policy/PolicyAdminParts';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
@@ -41,7 +43,9 @@ import { canEditWorkflowConfig } from '../../services/permissions';
 import { useAuthStore } from '../../store/authStore';
 import { formatRole } from '../../utils/formatters';
 
-const STAGE_FLOWS = ['CLAIMS', 'TRAVEL_REQUEST', 'RELOCATION_REQUEST'];
+const STAGE_FLOWS = ['CLAIMS', 'TRAVEL_REQUEST', 'SELF_BOOKED_TRAVEL', 'RELOCATION_REQUEST', 'CEO_REQUESTS'];
+// Flows with their own step list kept in category_overrides (not split by claim category).
+const OWN_ROUTE_FLOWS = ['TRAVEL_REQUEST', 'SELF_BOOKED_TRAVEL', 'RELOCATION_REQUEST', 'CEO_REQUESTS'];
 const FILTER = FIELD.replace('w-full', '');
 const j = (x) => JSON.stringify(x ?? null);
 
@@ -61,7 +65,7 @@ function normalize(cfg) {
       sla_hours: sanitizeSlaHours(s.sla_hours),
     }));
   const overrides = {};
-  for (const key of ['TRAVEL', 'GENERAL', 'RELOCATION', 'TRAVEL_REQUEST', 'RELOCATION_REQUEST']) {
+  for (const key of ['TRAVEL', 'GENERAL', 'RELOCATION', ...OWN_ROUTE_FLOWS]) {
     const list = cfg.category_overrides?.[key]?.stages;
     if (list?.length) overrides[key] = { stages: stageList(list) };
   }
@@ -99,7 +103,7 @@ function normalize(cfg) {
     ),
     // One SLA per route step, trimmed or padded to the route's length.
     exception_sla_hours: Object.fromEntries(
-      Object.entries(chains).map(([key, chain]) => [key, (chain || []).map((_, i) => sanitizeSlaHours(cfg.exception_sla_hours?.[key]?.[i] ?? 48))]),
+      Object.entries(chains).map(([key, chain]) => [key, (chain || []).map((_, i) => sanitizeSlaHours(slaAt(cfg.exception_sla_hours?.[key], i)))]),
     ),
     department_heads: heads,
   };
@@ -111,7 +115,7 @@ function changedParts(a, b) {
   if (j(a.stages) !== j(b.stages) || ['TRAVEL', 'GENERAL', 'RELOCATION'].some((k) => j(a.category_overrides[k]) !== j(b.category_overrides[k]))) out.push('CLAIMS');
   // Ahead of the exception flows: ticking Exceptions changes both at once.
   if (j(a.department_heads) !== j(b.department_heads)) out.push('DEPARTMENT_HEADS');
-  ['TRAVEL_REQUEST', 'RELOCATION_REQUEST'].forEach((k) => {
+  OWN_ROUTE_FLOWS.forEach((k) => {
     if (j(a.category_overrides[k]) !== j(b.category_overrides[k])) out.push(k);
   });
   ROUTE_KEYS.forEach((k) => {
@@ -190,6 +194,8 @@ function Warn({ children }) {
 export default function WorkflowConfig() {
   useSetPageTitle('Approval Matrix');
   const permissions = useAuthStore((s) => s.profile?.permissions);
+  // Auto-approve is hidden for now: its amount isn't shown (the saved value is kept as it is).
+  const autoApproveShown = useAuthStore((s) => Boolean(s.profile?.auto_approve_enabled));
   const canEdit = canEditWorkflowConfig(permissions);
   const { showToast } = useToast();
 
@@ -273,7 +279,7 @@ export default function WorkflowConfig() {
   const typesOf = (flow) => Object.keys(EXCEPTION_FLOWS[flow].types);
   const flowOn = (flow) => exceptionFlowInUse(cfg, flow);
   const modeOf = (k) => cfg.exception_submission_mode[k] || 'ALLOW';
-  const chainOf = (k) => (cfg.exception_chains[k] || []).map((role, i) => ({ route_role: role, sla_hours: cfg.exception_sla_hours[k]?.[i] ?? 48 }));
+  const chainOf = (k) => (cfg.exception_chains[k] || []).map((role, i) => ({ route_role: role, sla_hours: slaAt(cfg.exception_sla_hours[k], i) }));
   const stagesOf = (k, category = cat) =>
     k === 'CLAIMS'
       ? category === 'DEFAULT'
@@ -341,7 +347,7 @@ export default function WorkflowConfig() {
     } else {
       // Both shared exception flows.
       EXCEPTION_FLOW_KEYS.forEach((k) => {
-        const current = (draft.exception_chains[k] || []).map((role, i) => ({ route_role: role, sla_hours: draft.exception_sla_hours[k]?.[i] ?? 48 }));
+        const current = (draft.exception_chains[k] || []).map((role, i) => ({ route_role: role, sla_hours: slaAt(draft.exception_sla_hours[k], i) }));
         const next = fix(current, false, FLOW_NAMES[k]);
         if (next !== current) {
           draft.exception_chains[k] = next.map((s) => s.route_role);
@@ -414,7 +420,9 @@ export default function WorkflowConfig() {
       items: [
         ['CLAIMS', summary(cfg.stages), ['TRAVEL', 'GENERAL', 'RELOCATION'].some((c) => cfg.category_overrides[c]) ? <Pill tone="brand">Custom by category</Pill> : null],
         ['TRAVEL_REQUEST', summary(stagesOf('TRAVEL_REQUEST')), cfg.category_overrides.TRAVEL_REQUEST ? null : <Pill>Default</Pill>],
+        ['SELF_BOOKED_TRAVEL', summary(stagesOf('SELF_BOOKED_TRAVEL')), cfg.category_overrides.SELF_BOOKED_TRAVEL ? null : <Pill>Default</Pill>],
         ['RELOCATION_REQUEST', summary(stagesOf('RELOCATION_REQUEST')), cfg.category_overrides.RELOCATION_REQUEST ? null : <Pill>Default</Pill>],
+        ['CEO_REQUESTS', summary(stagesOf('CEO_REQUESTS')), cfg.category_overrides.CEO_REQUESTS ? null : <Pill>Default</Pill>],
         ['POLICY_APPROVAL', summary(chainOf('POLICY_APPROVAL')), null],
       ],
     },
@@ -449,16 +457,25 @@ export default function WorkflowConfig() {
     sel === 'CLAIMS'
       ? 'Every claim goes through these steps in order. There must be a Finance step.'
       : sel === 'TRAVEL_REQUEST'
-        ? 'A trip request goes through these steps. Once the last one approves, it goes to the travel agent for booking.'
+        ? 'A trip the company books goes through these steps. Once the last one approves, it goes to the travel agent for booking.'
+        : sel === 'SELF_BOOKED_TRAVEL'
+          ? 'A trip the employee has booked themselves goes through these steps, with their tickets attached for every leg. Once the last one approves, it’s booked with those tickets; nothing goes to the travel agent.'
         : sel === 'RELOCATION_REQUEST'
           ? 'Someone without relocation approval asks for it here; once the last step approves, they can raise relocation claims (which then follow Claims → Relocation). Someone who already has approval uploads it and needs no approval here.'
-          : isPolicy
+          : sel === 'CEO_REQUESTS'
+            ? "The CEO's own claims and travel requests go through these steps instead of the usual routes. The CEO has no policy limits, so nothing of theirs is flagged as an exception. After the last step, a claim goes to Finance for payment and a trip to the travel agent."
+            : isPolicy
             ? 'A new policy version needs these approvals before it can take effect.'
             : sel === CLAIM_EXCEPTION_FLOW
               ? 'A claim with any switched-on exception below goes to these approvers instead of the Claims route: one request listing every exception, and each approver accepts, rejects or sends back each one. After the last step it goes to Finance.'
               : 'A travel request with any switched-on exception below goes to these approvers instead of the Travel requests route, with one approve or reject for the whole request. After the last step it goes to the travel agent for booking.';
   const roleOptions = (current) =>
-    STEP_ROLES.filter((r) => (r === DEPARTMENT_HEAD ? headFlow !== null || current === r : !roleEligible || roleEligible.has(r) || r === current));
+    STEP_ROLES.filter((r) => {
+      if (r === current) return true;
+      // The CEO's route: never the CEO, their (non-existent) manager or department head, or Finance.
+      if (sel === 'CEO_REQUESTS' && CEO_ROUTE_EXCLUDED_ROLES.has(r)) return false;
+      return r === DEPARTMENT_HEAD ? headFlow !== null : !roleEligible || roleEligible.has(r);
+    });
   const noFinance = sel === 'CLAIMS' && !list.some((s) => s.route_role === 'FINANCE');
   const noName = stageBased && list.some((s) => !String(s.label || '').trim());
   const headSteps = list.filter((s) => s.route_role === DEPARTMENT_HEAD).length;
@@ -577,7 +594,7 @@ export default function WorkflowConfig() {
                       : `${catName} claims use the shared route. Change a step to give them their own.`}
                 </Option>
               ) : null}
-              {sel === 'TRAVEL_REQUEST' || sel === 'RELOCATION_REQUEST' ? (
+              {OWN_ROUTE_FLOWS.includes(sel) ? (
                 <Option
                   title={customRoute ? 'Custom route' : 'Default route'}
                   control={
@@ -607,7 +624,7 @@ export default function WorkflowConfig() {
               <div>
                 <div
                   className={`${EYEBROW} hidden gap-2.5 px-[11px] pb-1.5 sm:grid ${
-                    stageBased ? 'sm:grid-cols-[48px_minmax(0,1.2fr)_minmax(0,1fr)_128px_92px]' : 'sm:grid-cols-[48px_minmax(0,1fr)_128px_92px]'
+                    stageBased ? 'sm:grid-cols-[48px_minmax(0,1.2fr)_minmax(0,1fr)_148px_92px]' : 'sm:grid-cols-[48px_minmax(0,1fr)_148px_92px]'
                   }`}
                 >
                   <span>#</span>
@@ -661,7 +678,7 @@ export default function WorkflowConfig() {
                         {dragFrom !== null && dropAt === i && dropAt !== dragFrom && dropAt !== dragFrom + 1 ? dropLine : null}
                         <div
                           className={`grid grid-cols-[48px_minmax(0,1fr)] items-center gap-2.5 rounded-xl border px-2.5 py-[9px] ${
-                            stageBased ? 'sm:grid-cols-[48px_minmax(0,1.2fr)_minmax(0,1fr)_128px_auto]' : 'sm:grid-cols-[48px_minmax(0,1fr)_128px_auto]'
+                            stageBased ? 'sm:grid-cols-[48px_minmax(0,1.2fr)_minmax(0,1fr)_148px_auto]' : 'sm:grid-cols-[48px_minmax(0,1fr)_148px_auto]'
                           } ${head ? 'border-dashed border-[#b7d3c8] bg-[#f7fbf9]' : 'border-slate-200 bg-white'}`}
                         >
                           <span className="flex items-center gap-0.5">
@@ -716,24 +733,64 @@ export default function WorkflowConfig() {
                               </option>
                             ))}
                           </select>
-                          <label className="relative col-start-2 block sm:col-start-auto">
-                            <span className="sr-only">Step {i + 1} working hours to act</span>
-                            <input
-                              type="number"
-                              min="1"
-                              className={`${FIELD} pr-14 text-right`}
-                              disabled={!canEdit || isPolicy}
-                              value={step.sla_hours ?? 48}
-                              onChange={(e) =>
+                          {step.sla_hours === null && !isPolicy ? (
+                            // "No SLA": they take as long as they need — never passed on, no reminders.
+                            <button
+                              type="button"
+                              aria-label={`Step ${i + 1} has no SLA. Add one`}
+                              title={canEdit ? 'Add an SLA to this step' : undefined}
+                              className={`${FIELD} col-start-2 flex items-center justify-between gap-1.5 border-dashed font-semibold text-slate-500 enabled:hover:border-brand/40 enabled:hover:text-ink sm:col-start-auto`}
+                              disabled={!canEdit}
+                              onClick={() =>
                                 changeList((l) => {
-                                  const n = Number(e.target.value);
-                                  l[i] = { ...l[i], sla_hours: Number.isFinite(n) && n >= 1 ? Math.floor(n) : l[i].sla_hours };
+                                  l[i] = { ...l[i], sla_hours: 48 };
                                   return l;
                                 })
                               }
-                            />
-                            <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-slate-400">work hrs</span>
-                          </label>
+                            >
+                              No SLA
+                              {canEdit ? <Plus size={13} className="shrink-0 text-slate-400" /> : null}
+                            </button>
+                          ) : (
+                            <div className="relative col-start-2 block sm:col-start-auto">
+                              <input
+                                type="number"
+                                min="1"
+                                aria-label={`Step ${i + 1} working hours to act`}
+                                className={`${FIELD} ${canEdit && !isPolicy ? 'pr-[78px]' : 'pr-14'} text-right`}
+                                disabled={!canEdit || isPolicy}
+                                value={step.sla_hours ?? 48}
+                                onChange={(e) =>
+                                  changeList((l) => {
+                                    const n = Number(e.target.value);
+                                    l[i] = { ...l[i], sla_hours: Number.isFinite(n) && n >= 1 ? Math.floor(n) : l[i].sla_hours };
+                                    return l;
+                                  })
+                                }
+                              />
+                              <span
+                                className={`pointer-events-none absolute top-1/2 -translate-y-1/2 text-[11px] font-semibold text-slate-400 ${canEdit && !isPolicy ? 'right-8' : 'right-2.5'}`}
+                              >
+                                work hrs
+                              </span>
+                              {canEdit && !isPolicy ? (
+                                <button
+                                  type="button"
+                                  aria-label={`Remove the SLA from step ${i + 1}`}
+                                  title="No SLA: they take as long as they need"
+                                  className="absolute right-1 top-1/2 grid h-6 w-6 -translate-y-1/2 place-items-center rounded-md text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                                  onClick={() =>
+                                    changeList((l) => {
+                                      l[i] = { ...l[i], sla_hours: null };
+                                      return l;
+                                    })
+                                  }
+                                >
+                                  <X size={12} />
+                                </button>
+                              ) : null}
+                            </div>
+                          )}
                           {canEdit ? (
                             <span className="col-start-2 flex gap-1 sm:col-start-auto">
                               <button
@@ -812,7 +869,8 @@ export default function WorkflowConfig() {
               {!isPolicy ? (
                 <p className="rounded-[10px] border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-relaxed text-slate-500">
                   Hours count working time only; weekends and Holiday calendar days are skipped. If someone misses their time, it passes to the next step. The
-                  last step can&apos;t pass it on, so it gets a reminder every 4 working hours instead.
+                  last step can&apos;t pass it on, so it gets a reminder every 4 working hours instead. Use the × to set a step to No SLA: that approver
+                  takes as long as they need, with no reminders, and it&apos;s never passed on.
                 </p>
               ) : null}
             </div>
@@ -1004,7 +1062,7 @@ export default function WorkflowConfig() {
               </div>
               {changes.includes('SUBMISSION') ? <Pill tone="amber">Changed</Pill> : null}
             </div>
-            <div className="grid grid-cols-1 gap-3 px-4 py-3.5 md:grid-cols-3">
+            <div className={`grid grid-cols-1 gap-3 px-4 py-3.5 ${autoApproveShown ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
               <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700">
                 Late claim after
                 <input
@@ -1051,6 +1109,7 @@ export default function WorkflowConfig() {
                     : "Days after the trip's to date. After this the trip is archived and can't be claimed."}
                 </span>
               </label>
+              {autoApproveShown ? (
               <label className="flex flex-col gap-1.5 text-xs font-bold text-slate-700">
                 Auto-approve up to
                 <span className="relative block">
@@ -1080,6 +1139,7 @@ export default function WorkflowConfig() {
                   {Number(cfg.auto_approve_below_amount) > 0 ? 'Claims of this amount or less skip the approval steps.' : 'Off: ₹0 means every claim goes through the steps.'}
                 </span>
               </label>
+              ) : null}
             </div>
           </section>
         </div>

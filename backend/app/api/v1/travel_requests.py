@@ -23,6 +23,7 @@ from app.schemas.travel_request import (
     EntitlementNoteOut,
     SupportingDocumentUploadOut,
     TravelApproveIn,
+    TravelDeskCancelIn,
     TravelExceptionSummaryOut,
     TravelOptionOut,
     TravelOptionSearchIn,
@@ -95,6 +96,8 @@ async def create_request(
             legs=body.legs,
             leg_picks=body.leg_picks,
             traveller_id=_traveller_id(body),
+            booked_by=body.booked_by,
+            self_tickets=body.self_tickets,
             db=db,
         )
     return _build_request_out(row)
@@ -106,6 +109,10 @@ def _traveller_id(body: TravelRequestCreate) -> dict:
         "id_type": body.id_type,
         "id_proof_ref": body.id_proof_ref,
         "id_proof_filename": body.id_proof_filename,
+        "save_id_to_profile": body.save_id_to_profile,
+        "meal_preference": body.meal_preference,
+        "passport_number": body.passport_number,
+        "passport_expiry": body.passport_expiry,
     }
 
 
@@ -120,12 +127,25 @@ async def upload_id_proof(
     return await store_id_proof(int(claims["sub"]), file)
 
 
-@router.get("/id-proof/last", dependencies=[Depends(require_permission("submit_claim"))])
-async def last_id_proof(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)) -> dict | None:
-    """The ID on your previous request, to fill in the new one (null if there isn't one)."""
-    from app.services.travel_id_proof_service import last_traveller_id
+@router.post("/self-tickets", dependencies=[Depends(require_permission("submit_claim"))])
+async def upload_self_ticket(
+    file: UploadFile = File(...),
+    claims: dict = Depends(get_current_claims),
+) -> dict:
+    """Upload a ticket you booked yourself, for a self-booked request you're about to raise; the
+    request then refers to it by `ref` (self_booked_travel_service)."""
+    from app.services.self_booked_travel_service import store_pending_ticket
 
-    return await last_traveller_id(int(claims["sub"]), db)
+    return await store_pending_ticket(int(claims["sub"]), file)
+
+
+@router.get("/id-proof/last", dependencies=[Depends(require_permission("submit_claim"))])
+async def last_id_proof(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)) -> dict:
+    """What a new request is filled in with: your profile's ID and meal preference, your last
+    passport, and the profile's ID as `saved_id` (travel_id_proof_service.form_defaults)."""
+    from app.services.travel_id_proof_service import form_defaults
+
+    return await form_defaults(int(claims["sub"]), db)
 
 
 @router.post(
@@ -176,6 +196,8 @@ async def create_request_with_exception(
             legs=body.legs,
             leg_picks=body.leg_picks,
             traveller_id=_traveller_id(body),
+            booked_by=body.booked_by,
+            self_tickets=body.self_tickets,
             justification=body.justification,
             db=db,
         )
@@ -509,6 +531,22 @@ async def cancel_request(
     db: AsyncSession = Depends(get_db),
 ) -> TravelRequestOut:
     row = await svc.cancel_travel_request(request_id, int(claims["sub"]), db)
+    return _build_request_out(row)
+
+
+@router.post(
+    "/{request_id}/desk-cancel",
+    response_model=TravelRequestOut,
+    dependencies=[Depends(require_permission("view_travel_desk"))],
+)
+async def desk_cancel_trip(
+    request_id: int,
+    body: TravelDeskCancelIn,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> TravelRequestOut:
+    """Travel Desk: cancel a booked trip that hasn't started (svc.cancel_booked_trip)."""
+    row = await svc.cancel_booked_trip(request_id, int(claims["sub"]), body.reason, db)
     return _build_request_out(row)
 
 

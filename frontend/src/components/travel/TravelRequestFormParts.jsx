@@ -1,5 +1,7 @@
 import { AlertTriangle, ArrowRight, Bus, Clock, Lock, MapPin, Plane, TrainFront } from 'lucide-react';
 
+import { formatDate } from '../../utils/formatters';
+
 export const FIELD =
   'h-[38px] w-full rounded-[10px] border border-slate-200 bg-white px-[11px] text-[13px] text-ink outline-none transition-colors focus:border-brand focus:ring-2 focus:ring-brand/15';
 export const LABEL = 'mb-[5px] block text-xs font-bold text-slate-700';
@@ -206,7 +208,7 @@ export function RouteLine({ legs }) {
   const filled = legs.filter((l) => l.from_city || l.to_city);
   if (!filled.length) return null;
   const dates = legs.map((l) => l.travel_date).filter(Boolean).sort();
-  const fmt = (d) => new Date(`${d}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+  const fmt = (d) => formatDate(d);
   return (
     <div className="mb-1 flex flex-wrap items-center gap-1.5 rounded-[10px] border border-slate-200 bg-slate-50 px-[11px] py-2 text-[12.5px] font-bold text-ink">
       {legs.map((l, i) => {

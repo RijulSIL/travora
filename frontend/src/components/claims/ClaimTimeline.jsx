@@ -1,3 +1,5 @@
+import { formatDatetime } from '../../utils/formatters';
+
 function eventColor(event) {
   if (event === 'stage_approved' || event === 'submitted' || event === 'resubmitted') return 'bg-emerald-500';
   if (event === 'sent_back') return 'bg-amber-500';
@@ -31,7 +33,7 @@ export default function ClaimTimeline({ items = [] }) {
                   const dateStr = item.timestamp.endsWith('Z') || item.timestamp.includes('+') 
                     ? item.timestamp 
                     : item.timestamp + 'Z';
-                  return new Date(dateStr).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+                  return formatDatetime(dateStr);
                 })()
               }
             </div>

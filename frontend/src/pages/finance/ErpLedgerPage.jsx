@@ -4,6 +4,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react';
 import { PageHead, Pill } from '../../components/approvals/ApprovalQueueParts';
 import { DetailBox, Empty, Figure, PaidTotal, day, dayTime, errorText, money, rupees } from '../../components/finance/FinanceParts';
 import { CARD, Seg } from '../../components/policy/PolicyAdminParts';
+import DateInput from '../../components/ui/DateInput';
 import Pagination from '../../components/ui/Pagination';
 import Skeleton from '../../components/ui/Skeleton';
 import { useSetPageTitle } from '../../context/PageTitleContext';
@@ -81,9 +82,9 @@ export default function ErpLedgerPage() {
           <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
           <input className={`${INPUT} w-[220px] pl-8`} placeholder="Search employee or claim" value={query} onChange={(e) => setQuery(e.target.value)} />
         </label>
-        <input aria-label="Paid from" type="date" className={INPUT} value={from} onChange={(e) => setFrom(e.target.value)} />
+        <DateInput aria-label="Paid from" className={INPUT} value={from} onChange={(e) => setFrom(e.target.value)} />
         <span className="text-xs text-slate-500">to</span>
-        <input aria-label="Paid until" type="date" className={INPUT} value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} />
+        <DateInput aria-label="Paid until" className={INPUT} value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} />
       </div>
 
       <section aria-label="Ledger entries" className={CARD}>

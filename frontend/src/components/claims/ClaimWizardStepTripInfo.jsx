@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 
 import { reimbursementApi } from '../../services/reimbursementApi';
 import { travelRef } from '../travel/travelRequestView';
+import DateInput from '../ui/DateInput';
 import { Card, EYEBROW, LABEL, Note, StepActions, dateSpan, dayMonth, fieldClass } from './ClaimWizardShell';
 
 function ModeIcon({ mode, size = 13, className = 'shrink-0 text-slate-400' }) {
@@ -81,15 +82,19 @@ function TripRow({ group, selected, onToggle, onPreviewTicket }) {
           </span>
         </div>
         <div className="text-xs text-slate-500">{meta.join(' · ')}</div>
+        {/* A trip can go on several claims (until it's archived), e.g. for bills found later. */}
+        {group.claimRefs?.length ? (
+          <div className="mt-0.5 text-[11.5px] font-semibold text-amber-700">
+            Already on {group.claimRefs.join(', ')}. You can still claim it here for other bills.
+          </div>
+        ) : null}
         {multi ? (
           <div className="mt-[7px] grid gap-[3px] border-l-2 border-brand/25 pl-2.5">
             {legs.map((leg, i) => (
               <div key={leg.id} className="flex flex-wrap items-center gap-[7px] text-xs text-slate-700">
                 <span className="rounded-full bg-slate-100 px-[7px] text-[11px] font-bold text-slate-500">{i + 1}</span>
                 <ModeIcon mode={leg.mode} />
-                <span>
-                  {isRound ? (i === 0 ? 'Onward' : 'Return') : `${leg.from_city} → ${leg.to_city}`}
-                </span>
+                <span>{`${leg.from_city} → ${leg.to_city}`}</span>
                 <span className="text-slate-500">
                   · {dayMonth(leg.travel_date)}
                   {leg.travel_class ? ` · ${leg.travel_class}` : ''}
@@ -154,6 +159,8 @@ export default function ClaimWizardStepTripInfo({
   onNext,
   onResolveCityGroup,
   tripGroups = [],
+  // { lateDays, archiveDays } after a trip ends (claimWindowDays), for the empty-list note.
+  windowDays = null,
   selectedTripIds = [],
   onToggleTripGroup,
   onPreviewTicket,
@@ -170,19 +177,24 @@ export default function ClaimWizardStepTripInfo({
 
   return (
     <>
-      {tripGroups.length > 0 ? (
-        <Card title="Start from a booked trip" sub="Ticking a trip fills in the details below. All legs of a round or multi-city trip go together." bodyClass="space-y-1.5">
-          {tripGroups.map((group) => (
-            <TripRow
-              key={group.key}
-              group={group}
-              selected={group.tripIds.every((id) => selectedTripIds.includes(id))}
-              onToggle={(checked) => onToggleTripGroup(group.tripIds, checked)}
-              onPreviewTicket={onPreviewTicket}
-            />
-          ))}
-        </Card>
-      ) : null}
+      <Card title="Start from a booked trip" sub="Ticking a trip fills in the details below. All legs of a round or multi-city trip go together." bodyClass="space-y-1.5">
+        {tripGroups.map((group) => (
+          <TripRow
+            key={group.key}
+            group={group}
+            selected={group.tripIds.every((id) => selectedTripIds.includes(id))}
+            onToggle={(checked) => onToggleTripGroup(group.tripIds, checked)}
+            onPreviewTicket={onPreviewTicket}
+          />
+        ))}
+        {/* Said, not hidden: an empty list otherwise looks like the trips have gone missing. */}
+        {!tripGroups.length ? (
+          <p className="text-[12.5px] text-slate-500">
+            No booked trips to claim. A trip shows here once it&apos;s booked, until {windowDays?.archiveDays || 30} days after it ends. You can still fill in
+            the trip details below yourself.
+          </p>
+        ) : null}
+      </Card>
 
       <Card
         title="Trip details"
@@ -229,9 +241,8 @@ export default function ClaimWizardStepTripInfo({
           </div>
           <div>
             <label htmlFor="claim-departure" className={LABEL}>Left on</label>
-            <input
+            <DateInput
               id="claim-departure"
-              type="date"
               className={fieldClass(getError('departure_date'))}
               value={form.departure_date}
               onChange={(e) => onChange('departure_date', e.target.value)}
@@ -240,9 +251,8 @@ export default function ClaimWizardStepTripInfo({
           </div>
           <div>
             <label htmlFor="claim-return" className={LABEL}>Back on</label>
-            <input
+            <DateInput
               id="claim-return"
-              type="date"
               className={fieldClass(getError('return_date'))}
               value={form.return_date}
               onChange={(e) => onChange('return_date', e.target.value)}

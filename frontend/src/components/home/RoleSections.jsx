@@ -6,7 +6,7 @@ import { adminApi } from '../../services/adminApi';
 import { CLAIM_STAGE, TRAVEL_MODES, TRAVEL_STATUS, allRows } from '../reports/statusPalette';
 import { TipBody, useFloatingTip } from '../ui/FloatingTip';
 import { reimbursementApi } from '../../services/reimbursementApi';
-import { formatRole } from '../../utils/formatters';
+import { formatDate, formatDatetime, formatRole } from '../../utils/formatters';
 import {
   BarList,
   ColumnBars,
@@ -125,7 +125,7 @@ export function FinanceSection({ paymentRows: queueRows }) {
   const paymentRows = queueRows.filter((r) => r.sla_bucket != null);
   const now = new Date();
   const month = now.toLocaleString('en-IN', { month: 'short' });
-  const range = `1–${now.getDate()} ${month}`;
+  const range = `${formatDate(new Date(now.getFullYear(), now.getMonth(), 1))}–${formatDate(now)}`;
   const toPay = paymentRows.reduce((a, r) => a + Number(r.net_payable ?? r.amount ?? 0), 0);
   const g = gst.data || {};
   const val = (v) => (gst.loading ? '—' : inr(v));
@@ -195,8 +195,7 @@ export function AdminSection({ canSeeAudit }) {
       .catch(() => ({})),
   );
   const s = stats.data || {};
-  const at = (iso) =>
-    new Date(iso).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false });
+  const at = (iso) => formatDatetime(iso);
   return (
     <>
       <SectionTitle title="System" />

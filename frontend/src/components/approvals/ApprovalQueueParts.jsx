@@ -2,7 +2,7 @@ import { ArrowLeftRight, ArrowRight, Bus, Check, ChevronDown, Plane, SkipForward
 
 import { Link } from 'react-router-dom';
 
-import { formatExceptionType, formatRole } from '../../utils/formatters';
+import { formatDate, formatExceptionType, formatRole } from '../../utils/formatters';
 import { dayOf, daysBetween, today } from '../home/HomeParts';
 import { travelRef } from '../travel/travelRequestView';
 
@@ -42,7 +42,7 @@ export const inr = (value) =>
 
 export const shortDay = (value) => {
   const d = dayOf(value);
-  return d ? `${d.getDate()} ${MONTHS[d.getMonth()]}` : '';
+  return d ? formatDate(d) : '';
 };
 
 /** "today", "yesterday", "3 days ago" for a timestamp. */

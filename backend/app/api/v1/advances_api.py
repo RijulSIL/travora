@@ -1,5 +1,6 @@
 import csv
 import io
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
@@ -7,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.rbac import require_permission
+from app.core.timezone import format_datetime
 from app.schemas.workflow import AdvanceGrantIn, AdvanceRequestOut, AdvanceSettleIn, AdvanceUpdateIn
 from app.services.advance_service import get_outstanding_advance
 from app.services.workflow_service import (
@@ -94,7 +96,8 @@ async def list_advances(
                     row["purpose"],
                     row["status"],
                     row["created_by_name"],
-                    row["created_at"],
+                    # The list carries ISO for the app; the CSV is read by people.
+                    format_datetime(datetime.fromisoformat(row["created_at"])) if row["created_at"] else "",
                     row["employee_outstanding_total"],
                 ]
             )

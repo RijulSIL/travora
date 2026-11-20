@@ -1,5 +1,7 @@
 import { Check, X, ArrowLeft, Clock, Circle, ShieldAlert, SkipForward } from 'lucide-react';
 
+import { formatDatetime } from '../../utils/formatters';
+
 function statusMeta(status) {
   if (status === 'APPROVED') return { icon: Check, className: 'bg-emerald-50 text-emerald-600 border-emerald-200/60' };
   if (status === 'REJECTED') return { icon: X, className: 'bg-red-50 text-red-600 border-red-200/60' };
@@ -50,7 +52,7 @@ function ExceptionApprovalRow({ step }) {
       </div>
       <div className="mt-1.5 pl-[38px] text-xs text-slate-500 font-medium">
         {step.acted_at
-          ? `${step.acted_by_name ? `${step.acted_by_name} · ` : ''}${new Date(step.acted_at).toLocaleString()}`
+          ? `${step.acted_by_name ? `${step.acted_by_name} · ` : ''}${formatDatetime(step.acted_at)}`
           : step.pending_approver_names?.length
             ? `Awaiting decision from ${step.pending_approver_names.join(', ')}`
             : 'Awaiting decision'}
@@ -118,7 +120,7 @@ export default function ApprovalStepper({ stages = [], exceptionStages = [], upc
             </div>
             <div className="mt-1.5 pl-[38px] text-xs text-slate-500 font-medium">
               {stage.decided_at
-                ? `${stage.decided_by_name ? `${stage.decided_by_name} · ` : ''}${new Date(stage.decided_at).toLocaleString()}`
+                ? `${stage.decided_by_name ? `${stage.decided_by_name} · ` : ''}${formatDatetime(stage.decided_at)}`
                 : stage.pending_approver_names?.length
                   ? `${stage.status === 'PENDING' ? 'Awaiting' : 'Assigned to'}: ${stage.pending_approver_names.join(', ')}`
                   : 'Not started'}

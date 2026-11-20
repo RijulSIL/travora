@@ -1,6 +1,7 @@
 import { CheckCircle2, Circle, Clock, SkipForward, XCircle } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { reimbursementApi } from '../../services/reimbursementApi';
+import { formatDatetime } from '../../utils/formatters';
 
 const ROLE_LABELS = {
   REPORTING_MANAGER: 'Reporting Manager',
@@ -21,12 +22,7 @@ function humanizeRole(role) {
 }
 
 function formatDateTime(value) {
-  if (!value) return null;
-  try {
-    return new Date(value).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
-  } catch {
-    return null;
-  }
+  return formatDatetime(value) || null;
 }
 
 const STATE_STYLES = {

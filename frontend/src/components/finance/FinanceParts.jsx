@@ -3,12 +3,12 @@ import { useEffect } from 'react';
 import { createPortal } from 'react-dom';
 
 import useBodyScrollLock from '../../hooks/useBodyScrollLock';
+import { formatDate, formatDatetime } from '../../utils/formatters';
 
 export const money = (v) => `₹${Number(v || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 export const rupees = (v) => `₹${Number(v || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
-export const day = (v) => (v ? new Date(v).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—');
-export const dayTime = (v) =>
-  v ? new Date(v).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—';
+export const day = (v) => formatDate(v) || '—';
+export const dayTime = (v) => formatDatetime(v) || '—';
 export const errorText = (err, fallback) => {
   const detail = err?.response?.data?.detail;
   return (typeof detail === 'string' && detail) || fallback;
@@ -65,7 +65,7 @@ export function Modal({ title, sub, onClose, busy = false, children, footer, lab
     return () => window.removeEventListener('keydown', onKey);
   }, [busy, onClose]);
   return createPortal(
-    <div className="fixed inset-0 z-[95] grid place-items-center bg-slate-900/45 p-4" onClick={() => !busy && onClose()}>
+    <div className="fixed inset-0 z-[95] grid place-items-center bg-slate-900/60 p-4 backdrop-blur-sm" onClick={() => !busy && onClose()}>
       <div
         role="dialog"
         aria-modal="true"

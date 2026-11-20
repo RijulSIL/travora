@@ -53,6 +53,15 @@ class User(Base):
     # rbac.get_current_claims.
     password_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     auto_approve_threshold: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    # Their traveller profile, given on the setup screen after their first sign-in (and changeable
+    # on My profile): VEG / NON_VEG, and their ID — name exactly as on it, which ID, and a copy
+    # stored like a travel request's (travel_id_proof_service). Travel requests are filled in from it.
+    meal_preference: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    id_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    id_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    id_proof_ref: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    id_proof_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    id_proof_content_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # Deleted by an admin but kept, anonymised, because their claims, approvals or other records
     # still point at them (admin/users.py delete_user). Hidden from User Management.
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

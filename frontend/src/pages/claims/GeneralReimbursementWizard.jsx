@@ -1,17 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
-import ClaimWizardShell, { ClaimSummaryCard, netPayable, policyCounts } from '../../components/claims/ClaimWizardShell';
+import ClaimWizardShell, { ClaimSummaryCard } from '../../components/claims/ClaimWizardShell';
 import ClaimWizardStepEvidence from '../../components/claims/ClaimWizardStepEvidence';
-import ClaimWizardStepPolicyCheck from '../../components/claims/ClaimWizardStepPolicyCheck';
 import ClaimWizardStepSubmit from '../../components/claims/ClaimWizardStepSubmit';
 import ClaimExceptionsModal from '../../components/claims/ClaimExceptionsModal';
+import useBillUploads from '../../components/claims/useBillUploads';
 import ClaimSubmitAnimation from '../../components/ui/ClaimSubmitAnimation';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import useToast from '../../hooks/useToast';
 import { reimbursementApi } from '../../services/reimbursementApi';
 
-const STEP_LABELS = ['Invoices', 'Policy check', 'Submit'];
+// No policy-check step: there's no policy for general reimbursements, so the backend never
+// flags their expenses (reimbursement_service builds them with no caps or exceptions).
+const STEP_LABELS = ['Invoices', 'Submit'];
 const DRAFT_STORAGE_KEY = 'travora_general_reimbursement_draft';
 // General Reimbursement draws only from General-tagged invoices. Relocation claims are raised
 // from the Relocation Claim form with Relocation-tagged invoices.
@@ -37,7 +39,14 @@ export default function GeneralReimbursementWizard() {
   const [claim, setClaim] = useState(null);
   const [invoices, setInvoices] = useState([]);
   const [selectedInvoiceIds, setSelectedInvoiceIds] = useState(invoiceIdsFromUrl);
-  const [uploadingInvoice, setUploadingInvoice] = useState(false);
+  // Bills uploaded from inside the form are tagged General and ticked as each one comes in.
+  const { uploading: uploadingInvoice, uploadBills } = useBillUploads({
+    category: 'GENERAL',
+    onUploaded: (row) => {
+      setInvoices((prev) => [row, ...prev.filter((item) => item.id !== row.id)]);
+      setSelectedInvoiceIds((prev) => [...new Set([...prev, row.id])]);
+    },
+  });
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [declarationChecked, setDeclarationChecked] = useState(false);
@@ -80,7 +89,8 @@ export default function GeneralReimbursementWizard() {
     };
   }, [effectiveEditId, showToast]);
 
-  // Draft Auto-Save: Load from localStorage on mount
+  // Draft Auto-Save: Load from localStorage on mount. Only the ticked invoices come back — it
+  // always reopens on Invoices, since the saved claim the Submit step needs isn't kept here.
   useEffect(() => {
     if (effectiveEditId) return;
     try {
@@ -88,7 +98,6 @@ export default function GeneralReimbursementWizard() {
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed.selectedInvoiceIds) setSelectedInvoiceIds(parsed.selectedInvoiceIds);
-        if (parsed.currentStep) setCurrentStep(parsed.currentStep);
       }
     } catch {
       // ignore parse errors
@@ -98,8 +107,12 @@ export default function GeneralReimbursementWizard() {
   // Draft Auto-Save: Save to localStorage on change
   useEffect(() => {
     if (effectiveEditId) return; // Don't auto-save if editing a backend claim
-    localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify({ selectedInvoiceIds, currentStep }));
-  }, [selectedInvoiceIds, currentStep, effectiveEditId]);
+    try {
+      localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify({ selectedInvoiceIds }));
+    } catch {
+      // storage unavailable (private window) — the draft just isn't kept
+    }
+  }, [selectedInvoiceIds, effectiveEditId]);
 
   // Enforced server-side too (assert_invoices_eligible_for_claim) — filter here so it never
   // offers a Travel or Relocation invoice that would fail validation on save.
@@ -108,12 +121,15 @@ export default function GeneralReimbursementWizard() {
     [invoices],
   );
 
-  const reviewWarning = useMemo(() => {
-    const selected = invoices.filter((invoice) => selectedInvoiceIds.includes(invoice.id));
-    return selected.some((invoice) => invoice.status !== 'REVIEWED')
-      ? 'Review this invoice before submitting'
-      : '';
-  }, [invoices, selectedInvoiceIds]);
+  // A bill reviewed from the Invoices step: take its new status and amount, and tick it.
+  const onInvoiceReviewed = (row) => {
+    setInvoices((prev) =>
+      prev.map((item) =>
+        item.id === row.id ? { ...item, status: row.status, total_amount: row.total_amount, extraction_error: row.extraction_error } : item,
+      ),
+    );
+    if (row.status === 'REVIEWED') setSelectedInvoiceIds((prev) => [...new Set([...prev, row.id])]);
+  };
 
   const sentBackHint = claim?.status === 'SENT_BACK' ? 'Invoice missing — add supporting receipt.' : '';
 
@@ -134,32 +150,6 @@ export default function GeneralReimbursementWizard() {
     } finally {
       setSaving(false);
     }
-  };
-
-  const onUploadInvoice = () => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.pdf,.jpg,.jpeg,.png';
-    input.onchange = async () => {
-      const file = input.files?.[0];
-      if (!file) return;
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('reimbursement_category', 'GENERAL');
-      setUploadingInvoice(true);
-      try {
-        const uploaded = await reimbursementApi.uploadInvoice(formData);
-        const row = uploaded.data;
-        setInvoices((prev) => [row, ...prev.filter((item) => item.id !== row.id)]);
-        setSelectedInvoiceIds((prev) => [...new Set([...prev, row.id])]);
-        showToast('Invoice uploaded', 'success');
-      } catch {
-        showToast('Invoice upload failed', 'error');
-      } finally {
-        setUploadingInvoice(false);
-      }
-    };
-    input.click();
   };
 
   const exceptionExpenses = (claim?.expenses || []).filter((expense) => expense.exception_reason_required);
@@ -191,7 +181,9 @@ export default function GeneralReimbursementWizard() {
     sendClaim();
   };
 
-  const goStep2 = async () => {
+  // Saves the draft, then reads it back with its expenses (the same read the travel claim's
+  // policy step uses) so the Submit step has the claim exactly as the server holds it.
+  const goSubmit = async () => {
     try {
       const draft = await saveDraft();
       if (!draft?.id) return;
@@ -203,20 +195,7 @@ export default function GeneralReimbursementWizard() {
     }
   };
 
-  const goStep3 = async () => {
-    try {
-      const draft = await saveDraft();
-      if (!draft?.id) return;
-      const checked = await reimbursementApi.policyCheck(draft.id);
-      setClaim((prev) => ({ ...prev, ...checked.data }));
-      setCurrentStep(3);
-    } catch (error) {
-      showToast(error?.response?.data?.detail || 'Could not save the reimbursement draft', 'error');
-    }
-  };
-
   const selectedInvoiceRows = visibleInvoices.filter((invoice) => selectedInvoiceIds.includes(invoice.id));
-  const policyChecked = currentStep >= 2 && claim;
 
   return (
     <ClaimWizardShell
@@ -229,10 +208,6 @@ export default function GeneralReimbursementWizard() {
         <ClaimSummaryCard
           invoiceCount={selectedInvoiceRows.length}
           invoiceTotal={selectedInvoiceRows.reduce((sum, invoice) => sum + Number(invoice.total_amount || 0), 0)}
-          policyStep={2}
-          policy={policyChecked ? policyCounts(claim) : null}
-          advance={claim?.advance_received}
-          payable={netPayable(claim)}
         />
       }
     >
@@ -245,26 +220,17 @@ export default function GeneralReimbursementWizard() {
               checked ? [...new Set([...prev, invoiceId])] : prev.filter((item) => item !== invoiceId),
             )
           }
-          onUploadInvoice={onUploadInvoice}
+          onUploadFiles={uploadBills}
+          onInvoiceReviewed={onInvoiceReviewed}
           uploading={uploadingInvoice}
           busy={saving}
-          reviewWarning={reviewWarning}
           sentBackHint={sentBackHint}
-          onNext={goStep2}
+          nextLabel="Next: Submit"
+          onNext={goSubmit}
         />
       ) : null}
 
       {currentStep === 2 ? (
-        <ClaimWizardStepPolicyCheck
-          claim={claim}
-          isGeneral
-          busy={saving}
-          onBack={() => setCurrentStep(1)}
-          onNext={goStep3}
-        />
-      ) : null}
-
-      {currentStep === 3 ? (
         <ClaimWizardStepSubmit
           claim={claim}
           isGeneral
@@ -274,9 +240,9 @@ export default function GeneralReimbursementWizard() {
           selectedInvoiceIds={selectedInvoiceIds}
           declarationChecked={declarationChecked}
           onToggleDeclaration={setDeclarationChecked}
-          onBack={() => setCurrentStep(2)}
+          onBack={() => setCurrentStep(1)}
           onSubmit={submit}
-          submitting={submitting || saving || uploadingInvoice}
+          submitting={submitting || saving || Boolean(uploadingInvoice)}
         />
       ) : null}
 

@@ -2,9 +2,12 @@ import {
   AlertCircle,
   Archive,
   Camera,
+  CheckCircle2,
   ClipboardList,
+  FileCheck2,
   FileImage,
   FileText,
+  Globe,
   Lock,
   Plane,
   Plus,
@@ -25,6 +28,7 @@ import useBodyScrollLock from '../hooks/useBodyScrollLock';
 import { useAsyncAction } from '../hooks/useAsyncAction';
 import { reimbursementApi } from '../services/reimbursementApi';
 import { claimNewPath } from '../utils/claimRoutes';
+import { billDate, billMatches, billName } from '../utils/bills';
 import { formatDate } from '../utils/formatters';
 
 const ACCEPTED_TYPES = ['image/jpeg', 'image/png', 'image/heic', 'application/pdf'];
@@ -174,7 +178,7 @@ export default function InvoiceUpload() {
   const activeTab = TABS.find((t) => t.key === tab) || TABS[0];
   const filteredInvoices = activeInvoices.filter((invoice) => {
     if (!activeTab.match(invoice)) return false;
-    if (searchQuery && !(invoice.original_filename || '').toLowerCase().includes(searchQuery)) return false;
+    if (searchQuery && !billMatches(invoice, searchQuery)) return false;
     return true;
   });
   const hasActiveFilters = Boolean(search) || tab !== 'all';
@@ -340,7 +344,7 @@ export default function InvoiceUpload() {
     return (
       <div
         key={invoice.id}
-        className={`grid grid-cols-[22px_36px_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1.5 border-t border-slate-100 px-4 py-[11px] first:border-t-0 lg:grid-cols-[22px_36px_minmax(0,1.6fr)_104px_minmax(0,1.3fr)_150px_128px] ${
+        className={`grid grid-cols-[22px_36px_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1.5 border-t border-slate-100 px-4 py-[11px] first:border-t-0 lg:grid-cols-[22px_36px_minmax(0,1.6fr)_104px_minmax(0,1.3fr)_124px_180px] ${
           picked.has(invoice.id) ? 'bg-emerald-50/50' : 'hover:bg-[#fbfdfc]'
         } ${claimable && otherType ? 'opacity-45' : ''} ${reading ? 'animate-pulse' : ''}`}
       >
@@ -360,11 +364,14 @@ export default function InvoiceUpload() {
           ) : null}
         </div>
         <div className="min-w-0">
+          {/* Named by what it is (vendor · bill date) once it's been read; the file name until then. */}
           <div className="truncate text-[13.5px] font-extrabold text-ink" title={invoice.original_filename}>
-            {invoice.original_filename}
+            {billName(invoice)}
+            {billDate(invoice) ? <span className="font-semibold text-slate-500"> · {billDate(invoice)}</span> : null}
           </div>
           <div className="flex items-center gap-1.5 truncate text-xs text-slate-500">
-            {invoice.created_at ? `Uploaded ${formatDate(invoice.created_at).replace(/ \d{4}$/, '')} · ` : ''}
+            {invoice.vendor_name ? `${invoice.original_filename} · ` : ''}
+            {invoice.created_at ? `Uploaded ${formatDate(invoice.created_at)} · ` : ''}
             {fileSize(invoice.file_size_bytes)}
           </div>
         </div>
@@ -574,7 +581,7 @@ export default function InvoiceUpload() {
               <Search size={15} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
                 className="h-[34px] w-full rounded-[9px] border border-slate-200 bg-white pl-8 pr-8 text-[12.5px] text-ink focus:border-brand focus:outline-none"
-                placeholder="Search by file name"
+                placeholder="Search by vendor, amount or file name"
                 aria-label="Search invoices"
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
@@ -591,13 +598,52 @@ export default function InvoiceUpload() {
               ) : null}
             </div>
           </div>
-          <div className="flex flex-wrap gap-x-[18px] gap-y-1 px-0.5 text-[12.5px] text-slate-500">
-            <span>
-              Ready to claim: <b className="font-mono font-semibold text-ink">{inr(ready.reduce((a, i) => a + Number(i.total_amount || 0), 0))}</b> across{' '}
-              {ready.length} invoice{ready.length === 1 ? '' : 's'}
-            </span>
-            {onClaimCount ? <span>On a claim: {onClaimCount}</span> : null}
-            {foreignCount ? <span>{foreignCount} foreign-currency bill{foreignCount === 1 ? '' : 's'}, shown in ₹</span> : null}
+          {/* Summary: each card also jumps to its tab. */}
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setTab('ready')}
+              className="flex items-center gap-2.5 rounded-xl border border-emerald-200 bg-emerald-50/60 py-2 pl-2 pr-3.5 text-left transition-colors hover:bg-emerald-50"
+              title="Show invoices ready to claim"
+            >
+              <span className="flex h-8 w-8 flex-none items-center justify-center rounded-lg bg-white text-emerald-700 shadow-sm">
+                <CheckCircle2 size={16} />
+              </span>
+              <span className="min-w-0">
+                <span className="block text-[10.5px] font-extrabold uppercase tracking-[0.06em] text-emerald-700">Ready to claim</span>
+                <span className="flex items-baseline gap-1.5">
+                  <b className="font-mono text-[15px] font-semibold text-ink">{inr(ready.reduce((a, i) => a + Number(i.total_amount || 0), 0))}</b>
+                  <span className="whitespace-nowrap text-[11.5px] text-slate-500">
+                    · {ready.length} invoice{ready.length === 1 ? '' : 's'}
+                  </span>
+                </span>
+              </span>
+            </button>
+            {onClaimCount ? (
+              <button
+                type="button"
+                onClick={() => setTab('onclaim')}
+                className="flex items-center gap-2.5 rounded-xl border border-slate-200 bg-white py-2 pl-2 pr-3.5 text-left transition-colors hover:bg-slate-50"
+                title="Show invoices already on a claim"
+              >
+                <span className="flex h-8 w-8 flex-none items-center justify-center rounded-lg bg-slate-100 text-slate-500">
+                  <FileCheck2 size={16} />
+                </span>
+                <span className="min-w-0">
+                  <span className="block text-[10.5px] font-extrabold uppercase tracking-[0.06em] text-slate-500">On a claim</span>
+                  <span className="flex items-baseline gap-1.5">
+                    <b className="font-mono text-[15px] font-semibold text-ink">{onClaimCount}</b>
+                    <span className="whitespace-nowrap text-[11.5px] text-slate-500">invoice{onClaimCount === 1 ? '' : 's'}</span>
+                  </span>
+                </span>
+              </button>
+            ) : null}
+            {foreignCount ? (
+              <span className="inline-flex items-center gap-1.5 px-1 text-[11.5px] text-slate-500">
+                <Globe size={13} className="flex-none" />
+                {foreignCount} foreign-currency bill{foreignCount === 1 ? '' : 's'}, shown in ₹
+              </span>
+            ) : null}
           </div>
         </>
       ) : null}
@@ -630,7 +676,7 @@ export default function InvoiceUpload() {
         </div>
       ) : (
         <section aria-label="Your invoices" className="overflow-hidden rounded-[14px] border border-slate-200 bg-white">
-          <div className="hidden grid-cols-[22px_36px_minmax(0,1.6fr)_104px_minmax(0,1.3fr)_150px_128px] gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 text-[10.5px] font-extrabold uppercase tracking-[0.06em] text-slate-400 lg:grid">
+          <div className="hidden grid-cols-[22px_36px_minmax(0,1.6fr)_104px_minmax(0,1.3fr)_124px_180px] gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 text-[10.5px] font-extrabold uppercase tracking-[0.06em] text-slate-400 lg:grid">
             <span />
             <span />
             <span>Invoice</span>
@@ -707,7 +753,7 @@ function UploadCategoryModal({ files, category, onSelectCategory, onConfirm, onC
   const names = Array.from(files).map((f) => f.name);
 
   return (
-    <div className="fixed inset-0 z-[90] grid place-items-center bg-slate-900/40 p-4">
+    <div className="fixed inset-0 z-[90] grid place-items-center bg-slate-900/60 p-4 backdrop-blur-sm">
       <div className="w-full max-w-[560px] rounded-2xl bg-white p-5 shadow-[0_24px_48px_rgba(15,23,42,.25)]" role="dialog" aria-modal="true" aria-labelledby="upload-category-title">
         <h3 id="upload-category-title" className="text-base font-bold text-ink">
           What {files.length > 1 ? `are these ${files.length} invoices` : 'is this invoice'} for?

@@ -5,6 +5,7 @@ import { Link } from 'react-router-dom';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { adminApi } from '../../services/adminApi';
 import { useAuthStore } from '../../store/authStore';
+import { formatDatetime } from '../../utils/formatters';
 import Skeleton from '../../components/ui/Skeleton';
 
 const statConfig = [
@@ -99,7 +100,7 @@ export default function AdminDashboard() {
                 <span>·</span>
                 <span>Actor: {log.actor_id || 'System'}</span>
                 <span>·</span>
-                <span>{new Date(log.timestamp).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })}</span>
+                <span>{formatDatetime(log.timestamp)}</span>
                 <span className="ml-auto font-mono text-[10px] text-slate-400 truncate max-w-[120px]" title={log.event_hash}>
                   {log.event_hash}
                 </span>

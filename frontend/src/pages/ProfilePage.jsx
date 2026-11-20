@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 
 import { roleAccent, roleChip } from '../components/layout/roleAccent';
 import { Pill } from '../components/approvals/ApprovalQueueParts';
+import { EMPTY_TRAVELLER_ID, MealChoice, MealTag, TravellerIdFields, idTypeLabel, travellerIdErrors } from '../components/travel/TravellerId';
 import { BTN_GHOST, BTN_MAIN, BTN_NO, CARD, CardHead, FIELD, LABEL } from '../components/policy/PolicyAdminParts';
 import { useSetPageTitle } from '../context/PageTitleContext';
 import useToast from '../hooks/useToast';
@@ -291,6 +292,143 @@ function PasswordCard({ email }) {
   );
 }
 
+/** Meal preference and ID (given after the first sign-in): new travel requests are filled in from them. */
+function TravelDetailsCard({ profile, onSaved }) {
+  const { showToast } = useToast();
+  const saved = profile?.traveller_id;
+  const [editing, setEditing] = useState(false);
+  const [meal, setMeal] = useState('');
+  const [ident, setIdent] = useState(EMPTY_TRAVELLER_ID);
+  const [uploading, setUploading] = useState(false);
+  const [showErrors, setShowErrors] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [opening, setOpening] = useState(false);
+  const [error, setError] = useState(null);
+
+  // Opens the form with the saved ID (its file ref comes from the travel form's defaults).
+  const startEdit = async () => {
+    setMeal(profile?.meal_preference || '');
+    setIdent(EMPTY_TRAVELLER_ID);
+    setShowErrors(false);
+    setError(null);
+    setEditing(true);
+    try {
+      const saved_id = (await reimbursementApi.lastTravelIdProof()).data?.saved_id;
+      if (saved_id) setIdent({ id_name: saved_id.id_name || '', id_type: saved_id.id_type || '', id_proof_ref: saved_id.id_proof_ref || '', id_proof_filename: saved_id.id_proof_filename || '' });
+    } catch {
+      /* start empty */
+    }
+  };
+
+  const viewId = async () => {
+    setOpening(true);
+    try {
+      const res = await reimbursementApi.myIdProofBlob();
+      window.open(URL.createObjectURL(res.data), '_blank', 'noopener');
+    } catch {
+      showToast('Could not open your ID', 'error');
+    } finally {
+      setOpening(false);
+    }
+  };
+
+  const save = async (e) => {
+    e.preventDefault();
+    if (!meal || Object.values(travellerIdErrors(ident)).some(Boolean) || uploading) {
+      setShowErrors(true);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await reimbursementApi.saveTravellerProfile({
+        meal_preference: meal,
+        id_name: ident.id_name.trim(),
+        id_type: ident.id_type,
+        id_proof_ref: ident.id_proof_ref,
+        id_proof_filename: ident.id_proof_filename,
+      });
+      onSaved(res.data);
+      setEditing(false);
+      showToast('Travel details saved', 'success');
+    } catch (err) {
+      setError(errorText(err, 'Could not save your travel details'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section aria-label="Travel details" className={CARD}>
+      <CardHead title="Travel details" sub="New travel requests are filled in from these">
+        {!editing ? (
+          <button type="button" className={BTN_GHOST} onClick={startEdit}>
+            Edit
+          </button>
+        ) : null}
+      </CardHead>
+      {editing ? (
+        <form className="flex flex-col gap-3 px-4 py-3.5" onSubmit={save} noValidate>
+          <Problem>{error}</Problem>
+          <div>
+            <span className={LABEL}>Meal preference</span>
+            <MealChoice value={meal} onChange={setMeal} invalid={showErrors && !meal} />
+          </div>
+          <TravellerIdFields
+            value={ident}
+            onChange={setIdent}
+            upload={reimbursementApi.uploadMyIdProof}
+            showErrors={showErrors}
+            idPrefix="profile-id"
+            fieldClass={FIELD}
+            labelClass={LABEL}
+            onUploadingChange={setUploading}
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="submit" className={BTN_MAIN} disabled={busy || uploading}>
+              {busy ? 'Saving…' : 'Save'}
+            </button>
+            <button type="button" className={BTN_GHOST} disabled={busy} onClick={() => setEditing(false)}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      ) : (
+        <dl className="flex flex-col divide-y divide-slate-100 px-4 py-1">
+          <div className="flex items-center justify-between gap-3 py-2.5 text-[13px]">
+            <dt className="text-slate-500">Meal preference</dt>
+            <dd className="font-bold text-ink">{profile?.meal_preference ? <MealTag code={profile.meal_preference} /> : <span className="font-semibold text-slate-400">Not set</span>}</dd>
+          </div>
+          <div className="flex items-center justify-between gap-3 py-2.5 text-[13px]">
+            <dt className="shrink-0 text-slate-500">Name as per ID</dt>
+            <dd className="min-w-0 text-right font-bold text-ink">
+              {saved ? (
+                <>
+                  <span className="break-words">{saved.id_name}</span>
+                  {saved.id_type ? <span className="block text-xs font-semibold text-slate-500">{idTypeLabel(saved.id_type)}</span> : null}
+                </>
+              ) : (
+                <span className="font-semibold text-slate-400">Not set</span>
+              )}
+            </dd>
+          </div>
+          {saved ? (
+            <div className="flex items-center justify-between gap-3 py-2.5 text-[13px]">
+              <dt className="shrink-0 text-slate-500">ID copy</dt>
+              <dd className="flex min-w-0 items-center gap-2">
+                <span className="min-w-0 truncate text-xs text-slate-500">{saved.id_proof_filename}</span>
+                <button type="button" className={BTN_GHOST} disabled={opening} onClick={viewId}>
+                  {opening ? 'Opening…' : 'View'}
+                </button>
+              </dd>
+            </div>
+          ) : null}
+        </dl>
+      )}
+    </section>
+  );
+}
+
 function AdvanceCard({ amount }) {
   const left = Number(amount || 0);
   return (
@@ -566,7 +704,9 @@ export default function ProfilePage() {
   // organisation's auto-approve limit is above ₹0 (a manager can still have their own amount off).
   const showOutOfOffice = Boolean(profile?.can_create_delegation) && profile?.delegation_feature_enabled !== false;
   // Anyone with the Manager setting (whatever their role).
-  const showAutoApprove = (profile?.is_manager || profile?.role === 'REPORTING_MANAGER') && Number(profile?.org_auto_approve_ceiling || 0) > 0;
+  // Auto-approve is hidden for now (/me auto_approve_enabled is off), so the card doesn't show.
+  const showAutoApprove =
+    Boolean(profile?.auto_approve_enabled) && (profile?.is_manager || profile?.role === 'REPORTING_MANAGER') && Number(profile?.org_auto_approve_ceiling || 0) > 0;
 
   const [orgChart, setOrgChart] = useState(null);
   const [orgChartError, setOrgChartError] = useState(false);
@@ -581,6 +721,7 @@ export default function ProfilePage() {
   const left = [];
   const right = [];
   if (canSeeOrgChart) left.push(<ReportingLine key="line" roots={orgChart} error={orgChartError} accent={accent} roleLabel={roleLabel} />);
+  left.push(<TravelDetailsCard key="travel" profile={profile} onSaved={setProfile} />);
   if (showOutOfOffice) left.push(<OutOfOfficeCard key="ooo" />);
   right.push(<PasswordCard key="pw" email={email} />);
   right.push(<AdvanceCard key="adv" amount={profile?.outstanding_advance} />);
@@ -593,7 +734,7 @@ export default function ProfilePage() {
       <div>
         <h1 className="text-xl font-extrabold text-ink">My profile</h1>
         <p className="mt-0.5 text-[13px] text-slate-500">
-          Your details, password and advance{showOutOfOffice ? ', and who covers your approvals when you’re away' : ''}.
+          Your details, travel details, password and advance{showOutOfOffice ? ', and who covers your approvals when you’re away' : ''}.
         </p>
       </div>
 

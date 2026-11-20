@@ -6,6 +6,7 @@ import { Pill } from '../approvals/ApprovalQueueParts';
 import { adminApi } from '../../services/adminApi';
 import { hasPermission } from '../../services/permissions';
 import { useAuthStore } from '../../store/authStore';
+import { formatDate } from '../../utils/formatters';
 
 export const FIELD =
   'h-9 w-full rounded-[10px] border border-slate-200 bg-white px-2.5 text-[13px] text-ink outline-none focus:border-brand focus:ring-[3px] focus:ring-brand/10 read-only:bg-slate-50 disabled:bg-slate-50';
@@ -22,8 +23,7 @@ export const BTN_SM = `${BTN} h-7 rounded-lg border-slate-200 bg-white px-2.5 te
 /** Today as YYYY-MM-DD in the viewer's own time zone (the app's users are in IST). */
 export const todayIso = () => new Date().toLocaleDateString('en-CA');
 
-export const fmtDate = (iso) =>
-  iso ? new Date(`${String(iso).slice(0, 10)}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+export const fmtDate = (iso) => (iso ? formatDate(String(iso).slice(0, 10)) : '');
 
 const approved = (v) => v.status !== 'DRAFT' && v.status !== 'PENDING_HRBP';
 

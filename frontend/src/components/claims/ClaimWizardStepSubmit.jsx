@@ -1,5 +1,6 @@
 import { Bus, FileText, Plane, Send, Train } from 'lucide-react';
 
+import { billDate, billName } from '../../utils/bills';
 import { Card, Note, StepActions, dateSpan, dayMonth, foreignAmount, inr } from './ClaimWizardShell';
 
 const MODE_ICON = { FLIGHT: Plane, TRAIN: Train, BUS: Bus };
@@ -94,7 +95,10 @@ export default function ClaimWizardStepSubmit({
                   <div key={invoice.id} className="flex items-center justify-between gap-2.5 py-1.5 text-[12.5px]">
                     <span className="flex min-w-0 items-center gap-2 text-slate-700">
                       <FileText size={13} className="shrink-0 text-slate-400" />
-                      <span className="min-w-0 break-all">{invoice.original_filename}</span>
+                      <span className="min-w-0 break-words" title={invoice.original_filename}>
+                        {billName(invoice)}
+                        {billDate(invoice) ? <span className="text-slate-500"> · {billDate(invoice)}</span> : null}
+                      </span>
                     </span>
                     <span className="shrink-0 text-right">
                       <b className="font-mono tabular-nums text-ink">{inr(invoice.total_amount)}</b>

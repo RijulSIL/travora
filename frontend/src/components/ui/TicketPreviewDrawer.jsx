@@ -157,7 +157,7 @@ export default function TicketPreviewDrawer({ open, onClose, title, blob, conten
 
   return createPortal(
     <div className="fixed inset-0 z-[1000] flex items-center justify-center p-3 md:p-6" role="dialog" aria-modal="true" aria-label="Ticket preview">
-      <button type="button" className="absolute inset-0 cursor-default bg-slate-900/55 backdrop-blur-[2px]" aria-label="Close" onClick={onClose} />
+      <button type="button" className="absolute inset-0 cursor-default bg-slate-900/60 backdrop-blur-sm" aria-label="Close" onClick={onClose} />
 
       <div
         className={`relative z-10 flex h-full max-h-[90vh] w-full flex-col overflow-hidden rounded-[18px] bg-white shadow-[0_30px_80px_rgba(15,23,42,.35)] animate-in fade-in zoom-in-95 duration-200 ${

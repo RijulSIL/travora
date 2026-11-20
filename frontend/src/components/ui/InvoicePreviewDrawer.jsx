@@ -225,7 +225,7 @@ export default function InvoicePreviewDrawer({ open, onClose, invoice }) {
   const zoomIndex = zoom == null ? ZOOM_STEPS.indexOf(100) : ZOOM_STEPS.indexOf(zoom);
 
   return createPortal(
-    <div className="fixed inset-0 z-[1000] bg-slate-900/55" onClick={onClose}>
+    <div className="fixed inset-0 z-[1000] bg-slate-900/60 backdrop-blur-sm" onClick={onClose}>
       <aside
         role="dialog"
         aria-label="Invoice preview"

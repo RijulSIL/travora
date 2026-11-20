@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Clock } from 'lucide-react';
 
 import { reimbursementApi } from '../../services/reimbursementApi';
+import { formatWeekdayDate } from '../../utils/formatters';
 import { EYEBROW } from './TravelRequestFormParts';
 import { BUS_TYPES, leaveWindowsText, TIME_WINDOWS } from './travelRequestView';
 
@@ -36,10 +37,7 @@ export const pickDone = (pick) =>
   );
 
 const inr = (n) => `₹${Number(n).toLocaleString('en-IN')}`;
-const dayLabel = (iso) => {
-  const d = new Date(`${iso}T00:00:00`);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
-};
+const dayLabel = (iso) => formatWeekdayDate(iso) || iso;
 const minutes = (clock) => {
   const m = /^(\d{1,2})[:.](\d{2})/.exec(clock || '');
   return m ? Number(m[1]) * 60 + Number(m[2]) : 0;

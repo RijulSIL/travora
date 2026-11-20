@@ -1,15 +1,16 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeftRight, ChevronDown, Clock, FileCheck2, Plus, Send, ShieldAlert, Ticket, UploadCloud, X } from 'lucide-react';
+import { ArrowLeftRight, ChevronDown, Clock, Plus, Send, ShieldAlert, Ticket, X } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 
 import { RELOCATION_PURPOSE } from '../../components/claims/ClaimRelocationSteps';
 import TicketPreviewDrawer from '../../components/ui/TicketPreviewDrawer';
-import { EntitlementChips, TravelRequestDetail, TravelRequestRow, TripRow } from '../../components/travel/TravelRequestList';
+import { EntitlementChips, TravelRequestDetail, TravelRequestRow, TripDetail, TripRow } from '../../components/travel/TravelRequestList';
 import { claimWindow, claimWindowDays, describeRequest } from '../../components/travel/travelRequestView';
 import LegPicker, { pickDone, segmentComplete } from '../../components/travel/LegPicker';
-import { ID_TYPES } from '../../components/travel/TravellerId';
+import SelfTicketSlots, { selfTicketError, selfTicketsPayload } from '../../components/travel/SelfTicketSlots';
+import { EMPTY_TRAVELLER_ID, MealChoice, TravellerIdFields, travellerIdErrors } from '../../components/travel/TravellerId';
 import {
   CapsPanel,
   EYEBROW,
@@ -23,6 +24,7 @@ import {
 } from '../../components/travel/TravelRequestFormParts';
 import { dayOf, today } from '../../components/home/HomeParts';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
+import DateInput from '../../components/ui/DateInput';
 import Pagination from '../../components/ui/Pagination';
 import SubmissionAnimation from '../../components/ui/SubmissionAnimation';
 import { useSetPageTitle } from '../../context/PageTitleContext';
@@ -31,18 +33,21 @@ import { usePagination } from '../../hooks/usePagination';
 import useToast from '../../hooks/useToast';
 import { reimbursementApi } from '../../services/reimbursementApi';
 import { claimNewPath } from '../../utils/claimRoutes';
+import { formatWeekdayDate } from '../../utils/formatters';
 import { required } from '../../utils/validators';
 import useBodyScrollLock from '../../hooks/useBodyScrollLock';
 
-// The traveller's ID — all required on every request; filled in from their previous one.
-const EMPTY_TRAVELLER_ID = { id_name: '', id_type: '', id_proof_ref: '', id_proof_filename: '' };
+// The traveller's ID is required on every request and filled in from their profile; so is the
+// meal preference. The passport is optional (needed for international travel): letters and digits
+// once spaces and dashes are dropped, as the server checks (travel_id_proof_service.clean_passport).
+const tidyPassport = (v) => String(v || '').replace(/[\s-]/g, '').toUpperCase();
 
-function travellerIdErrors(t) {
-  return {
-    id_name: t.id_name.trim().length < 2 ? 'Enter your full name exactly as it appears on your ID' : null,
-    id_type: t.id_type ? null : 'Choose which ID you are attaching',
-    id_proof_ref: t.id_proof_ref ? null : 'Attach a copy of your ID',
-  };
+function passportError(number, expiry) {
+  const n = tidyPassport(number);
+  if (!n) return expiry ? 'Enter the passport number for that expiry date' : null;
+  if (!/^[A-Z0-9]{5,20}$/.test(n)) return 'Enter the passport number as printed: letters and digits only';
+  if (expiry && expiry < isoDay(today())) return 'This passport has expired';
+  return null;
 }
 
 function emptyRequestForm() {
@@ -70,6 +75,10 @@ const TRIP_TYPES = [
   { value: 'ONE_WAY', label: 'One way' },
   { value: 'ROUND_TRIP', label: 'Round trip' },
   { value: 'MULTI_CITY', label: 'Multi-city' },
+];
+const BOOKED_BY = [
+  { value: 'COMPANY', label: 'The company' },
+  { value: 'SELF', label: 'I’ve booked it' },
 ];
 const TRAVEL_TYPES = [
   { value: 'NON_PROJECT', label: 'Non-project' },
@@ -101,9 +110,9 @@ function legDateError(legs, i) {
   return earlier && date < earlier ? `Leg ${i + 1} is dated before an earlier leg — keep the legs in date order` : null;
 }
 
-/** "Wed, 14 Oct" */
+/** "Wed, 14/10/2026" */
 function formDate(value) {
-  return value ? new Date(`${value}T00:00:00`).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' }) : '';
+  return value ? formatWeekdayDate(value) : '';
 }
 
 export default function TravelRequestsPage() {
@@ -170,6 +179,30 @@ export default function TravelRequestsPage() {
       else next.add(id);
       return next;
     });
+  }
+
+  // My trips: which trips are opened, and each uploaded ticket's details (fetched the first
+  // time its trip is opened; false = couldn't be loaded, retried on the next open).
+  const [openTripIds, setOpenTripIds] = useState(() => new Set());
+  const [tripTicketDetails, setTripTicketDetails] = useState({});
+
+  function toggleTrip(trip) {
+    const opening = !openTripIds.has(trip.id);
+    setOpenTripIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(trip.id)) next.delete(trip.id);
+      else next.add(trip.id);
+      return next;
+    });
+    const tid = trip.desk_ticket_id;
+    if (opening && tid && !tripTicketDetails[tid]) {
+      setTripTicketDetails((prev) => ({ ...prev, [tid]: undefined }));
+      reimbursementApi
+        .travelTicketDetails(tid)
+        .then((r) => r.data)
+        .catch(() => false)
+        .then((data) => setTripTicketDetails((prev) => ({ ...prev, [tid]: data })));
+    }
   }
 
   function ticketMenuPosition(buttonEl, itemCount) {
@@ -285,12 +318,27 @@ export default function TravelRequestsPage() {
     if (!modalOpen) setEditingCity(false); // closed with a city field focused: no blur comes
   }, [modalOpen]);
   const [travellerId, setTravellerId] = useState(EMPTY_TRAVELLER_ID);
+  // The ID on their profile; a different one on this request can be saved as it ("for next time").
+  const [savedId, setSavedId] = useState(null);
+  const [saveIdToProfile, setSaveIdToProfile] = useState(false);
+  const [meal, setMeal] = useState('');
+  const [passport, setPassport] = useState({ number: '', expiry: '' });
   const [idUploading, setIdUploading] = useState(false);
   const [showIdErrors, setShowIdErrors] = useState(false);
   const idRef = useRef(null);
-  const idErrors = travellerIdErrors(travellerId);
+  const idErrors = {
+    ...travellerIdErrors(travellerId),
+    meal: meal ? null : 'Choose veg or non-veg for this trip',
+    passport: passportError(passport.number, passport.expiry),
+  };
+  const idDiffersFromSaved =
+    !savedId ||
+    travellerId.id_name.trim() !== (savedId.id_name || '') ||
+    travellerId.id_type !== (savedId.id_type || '') ||
+    travellerId.id_proof_ref !== (savedId.id_proof_ref || '');
 
-  // Fill in the ID from the previous request (only the parts still empty).
+  // Fill in the ID and meal preference from their profile and the passport from their last request
+  // (only the parts still empty).
   useEffect(() => {
     if (!modalOpen) return;
     reimbursementApi
@@ -298,41 +346,36 @@ export default function TravelRequestsPage() {
       .then((r) => {
         const last = r.data;
         if (!last) return;
+        setSavedId(last.saved_id || null);
         setTravellerId((prev) => ({
           id_name: prev.id_name || last.id_name || '',
           id_type: prev.id_type || last.id_type || '',
           id_proof_ref: prev.id_proof_ref || last.id_proof_ref || '',
           id_proof_filename: prev.id_proof_ref ? prev.id_proof_filename : last.id_proof_filename || '',
         }));
+        setMeal((prev) => prev || last.meal_preference || '');
+        setPassport((prev) => (prev.number || prev.expiry ? prev : { number: last.passport_number || '', expiry: last.passport_expiry || '' }));
       })
       .catch(() => {});
   }, [modalOpen]);
 
-  const pickIdFile = () => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.pdf,.jpg,.jpeg,.png,.heic';
-    input.onchange = async () => {
-      const file = input.files?.[0];
-      if (!file) return;
-      if (file.size > 10 * 1024 * 1024) {
-        showToast('The ID file can be up to 10 MB', 'error');
-        return;
-      }
-      const fd = new FormData();
-      fd.append('file', file);
-      setIdUploading(true);
-      try {
-        const r = await reimbursementApi.uploadTravelIdProof(fd);
-        setTravellerId((prev) => ({ ...prev, id_proof_ref: r.data.ref, id_proof_filename: r.data.filename }));
-      } catch (err) {
-        const detail = err?.response?.data?.detail;
-        showToast(typeof detail === 'string' ? detail : 'Could not upload the ID', 'error');
-      } finally {
-        setIdUploading(false);
-      }
-    };
-    input.click();
+  // Who books the tickets: the company (the travel agent, once approved) or the employee, who then
+  // attaches a ticket for every leg (and follows the self-booked approval route).
+  const [bookedBy, setBookedBy] = useState('COMPANY');
+  const [selfTickets, setSelfTickets] = useState({});
+  const [ticketUploading, setTicketUploading] = useState(false);
+  const [showTicketErrors, setShowTicketErrors] = useState(false);
+  const ticketsRef = useRef(null);
+
+  const resetTraveller = () => {
+    setTravellerId(EMPTY_TRAVELLER_ID);
+    setSaveIdToProfile(false);
+    setMeal('');
+    setPassport({ number: '', expiry: '' });
+    setShowIdErrors(false);
+    setBookedBy('COMPANY');
+    setSelfTickets({});
+    setShowTicketErrors(false);
   };
   const pickSegments = useMemo(() => {
     const v = form.values;
@@ -482,9 +525,16 @@ export default function TravelRequestsPage() {
     if (!end) return { claimed: false, open: true, text: '', ids: [trip.id] };
     const now = today();
     const ids = (group.length ? group : [trip]).filter((t) => unclaimedIds.has(t.id)).map((t) => t.id);
-    if (end >= now) return { claimed: false, open: false, text: 'Claim after you travel', ids };
+    if (end >= now) return { claimed: false, open: false, upcoming: true, text: 'Claim after you travel', ids };
     const claimState = claimWindow(end, windowDays, now);
-    return { claimed: false, open: claimState.state !== 'archived', late: claimState.state === 'late', ids, text: claimState.text };
+    return {
+      claimed: false,
+      open: claimState.state !== 'archived',
+      late: claimState.state === 'late',
+      archived: claimState.state === 'archived',
+      ids,
+      text: claimState.text,
+    };
   };
   const startClaim = (ids) => navigate(claimNewPath('TRAVEL', { tripIds: ids.join(',') }));
 
@@ -524,8 +574,23 @@ export default function TravelRequestsPage() {
       id_type: travellerId.id_type,
       id_proof_ref: travellerId.id_proof_ref,
       id_proof_filename: travellerId.id_proof_filename,
+      save_id_to_profile: idDiffersFromSaved && saveIdToProfile,
+      booked_by: bookedBy,
+      self_tickets: bookedBy === 'SELF' ? selfTicketsPayload(pickSegments, selfTickets) : [],
+      meal_preference: meal,
+      passport_number: tidyPassport(passport.number) || null,
+      passport_expiry: tidyPassport(passport.number) && passport.expiry ? passport.expiry : null,
     };
   }
+
+  // "Save this as my ID for next time" changed the profile: refresh it (My profile shows it).
+  const refreshProfileIfIdSaved = () => {
+    if (!(idDiffersFromSaved && saveIdToProfile)) return;
+    reimbursementApi
+      .me()
+      .then((r) => useAuthStore.getState().setProfile(r.data))
+      .catch(() => {});
+  };
 
   async function onCreate(e) {
     e.preventDefault();
@@ -536,6 +601,11 @@ export default function TravelRequestsPage() {
       if (pickSegments.some((seg) => !segmentComplete(seg) || !pickDone(legPicks[seg.key]))) {
         setShowPickErrors(true);
         pickerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
+      if (bookedBy === 'SELF' && (ticketUploading || pickSegments.some((seg) => selfTicketError(selfTickets[seg.key])))) {
+        setShowTicketErrors(true);
+        ticketsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
         return;
       }
       if (Object.values(idErrors).some(Boolean) || idUploading) {
@@ -549,6 +619,7 @@ export default function TravelRequestsPage() {
       setSubmissionState({ active: true, status: 'submitting', mode });
 
       await reimbursementApi.travelRequestsCreate(buildTravelRequestPayload(), { suppressErrorToast: true });
+      refreshProfileIfIdSaved();
 
       setIsSubmitting(false);
       setModalOpen(false);
@@ -559,8 +630,7 @@ export default function TravelRequestsPage() {
       form.setValues(emptyRequestForm());
       setLegPicks({});
       setShowPickErrors(false);
-      setTravellerId(EMPTY_TRAVELLER_ID);
-      setShowIdErrors(false);
+      resetTraveller();
 
     } catch (err) {
       setIsSubmitting(false);
@@ -595,6 +665,7 @@ export default function TravelRequestsPage() {
         { ...buildTravelRequestPayload(), justification: exceptionReason },
         { suppressErrorToast: true },
       );
+      refreshProfileIfIdSaved();
 
       setSubmissionState(s => ({ ...s, status: 'success' }));
       showToast('Travel request submitted — under review pending exception approval.', 'success');
@@ -607,8 +678,7 @@ export default function TravelRequestsPage() {
       form.setValues(emptyRequestForm());
       setLegPicks({});
       setShowPickErrors(false);
-      setTravellerId(EMPTY_TRAVELLER_ID);
-      setShowIdErrors(false);
+      resetTraveller();
     } catch (err) {
       setSubmissionState({ active: false, status: 'idle', mode: null });
       showToast(err.response?.data?.detail || err.message || 'Failed to submit exception', 'error');
@@ -785,7 +855,10 @@ export default function TravelRequestsPage() {
           </div>
         ) : (
           <div className="flex items-center gap-3 pb-2.5 text-[12.5px] font-bold text-slate-700">
-            {trips.length} booked trip{trips.length === 1 ? '' : 's'}
+            {(() => {
+              const live = trips.filter((t) => t.status !== 'CANCELLED').length;
+              return `${live} booked trip${live === 1 ? '' : 's'}`;
+            })()}
             {trips.filter((t) => tripClaim(t).open).length ? (
               <span className="font-bold text-amber-700">{trips.filter((t) => tripClaim(t).open).length} still to claim</span>
             ) : null}
@@ -827,7 +900,8 @@ export default function TravelRequestsPage() {
             </p>
           ) : (
             requestsPagination.pageItems.map(({ request, view: rv }) => {
-              const isOpen = expandedIds.has(request.id);
+              // A booked trip the travel desk cancelled stays listed but never opens.
+              const isOpen = expandedIds.has(request.id) && !rv.cancelledBooking;
               const isTicketMenuOpen = openTicketMenuId === request.id;
               const canClaim = rv.claim && !rv.claim.closed;
               return (
@@ -964,11 +1038,14 @@ export default function TravelRequestsPage() {
           ) : (
             tripsPagination.pageItems.map((t) => {
               const claim = tripClaim(t);
+              const isOpen = openTripIds.has(t.id) && t.status !== 'CANCELLED';
               return (
+                <Fragment key={t.id}>
                 <TripRow
-                  key={t.id}
                   trip={t}
                   claim={claim}
+                  open={isOpen}
+                  onToggle={() => toggleTrip(t)}
                   actions={
                     <>
                       {claim.open && claim.ids?.length ? (
@@ -992,6 +1069,26 @@ export default function TravelRequestsPage() {
                     </>
                   }
                 />
+                {isOpen ? (
+                  <TripDetail
+                    trip={t}
+                    claim={claim}
+                    details={t.desk_ticket_id ? tripTicketDetails[t.desk_ticket_id] : null}
+                    onViewTicket={() => previewTripDesk(t)}
+                    footer={
+                      claim.open && claim.ids?.length ? (
+                        <button
+                          type="button"
+                          onClick={() => startClaim(claim.ids)}
+                          className="inline-flex h-7 items-center rounded-lg bg-brand px-2.5 text-[11.5px] font-bold text-white hover:bg-brand/90"
+                        >
+                          Start claim
+                        </button>
+                      ) : null
+                    }
+                  />
+                ) : null}
+                </Fragment>
               );
             })
           )}
@@ -1019,7 +1116,7 @@ export default function TravelRequestsPage() {
 
       {/* Modal: New Request Dialog */}
       {modalOpen ? createPortal(
-        <div className="fixed inset-0 z-[100] grid place-items-center bg-slate-900/45 p-4 backdrop-blur-[2px]">
+        <div className="fixed inset-0 z-[100] grid place-items-center bg-slate-900/60 p-4 backdrop-blur-sm">
           <div
             role="dialog"
             aria-modal="true"
@@ -1047,6 +1144,20 @@ export default function TravelRequestsPage() {
                 {/* Your trip */}
                 <section className="space-y-3">
                   <p className={EYEBROW}>Your trip</p>
+                  <div>
+                    <span className={LABEL}>Who&apos;s booking the tickets?</span>
+                    <SegButtons
+                      label="Who's booking the tickets?"
+                      options={BOOKED_BY}
+                      value={bookedBy}
+                      onChange={setBookedBy}
+                    />
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      {bookedBy === 'SELF'
+                        ? 'Attach your tickets below. Once it’s approved, the trip is booked with them.'
+                        : 'The travel agent books it once it’s approved.'}
+                    </p>
+                  </div>
                   <div className="flex flex-wrap gap-2.5">
                     <SegButtons
                       label="Trip type"
@@ -1121,9 +1232,8 @@ export default function TravelRequestsPage() {
                       <div className="grid gap-3 sm:grid-cols-2">
                         <div>
                           <label htmlFor="tr-date" className={LABEL}>{form.values.trip_type === 'ROUND_TRIP' ? 'Going on' : 'Travel date'}</label>
-                          <input
+                          <DateInput
                             id="tr-date"
-                            type="date"
                             required
                             min={isoDay(today())}
                             className={FIELD}
@@ -1136,9 +1246,8 @@ export default function TravelRequestsPage() {
                         {form.values.trip_type === 'ROUND_TRIP' ? (
                           <div>
                             <label htmlFor="tr-return" className={LABEL}>Coming back on</label>
-                            <input
+                            <DateInput
                               id="tr-return"
-                              type="date"
                               required
                               min={form.values.travel_date || isoDay(today())}
                               className={FIELD}
@@ -1222,8 +1331,7 @@ export default function TravelRequestsPage() {
                               onBlur={() => setEditingCity(false)}
                               list="city-to"
                             />
-                            <input
-                              type="date"
+                            <DateInput
                               aria-label={`Leg ${i + 1} date`}
                               className={`${FIELD} col-span-3 sm:col-span-1 sm:col-start-5 sm:row-start-1`}
                               required
@@ -1273,6 +1381,18 @@ export default function TravelRequestsPage() {
                 <div ref={pickerRef}>
                   <LegPicker segments={pickSegments} picks={legPicks} onChange={setLegPicks} showErrors={showPickErrors} paused={editingCity} />
                 </div>
+
+                {bookedBy === 'SELF' ? (
+                  <div ref={ticketsRef}>
+                    <SelfTicketSlots
+                      segments={pickSegments}
+                      tickets={selfTickets}
+                      onChange={setSelfTickets}
+                      showErrors={showTicketErrors}
+                      onUploadingChange={setTicketUploading}
+                    />
+                  </div>
+                ) : null}
 
                 {/* Why */}
                 <section className="space-y-3">
@@ -1335,72 +1455,80 @@ export default function TravelRequestsPage() {
                 {/* The traveller's ID — tickets are issued in this name */}
                 <section ref={idRef} className="space-y-3">
                   <div>
-                    <p className={EYEBROW}>Your ID</p>
+                    <p className={EYEBROW}>Traveller</p>
                     <p className="mt-0.5 text-[11.5px] text-slate-500">
-                      Tickets are booked in this name. Your approvers, the travel desk and the travel agent can see it.
+                      Filled in from your profile. Tickets are booked in the name on your ID; your approvers, the travel desk and the travel agent can see these.
                     </p>
+                  </div>
+                  <TravellerIdFields
+                    value={travellerId}
+                    onChange={setTravellerId}
+                    upload={reimbursementApi.uploadTravelIdProof}
+                    showErrors={showIdErrors}
+                    idPrefix="tr-id"
+                    fieldClass={FIELD}
+                    labelClass={LABEL}
+                    onUploadingChange={setIdUploading}
+                  />
+                  {idDiffersFromSaved && !idErrors.id_name && !idErrors.id_type && !idErrors.id_proof_ref ? (
+                    <label className="flex cursor-pointer items-start gap-2 rounded-[10px] border border-slate-200 bg-slate-50/60 px-3 py-2 text-xs text-slate-700">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 h-4 w-4 shrink-0 accent-brand"
+                        checked={saveIdToProfile}
+                        onChange={(e) => setSaveIdToProfile(e.target.checked)}
+                      />
+                      <span>
+                        <b className="font-bold text-ink">Save this as my ID for next time</b>
+                        <span className="block text-slate-500">
+                          {savedId ? 'Replaces the ID on your profile. Leave unticked to use it for this trip only.' : 'Your next travel requests will be filled in with it.'}
+                        </span>
+                      </span>
+                    </label>
+                  ) : null}
+                  <div>
+                    <span className={LABEL}>Meal preference</span>
+                    <MealChoice value={meal} onChange={setMeal} invalid={showIdErrors && !meal} />
+                    {showIdErrors ? <FieldError>{idErrors.meal}</FieldError> : null}
                   </div>
                   <div className="grid gap-3 sm:grid-cols-2">
                     <div>
-                      <label htmlFor="tr-id-name" className={LABEL}>Full name as per ID</label>
+                      <label htmlFor="tr-passport" className={LABEL}>
+                        Passport number <small className="font-medium text-slate-400">(optional)</small>
+                      </label>
                       <input
-                        id="tr-id-name"
-                        className={FIELD}
-                        placeholder="Exactly as printed on the ID"
-                        maxLength={255}
-                        value={travellerId.id_name}
-                        onChange={(e) => setTravellerId((t) => ({ ...t, id_name: e.target.value }))}
-                        aria-invalid={Boolean(showIdErrors && idErrors.id_name)}
-                        required
+                        id="tr-passport"
+                        className={`${FIELD} font-mono uppercase`}
+                        placeholder="e.g. A1234567"
+                        maxLength={32}
+                        autoComplete="off"
+                        value={passport.number}
+                        onChange={(e) => setPassport((p) => ({ ...p, number: e.target.value }))}
+                        aria-invalid={Boolean(showIdErrors && idErrors.passport)}
+                        aria-describedby="tr-passport-hint"
                       />
-                      {showIdErrors ? <FieldError>{idErrors.id_name}</FieldError> : null}
                     </div>
                     <div>
-                      <label htmlFor="tr-id-type" className={LABEL}>ID type</label>
-                      <select
-                        id="tr-id-type"
-                        className={FIELD}
-                        value={travellerId.id_type}
-                        onChange={(e) => setTravellerId((t) => ({ ...t, id_type: e.target.value }))}
-                        aria-invalid={Boolean(showIdErrors && idErrors.id_type)}
-                        required
-                      >
-                        <option value="">Select ID type</option>
-                        {ID_TYPES.map(([code, label]) => (
-                          <option key={code} value={code}>{label}</option>
-                        ))}
-                      </select>
-                      {showIdErrors ? <FieldError>{idErrors.id_type}</FieldError> : null}
+                      <label htmlFor="tr-passport-expiry" className={LABEL}>
+                        Passport expiry <small className="font-medium text-slate-400">(optional)</small>
+                      </label>
+                      <DateInput
+                        id="tr-passport-expiry"
+                        className={`${FIELD} w-full`}
+                        min={isoDay(today())}
+                        value={passport.expiry}
+                        onChange={(e) => setPassport((p) => ({ ...p, expiry: e.target.value }))}
+                        aria-label="Passport expiry date"
+                      />
                     </div>
                   </div>
-                  <div>
-                    <span className={LABEL}>ID proof</span>
-                    <button
-                      type="button"
-                      onClick={pickIdFile}
-                      disabled={idUploading}
-                      className={`w-full rounded-[10px] border-2 px-3 py-3 text-center text-xs font-semibold transition-colors ${
-                        travellerId.id_proof_ref
-                          ? 'border-solid border-emerald-200 bg-emerald-50 text-emerald-800'
-                          : showIdErrors
-                            ? 'border-dashed border-rose-300 bg-rose-50/40 text-rose-700'
-                            : 'border-dashed border-slate-200 bg-slate-50/60 text-slate-500 hover:border-brand/40'
-                      }`}
-                    >
-                      {idUploading ? (
-                        'Uploading…'
-                      ) : travellerId.id_proof_ref ? (
-                        <span className="inline-flex items-center gap-1.5">
-                          <FileCheck2 size={15} /> {travellerId.id_proof_filename || 'ID attached'} (click to replace)
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1.5">
-                          <UploadCloud size={15} /> Attach your ID: PDF, JPG, PNG or HEIC, up to 10 MB
-                        </span>
-                      )}
-                    </button>
-                    {showIdErrors ? <FieldError>{idErrors.id_proof_ref}</FieldError> : null}
-                  </div>
+                  {showIdErrors && idErrors.passport ? (
+                    <FieldError>{idErrors.passport}</FieldError>
+                  ) : (
+                    <p id="tr-passport-hint" className="-mt-1.5 text-[11px] text-slate-500">
+                      Needed for international travel. Leave it empty for trips within India.
+                    </p>
+                  )}
                 </section>
 
                 {/* Notes */}
@@ -1412,7 +1540,7 @@ export default function TravelRequestsPage() {
                     <input
                       id="tr-notes"
                       className={FIELD}
-                      placeholder="Meal preference, seat, timing…"
+                      placeholder="Seat, timing, anything else…"
                       value={form.values.notes}
                       onChange={(e) => form.handleChange('notes', e.target.value)}
                       onBlur={() => form.handleBlur('notes')}

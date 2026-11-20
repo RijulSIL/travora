@@ -19,6 +19,7 @@ import {
   todayIso,
   useCanConfigurePolicy,
 } from '../../components/policy/PolicyAdminParts';
+import DateInput from '../../components/ui/DateInput';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { useAsyncAction } from '../../hooks/useAsyncAction';
 import { adminApi } from '../../services/adminApi';
@@ -92,13 +93,13 @@ function CitySheet({ city, tiers, tierCode, readOnly, onSaved, onClose }) {
           <label className={LABEL} htmlFor="city-from">
             From
           </label>
-          <input id="city-from" type="date" className={FIELD} readOnly={ro} value={form.effective_from} onChange={(e) => set({ effective_from: e.target.value })} />
+          <DateInput id="city-from" className={FIELD} readOnly={ro} value={form.effective_from} onChange={(e) => set({ effective_from: e.target.value })} />
         </div>
         <div>
           <label className={LABEL} htmlFor="city-to">
             Until <small className="font-medium text-slate-400">(optional)</small>
           </label>
-          <input id="city-to" type="date" className={FIELD} readOnly={ro} value={form.effective_to} onChange={(e) => set({ effective_to: e.target.value })} />
+          <DateInput id="city-to" className={FIELD} readOnly={ro} value={form.effective_to} onChange={(e) => set({ effective_to: e.target.value })} />
         </div>
       </div>
     </Sheet>

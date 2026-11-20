@@ -11,6 +11,7 @@ import { usePagination } from '../../hooks/usePagination';
 import { hasPermission } from '../../services/permissions';
 import { reimbursementApi } from '../../services/reimbursementApi';
 import { useAuthStore } from '../../store/authStore';
+import { formatDatesInText } from '../../utils/formatters';
 
 const CATEGORY = { TRAVEL: ['Travel', 'sky'], GENERAL: ['General', 'violet'], RELOCATION: ['Relocation', 'orange'] };
 
@@ -223,7 +224,7 @@ export default function PaymentQueuePage() {
                       {row.employee_name || row.employee_label}
                       {row.department ? ` · ${row.department}` : ''} · submitted {day(row.submitted_at)}
                     </RowSub>
-                    {row.trip_summary && row.trip_summary !== '—' ? <RowSub>{row.trip_summary}</RowSub> : null}
+                    {row.trip_summary && row.trip_summary !== '—' ? <RowSub>{formatDatesInText(row.trip_summary)}</RowSub> : null}
                   </>
                 }
                 side={

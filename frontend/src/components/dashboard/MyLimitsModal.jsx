@@ -4,6 +4,7 @@ import { Car, ChevronDown, Coins, Hotel, Lock, MapPin, Plane, Search, Sun, Train
 
 import useBodyScrollLock from '../../hooks/useBodyScrollLock';
 import { reimbursementApi } from '../../services/reimbursementApi';
+import { formatDate } from '../../utils/formatters';
 
 const CAP_ROWS = [
   { key: 'hotel', label: 'Hotel', icon: Hotel },
@@ -16,11 +17,6 @@ const EYEBROW = 'mb-2 text-[10.5px] font-extrabold uppercase tracking-[0.07em] t
 function rupees(value) {
   if (value === null || value === undefined) return null;
   return `₹${Number(value).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
-}
-
-function formatDate(value) {
-  if (!value) return null;
-  return new Date(`${value}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
 function flightInfo(limits) {
@@ -153,7 +149,7 @@ export default function MyLimitsModal({ open, onClose }) {
   const flight = limits ? flightInfo(limits) : null;
 
   return createPortal(
-    <div className="fixed inset-0 z-[95] grid place-items-center bg-slate-900/45 p-4" onMouseDown={onClose}>
+    <div className="fixed inset-0 z-[95] grid place-items-center bg-slate-900/60 p-4 backdrop-blur-sm" onMouseDown={onClose}>
       <div
         role="dialog"
         aria-modal="true"

@@ -6,16 +6,18 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.timezone import today_ist
 from app.models.auth import Role, User
 from app.models.claim_workflow import ExceptionApproval, ExceptionRequest, ExceptionRequestStatus
 from app.models.employee import Employee
 from app.models.expense_category import CompanyProfile
 from app.models.policy import CityGroupTier, ExpenseLimit, ImpactLevel, PolicyVersion
-from app.schemas.me import ApproverScopeOut, CityTierLimitsOut, MeOut, MyPolicyLimitsOut, PolicyCapOut
+from app.schemas.me import ApproverScopeOut, CityTierLimitsOut, MeOut, MyPolicyLimitsOut, PolicyCapOut, TravellerIdOut
 from app.services.advance_service import get_outstanding_advance
 from app.services.claim_submission_rules import claim_windows, parse_auto_approve_threshold
 from app.services.policy_engine import get_active_policy_version, get_expense_limits
+from app.services.travel_id_proof_service import needs_traveller_profile, saved_traveller_id
 from app.services.workflow_service import (
     department_head_scope,
     get_approver_scope,
@@ -289,6 +291,10 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
         or (user_is_a_manager and bool(delegatable_matrix.get(Role.REPORTING_MANAGER, set()))),
         is_manager=user_is_a_manager,
         must_change_password=bool(user.must_change_password),
+        needs_traveller_profile=needs_traveller_profile(user),
+        meal_preference=user.meal_preference,
+        traveller_id=TravellerIdOut(**saved_id) if (saved_id := saved_traveller_id(user)) else None,
+        auto_approve_enabled=settings.auto_approve_enabled,
         auto_approve_threshold=auto_approve_threshold_str,
         org_auto_approve_ceiling=org_auto_approve_ceiling_str,
         approver_scope=approver_scope,

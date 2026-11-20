@@ -45,6 +45,9 @@ def add_working_hours(start: datetime, hours: float, holidays: set[date]) -> dat
         current = _next_working_midnight(current, holidays)
 
 
-async def sla_deadline(db: AsyncSession, hours: float, start: datetime | None = None) -> datetime:
-    """When an SLA of `hours` working hours, starting now (or at `start`), runs out."""
+async def sla_deadline(db: AsyncSession, hours: float | None, start: datetime | None = None) -> datetime | None:
+    """When an SLA of `hours` working hours, starting now (or at `start`), runs out. None for a
+    step with no SLA (`hours` None — "No SLA" in the Approval Matrix): it never runs out."""
+    if hours is None:
+        return None
     return add_working_hours(start or now_ist(), hours, await load_holidays(db))

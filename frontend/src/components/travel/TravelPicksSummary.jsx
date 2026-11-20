@@ -1,3 +1,4 @@
+import { formatWeekdayDate } from '../../utils/formatters';
 import { EYEBROW } from '../approvals/ApprovalDetail';
 import { busTypesText, leaveWindowsText } from './travelRequestView';
 
@@ -8,19 +9,17 @@ import { busTypesText, leaveWindowsText } from './travelRequestView';
  */
 
 const MODE_PLURAL = { FLIGHT: 'flights', TRAIN: 'trains', BUS: 'buses' };
-const day = (iso) => {
-  const d = iso ? new Date(`${String(iso).slice(0, 10)}T00:00:00`) : null;
-  return d && !Number.isNaN(d.getTime()) ? d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' }) : '';
-};
+const day = (iso) => (iso ? formatWeekdayDate(String(iso).slice(0, 10)) : '');
 
-/** The ticketable legs, numbered like leg_picks: onward (+ return), or each multi-city leg. */
+/** The ticketable legs, numbered like leg_picks (there and back on a round trip, or each
+ * multi-city leg) — each named by its route and date. */
 function legsOf(request) {
   if (request.trip_type === 'MULTI_CITY' && request.legs?.length) {
-    return request.legs.map((l, i) => ({ seq: i + 1, label: `Leg ${i + 1}`, from: l.from_city, to: l.to_city, date: l.travel_date }));
+    return request.legs.map((l, i) => ({ seq: i + 1, from: l.from_city, to: l.to_city, date: l.travel_date }));
   }
-  const legs = [{ seq: 1, label: request.trip_type === 'ROUND_TRIP' ? 'Onward' : null, from: request.from_city, to: request.to_city, date: request.travel_date }];
+  const legs = [{ seq: 1, from: request.from_city, to: request.to_city, date: request.travel_date }];
   if (request.trip_type === 'ROUND_TRIP' && request.return_date) {
-    legs.push({ seq: 2, label: 'Return', from: request.to_city, to: request.from_city, date: request.return_date });
+    legs.push({ seq: 2, from: request.to_city, to: request.from_city, date: request.return_date });
   }
   return legs;
 }
@@ -42,7 +41,7 @@ export default function TravelPicksSummary({ request, name }) {
           return (
             <div key={leg.seq} className="rounded-[10px] border border-slate-200 bg-white px-3 py-2 text-[12.5px] leading-relaxed text-slate-700">
               <div className="text-[11.5px] font-semibold text-slate-500">
-                {[leg.label, `${leg.from} → ${leg.to}`, day(leg.date)].filter(Boolean).join(' · ')}
+                {[`${leg.from} → ${leg.to}`, day(leg.date)].filter(Boolean).join(' · ')}
               </div>
               {pick?.choice === 'bus' ? (
                 <div>

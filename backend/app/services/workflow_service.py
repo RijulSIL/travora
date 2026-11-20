@@ -235,13 +235,16 @@ def exception_submission_mode(cfg: dict, exception_type: str) -> str:
     return EXCEPTION_SUBMISSION_BLOCK if mode == EXCEPTION_SUBMISSION_BLOCK else EXCEPTION_SUBMISSION_ALLOW
 
 
-def exception_step_sla_hours(cfg: dict, exception_types: list[str], role: str, route_key: str | None = None) -> int:
-    """SLA (working hours) for `role`'s step in an exception route; 48 when unset.
+def exception_step_sla_hours(
+    cfg: dict, exception_types: list[str], role: str, route_key: str | None = None
+) -> int | None:
+    """SLA (working hours) for `role`'s step in an exception route; 48 when unset, None when the
+    step has "No SLA" (saved as null).
 
     A request on a shared route (`route_key`) takes that route's per-step `exception_sla_hours`.
     A request raised before the shared routes (no route_key) keeps the per-type SLAs it was
     created with — a combined travel request takes the longest SLA any of its types gives that
-    role, matching how its merged chain asked each role once."""
+    role (no SLA counting as longest), matching how its merged chain asked each role once."""
     sla_cfg = cfg.get("exception_sla_hours") or {}
     if route_key:
         route = shared_exception_route(cfg, route_key)
@@ -251,10 +254,7 @@ def exception_step_sla_hours(cfg: dict, exception_types: list[str], role: str, r
         # SLAs line up with the route as the admin saved it (before any repeated role was dropped).
         pos = configured.index(role) if isinstance(configured, list) and role in configured else route.index(role)
         hours_list = sla_cfg.get(route_key) or []
-        try:
-            return int(hours_list[pos]) if pos < len(hours_list) else DEFAULT_SLA_HOURS
-        except (TypeError, ValueError):
-            return DEFAULT_SLA_HOURS
+        return _sla_hours_value(hours_list[pos]) if pos < len(hours_list) else DEFAULT_SLA_HOURS
     chains = {**LEGACY_EXCEPTION_APPROVAL_CHAINS, **(cfg.get("exception_chains") or {})}
     best = 0
     for exc_type in exception_types:
@@ -264,21 +264,41 @@ def exception_step_sla_hours(cfg: dict, exception_types: list[str], role: str, r
             continue
         hours_list = sla_cfg.get(key) or []
         pos = chain.index(role)
-        try:
-            hours = int(hours_list[pos]) if pos < len(hours_list) else DEFAULT_SLA_HOURS
-        except (TypeError, ValueError):
-            hours = DEFAULT_SLA_HOURS
+        hours = _sla_hours_value(hours_list[pos]) if pos < len(hours_list) else DEFAULT_SLA_HOURS
+        if hours is None:
+            return None
         best = max(best, hours)
     return best or DEFAULT_SLA_HOURS
+
+
+async def exception_on_ceo_route(req: ExceptionRequest, db: AsyncSession) -> bool:
+    """Whether this exception request is on a claim / travel request set up on the CEO's route
+    (its steps are that route's). The CEO has no policy limits, so this is only a safety net."""
+    claim_id = getattr(req, "claim_id", None)
+    travel_id = getattr(req, "travel_request_id", None)
+    if isinstance(claim_id, int):
+        return on_ceo_route(await db.get(ClaimDraft, claim_id))
+    if isinstance(travel_id, int):
+        from app.models.travel_request import TravelRequest
+
+        return on_ceo_route(await db.get(TravelRequest, travel_id))
+    return False
+
+
+async def exception_step_hours(req: ExceptionRequest, role: str, cfg: dict, db: AsyncSession) -> int | None:
+    """SLA for `role`'s step on this exception request: the CEO's route step's hours on the CEO's
+    own requests (their exceptions go to that route), otherwise the exception route's."""
+    if await exception_on_ceo_route(req, db):
+        step = next((d for d in ceo_route_stage_defs(cfg) if d["route_role"] == role), None)
+        return step["sla_hours"] if step else DEFAULT_SLA_HOURS
+    return exception_step_sla_hours(cfg, req.exception_types or [req.exception_type], role, _route_key(req))
 
 
 async def start_exception_step(approval: ExceptionApproval, req: ExceptionRequest, cfg: dict, db: AsyncSession) -> None:
     """Make `approval` the active step of its exception route, with its SLA clock started."""
     now = _now()
     approval.status = ExceptionRequestStatus.PENDING.value
-    hours = exception_step_sla_hours(
-        cfg, req.exception_types or [req.exception_type], approval.required_role, _route_key(req)
-    )
+    hours = await exception_step_hours(req, approval.required_role, cfg, db)
     approval.sla_deadline_at = await sla_deadline(db, hours, now)
     approval.last_notified_at = now
     approval.sla_breached_at = None
@@ -791,9 +811,30 @@ _ALLOWED_WORKFLOW_ROLES = {
     DEPARTMENT_HEAD,
 }
 
+# The CEO's own claims and travel requests follow their own route (Approval Matrix → "CEO's
+# requests"), stored with the overrides below: its approver steps only — a CEO's claim then goes to
+# the claim route's Finance step for payment, a travel request to the travel agent. Exceptions on
+# the CEO's claims and trips go to these same steps instead of the shared exception routes.
+CEO_ROUTE_KEY = "CEO_REQUESTS"
+CEO_REQUESTS_DEFAULT_STAGES = [
+    {"number": 1, "label": "HRBP Review", "sla_hours": 48, "route_role": Role.HRBP_HR.value},
+]
+# Not on the CEO's route: the CEO themselves, the per-person manager / department head steps (the
+# CEO reports to nobody), and Finance (added after the route for claims).
+_CEO_ROUTE_EXCLUDED_ROLES = {Role.CEO.value, Role.FINANCE.value, Role.REPORTING_MANAGER.value, "FUNCTION_HEAD", DEPARTMENT_HEAD}
+
+# Trips the employee books themselves (booked_by SELF) follow their own route: HRBP, then CEO by
+# default (Approval Matrix → "Self-booked travel"). Approved, they're booked straight away.
+SELF_BOOKED_ROUTE_KEY = "SELF_BOOKED_TRAVEL"
+SELF_BOOKED_DEFAULT_STAGES = [
+    {"number": 1, "label": "HRBP Review", "sla_hours": 48, "route_role": Role.HRBP_HR.value},
+    {"number": 2, "label": "CEO Approval", "sla_hours": 48, "route_role": Role.CEO.value},
+]
+
 # Non-claim approval workflows stored alongside the claim category overrides (same stage shape,
-# no Finance stage): travel requests, and relocation approval requests.
-_NON_CLAIM_WORKFLOWS = {"TRAVEL_REQUEST", "RELOCATION_REQUEST"}
+# no Finance stage): travel requests, relocation approval requests, the CEO's requests, and
+# self-booked travel.
+_NON_CLAIM_WORKFLOWS = {"TRAVEL_REQUEST", "RELOCATION_REQUEST", CEO_ROUTE_KEY, SELF_BOOKED_ROUTE_KEY}
 _CATEGORY_OVERRIDE_KEYS = {c.value for c in ReimbursementCategory} | _NON_CLAIM_WORKFLOWS
 
 
@@ -814,8 +855,10 @@ def _validate_stage_list(stages: Any, *, label_prefix: str = "Stage", require_fi
                 status_code=422,
                 detail=f"{label_prefix} {idx} route_role '{stage.get('route_role')}' is unsupported",
             )
-        if not isinstance(stage.get("sla_hours"), int) or int(stage["sla_hours"]) <= 0:
-            raise HTTPException(status_code=422, detail=f"{label_prefix} {idx} sla_hours must be a positive integer")
+        # null = "No SLA": the step waits as long as it takes and is never passed on.
+        sla = stage.get("sla_hours")
+        if sla is not None and (isinstance(sla, bool) or not isinstance(sla, int) or sla <= 0):
+            raise HTTPException(status_code=422, detail=f"{label_prefix} {idx} sla_hours must be a positive integer or null")
         if stage.get("route_role") == Role.FINANCE.value:
             finance_count += 1
 
@@ -854,6 +897,14 @@ def _validate_workflow_config(config: dict) -> None:
                     raise HTTPException(
                         status_code=422, detail="Relocation approvals can't have a Department head step"
                     )
+                if category == CEO_ROUTE_KEY:
+                    for s in override["stages"]:
+                        if isinstance(s, dict) and s.get("route_role") in _CEO_ROUTE_EXCLUDED_ROLES:
+                            raise HTTPException(
+                                status_code=422,
+                                detail="The CEO's requests can't have a CEO, Reporting manager, Department head "
+                                "or Finance step (claims go to Finance after the route on their own)",
+                            )
 
     if DEPARTMENT_HEAD in ((config.get("exception_chains") or {}).get("POLICY_APPROVAL") or []):
         raise HTTPException(status_code=422, detail="Policy approval can't have a Department head step")
@@ -959,10 +1010,12 @@ def _validate_workflow_config(config: dict) -> None:
             if not isinstance(hours_list, list):
                 raise HTTPException(status_code=422, detail=f"exception_sla_hours '{key}' must be a list")
             for hours in hours_list:
+                if hours is None:  # "No SLA" on that step
+                    continue
                 if isinstance(hours, bool) or not isinstance(hours, int) or not 1 <= hours <= 2000:
                     raise HTTPException(
                         status_code=422,
-                        detail=f"exception_sla_hours '{key}' must be whole hours between 1 and 2000",
+                        detail=f"exception_sla_hours '{key}' must be whole hours between 1 and 2000, or null",
                     )
 
     notice = config.get("travel_notice_days")
@@ -988,6 +1041,18 @@ def _validate_workflow_config(config: dict) -> None:
                 )
 
 
+def _sla_hours_value(raw: Any) -> int | None:
+    """A step's SLA in working hours, or None for "No SLA" (saved as null). Anything unreadable
+    falls back to the default."""
+    if raw is None:
+        return None
+    try:
+        hours = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_SLA_HOURS
+    return hours if hours > 0 else DEFAULT_SLA_HOURS
+
+
 def _normalize_stage_defs(config: dict) -> list[dict]:
     raw_stages = config.get("stages")
     if not isinstance(raw_stages, list) or not raw_stages:
@@ -1000,7 +1065,7 @@ def _normalize_stage_defs(config: dict) -> list[dict]:
             {
                 "number": num,
                 "label": str(row.get("label") or f"Stage {num}"),
-                "sla_hours": int(row.get("sla_hours", 48)),
+                "sla_hours": _sla_hours_value(row.get("sla_hours", DEFAULT_SLA_HOURS)),
                 "route_role": str(row.get("route_role") or ""),
                 "parallel": bool(row.get("parallel")),
                 "conditional": row.get("conditional"),  # Dictionary or None
@@ -1103,6 +1168,16 @@ async def get_approver_scope(role: Role, db: AsyncSession) -> dict:
     for types in legacy_waiting:
         exceptions += [t for t in (types or []) if t not in exceptions]
     relocation_roles = {str(s.get("route_role") or "") for s in relocation_request_stage_defs(base_cfg)}
+
+    # On the self-booked travel route: they approve travel requests.
+    if role_val in {d["route_role"] for d in self_booked_stage_defs(base_cfg)}:
+        travel_request = True
+    # On the CEO's route: they approve the CEO's claims, travel requests and their exceptions.
+    if role_val in ceo_route_roles(base_cfg):
+        claim_categories = list(dict.fromkeys([*claim_categories, *_APPROVER_SCOPE_CATEGORIES]))
+        travel_request = True
+        for types in EXCEPTION_TYPES_BY_ROUTE.values():
+            exceptions += [t for t in types if t not in exceptions]
 
     return {
         "claims": bool(claim_categories),
@@ -1272,9 +1347,11 @@ async def _reassign_pending_claim_stages(
         old_role, new_role, new_def = swap
         if stage.required_role != old_role:
             continue
+        if on_ceo_route(claim):
+            continue  # the CEO's own claims follow the CEO's route, not this one
         stage.required_role = new_role
         stage.stage_label = str(new_def.get("label") or stage.stage_label)
-        stage.sla_deadline_at = await sla_deadline(db, int(new_def.get("sla_hours", DEFAULT_SLA_HOURS)), now)
+        stage.sla_deadline_at = await sla_deadline(db, _sla_hours_value(new_def.get("sla_hours", DEFAULT_SLA_HOURS)), now)
         stage.last_notified_at = now
         stage.sla_breached_at = None
         await _notify_stage_approver(claim, new_def, db)
@@ -1303,9 +1380,11 @@ async def _reassign_pending_travel_stages(swaps: dict[int, tuple[str, str, dict]
         old_role, new_role, new_def = swap
         if stage.required_role != old_role:
             continue
+        if getattr(travel_request, "approval_route", None):
+            continue  # the CEO's own / self-booked requests follow their own route, not this one
         stage.required_role = new_role
         stage.stage_label = str(new_def.get("label") or stage.stage_label)
-        stage.sla_deadline_at = await sla_deadline(db, int(new_def.get("sla_hours", DEFAULT_SLA_HOURS)), now)
+        stage.sla_deadline_at = await sla_deadline(db, _sla_hours_value(new_def.get("sla_hours", DEFAULT_SLA_HOURS)), now)
         stage.last_notified_at = now
         stage.sla_breached_at = None
         await _notify_travel_stage_approver(travel_request, new_def, db)
@@ -1335,6 +1414,8 @@ async def _reassign_pending_exception_approvals(old_cfg: dict, new_cfg: dict, db
     for req in open_reqs:
         if req.route_key not in SHARED_EXCEPTION_ROUTE_LABELS:
             continue
+        if await exception_on_ceo_route(req, db):
+            continue  # the CEO's exceptions follow the CEO's route, not the shared one
         approvals = (
             await db.execute(
                 select(ExceptionApproval)
@@ -1431,11 +1512,12 @@ async def save_workflow_config(config: dict, user_id: int | None, db: AsyncSessi
     return row.config_json, migrated
 
 
-def _stage_hours(stage_defs: list[dict], stage_number: int) -> int:
+def _stage_hours(stage_defs: list[dict], stage_number: int) -> int | None:
+    """The stage's SLA in working hours; None when it has "No SLA"."""
     for s in stage_defs:
         if int(s["number"]) == stage_number:
-            return int(s["sla_hours"])
-    return 48
+            return _sla_hours_value(s.get("sla_hours", DEFAULT_SLA_HOURS))
+    return DEFAULT_SLA_HOURS
 
 
 def _authoritative_payable_amount(claim: ClaimDraft) -> Decimal:
@@ -1611,7 +1693,7 @@ async def release_claim_to_finance(claim: ClaimDraft, db: AsyncSession) -> bool:
     if not rows or any(s.status != STAGE_STATUS_NOT_STARTED for s in rows):
         return False
     cfg = await get_workflow_config(db, category=claim.reimbursement_category.value)
-    stage_defs = _normalize_stage_defs(cfg)
+    stage_defs = await claim_stage_defs(claim, cfg, db)
     row_defs = [sd for sd in stage_defs if int(sd["number"]) == claim.current_approval_stage]
     if not any(str(sd.get("route_role")) == Role.FINANCE.value for sd in row_defs):
         return False
@@ -1639,8 +1721,9 @@ async def init_claim_exception_route(claim: ClaimDraft, db: AsyncSession, *, exc
     PENDING_EXCEPTION with that stage NOT_STARTED (hidden from Finance); the last exception
     approval opens it via release_claim_to_finance. With nothing pending (every exception was
     already approved, e.g. a resubmission with unchanged amounts) it goes to Finance right away."""
+    await set_approval_route(claim, db)
     cfg = await get_workflow_config(db, category=claim.reimbursement_category.value)
-    stage_defs = _normalize_stage_defs(cfg)
+    stage_defs = await claim_stage_defs(claim, cfg, db)
     finance_defs = [s for s in stage_defs if str(s.get("route_role")) == Role.FINANCE.value]
     # Saving the config requires a finance stage, so this fallback is only defensive.
     finance_number = int((finance_defs or stage_defs)[-1]["number"])
@@ -1843,8 +1926,9 @@ async def _can_user_act_on_claim_stage(
 
 
 async def init_claim_approval_chain(claim: ClaimDraft, db: AsyncSession) -> None:
+    await set_approval_route(claim, db)  # the CEO's own claims follow the CEO's route
     cfg = await get_workflow_config(db, category=claim.reimbursement_category.value)
-    stage_defs = _normalize_stage_defs(cfg)
+    stage_defs = await claim_stage_defs(claim, cfg, db)
     now = _now()
     total = total_claimed_from_report(claim)
 
@@ -1986,7 +2070,7 @@ async def assert_user_can_view_claim_workflow(claim_id: int, user_id: int, db: A
     pending = _active_pending_stage(claim, stages)
     if pending:
         cfg = await get_workflow_config(db, category=claim.reimbursement_category.value)
-        stage_defs = _normalize_stage_defs(cfg)
+        stage_defs = await claim_stage_defs(claim, cfg, db)
         stage_def = next((s for s in stage_defs if int(s["number"]) == pending.stage_number), None)
         active_delegator_ids = await _active_delegator_ids(user_id, db)
         if stage_def and await _can_user_act_on_claim_stage(
@@ -2331,7 +2415,7 @@ async def approve_claim_stage(
         raise HTTPException(status_code=409, detail="No pending approval stage")
 
     cfg = await get_workflow_config(db, category=claim.reimbursement_category.value)
-    stage_defs = _normalize_stage_defs(cfg)
+    stage_defs = await claim_stage_defs(claim, cfg, db)
     stage_def = next((s for s in stage_defs if int(s["number"]) == pending.stage_number), None)
     if stage_def is None:
         raise HTTPException(status_code=500, detail="Approval chain is misconfigured")
@@ -2468,7 +2552,7 @@ async def send_back_claim(
         raise HTTPException(status_code=409, detail="No send-back allowed at this stage")
 
     cfg = await get_workflow_config(db, category=claim.reimbursement_category.value)
-    stage_defs = _normalize_stage_defs(cfg)
+    stage_defs = await claim_stage_defs(claim, cfg, db)
     stage_def = next((s for s in stage_defs if int(s["number"]) == pending.stage_number), None)
     if stage_def is None:
         raise HTTPException(status_code=500, detail="Approval chain is misconfigured")
@@ -2550,7 +2634,7 @@ async def reject_claim(
         raise HTTPException(status_code=409, detail="No pending stage to reject")
 
     cfg = await get_workflow_config(db, category=claim.reimbursement_category.value)
-    stage_defs = _normalize_stage_defs(cfg)
+    stage_defs = await claim_stage_defs(claim, cfg, db)
     stage_def = next((s for s in stage_defs if int(s["number"]) == pending.stage_number), None)
     if stage_def is None:
         raise HTTPException(status_code=500, detail="Approval chain is misconfigured")
@@ -2622,7 +2706,7 @@ async def modify_claim_amount(
         raise HTTPException(status_code=409, detail="Modify amount is not allowed at this stage")
 
     cfg = await get_workflow_config(db, category=claim.reimbursement_category.value)
-    stage_defs = _normalize_stage_defs(cfg)
+    stage_defs = await claim_stage_defs(claim, cfg, db)
     stage_def = next((s for s in stage_defs if int(s["number"]) == pending.stage_number), None)
     if stage_def is None:
         raise HTTPException(status_code=500, detail="Approval chain is misconfigured")
@@ -2691,7 +2775,7 @@ async def record_claim_payment(
         raise HTTPException(status_code=403, detail="Only finance can record payment")
 
     cfg = await get_workflow_config(db, category=claim.reimbursement_category.value)
-    stage_defs = _normalize_stage_defs(cfg)
+    stage_defs = await claim_stage_defs(claim, cfg, db)
     finance_stage_number = int(
         next(s["number"] for s in stage_defs if str(s["route_role"]) == Role.FINANCE.value)
     )
@@ -2841,16 +2925,18 @@ async def list_pending_approvals(user_id: int, db: AsyncSession) -> list[dict]:
     )
 
     rows = (await db.execute(q)).scalars().unique().all()
-    stage_by_number_by_category: dict[str, dict[int, dict]] = {}
+    # Keyed by (category, is the CEO's own claim): the CEO's claims follow the CEO's route.
+    stage_by_number_by_category: dict[tuple[str, bool], dict[int, dict]] = {}
     out: list[dict] = []
     for claim in rows:
         category = claim.reimbursement_category.value
-        if category not in stage_by_number_by_category:
+        key = (category, on_ceo_route(claim))
+        if key not in stage_by_number_by_category:
             cfg = await get_workflow_config(db, category=category)
-            stage_by_number_by_category[category] = {
-                int(s["number"]): s for s in _normalize_stage_defs(cfg)
+            stage_by_number_by_category[key] = {
+                int(s["number"]): s for s in await claim_stage_defs(claim, cfg, db)
             }
-        stage_by_number = stage_by_number_by_category[category]
+        stage_by_number = stage_by_number_by_category[key]
 
         active_stage_number = int(claim.current_approval_stage or 0)
         stage_def = stage_by_number.get(active_stage_number)
@@ -3018,6 +3104,87 @@ RELOCATION_REQUEST_DEFAULT_STAGES: list[dict] = [
 ]
 
 
+def ceo_route_stage_defs(config: dict) -> list[dict]:
+    """The approver steps of the CEO's own claims and travel requests (Approval Matrix → CEO's
+    requests), or the default when none is set."""
+    override = (config.get("category_overrides") or {}).get(CEO_ROUTE_KEY)
+    raw_stages = override.get("stages") if isinstance(override, dict) else None
+    defs = _normalize_stage_defs({"stages": raw_stages or CEO_REQUESTS_DEFAULT_STAGES})
+    # Never the CEO's own step (or a step that can't apply to them), even from an odd saved config.
+    kept = [d for d in defs if d["route_role"] not in _CEO_ROUTE_EXCLUDED_ROLES]
+    return kept or _normalize_stage_defs({"stages": CEO_REQUESTS_DEFAULT_STAGES})
+
+
+def ceo_route_roles(config: dict) -> list[str]:
+    """The CEO's route as an ordered role list (each role asked once) — the exception chain for
+    exceptions on the CEO's claims and travel requests."""
+    return list(dict.fromkeys(d["route_role"] for d in ceo_route_stage_defs(config)))
+
+
+def _ceo_claim_stage_defs(claim_config: dict) -> list[dict]:
+    """A CEO's claim: the CEO's route, then the claim route's Finance step(s) for payment —
+    renumbered to follow on from the route."""
+    steps = [{**d, "number": i} for i, d in enumerate(ceo_route_stage_defs(claim_config), start=1)]
+    finance = [d for d in _normalize_stage_defs(claim_config) if d["route_role"] == Role.FINANCE.value]
+    if not finance:  # saving requires a Finance step, so this is only defensive
+        finance = _normalize_stage_defs({"stages": [DEFAULT_WORKFLOW_CONFIG["stages"][-1]]})
+    numbers = sorted({int(d["number"]) for d in finance})
+    renumber = {n: len(steps) + 1 + i for i, n in enumerate(numbers)}
+    return steps + [{**d, "number": renumber[int(d["number"])]} for d in finance]
+
+
+async def is_ceo_user(user_id: int | None, db: AsyncSession) -> bool:
+    """Whether this person's requests follow the CEO's route (they hold the CEO role)."""
+    if not isinstance(user_id, int) or isinstance(user_id, bool):
+        return False
+    user = await db.get(User, user_id)
+    return getattr(user, "role", None) == Role.CEO
+
+
+def on_ceo_route(item) -> bool:
+    """Whether this claim / travel request was set up on the CEO's route (set_approval_route)."""
+    return getattr(item, "approval_route", None) == CEO_ROUTE_KEY
+
+
+async def set_approval_route(item, db: AsyncSession) -> None:
+    """Records which route a claim / travel request follows, as its route is set up: the CEO's
+    route for the CEO's own, the self-booked travel route for a trip the employee booked
+    themselves, otherwise the usual one (NULL). Recorded rather than worked out each time, so
+    items already in progress keep the route they started on."""
+    if await is_ceo_user(getattr(item, "employee_user_id", None), db):
+        item.approval_route = CEO_ROUTE_KEY
+    elif getattr(item, "booked_by", None) == "SELF":
+        item.approval_route = SELF_BOOKED_ROUTE_KEY
+    else:
+        item.approval_route = None
+
+
+def self_booked_stage_defs(config: dict) -> list[dict]:
+    """The approval steps of trips the employee books themselves, or the default (HRBP, CEO)."""
+    override = (config.get("category_overrides") or {}).get(SELF_BOOKED_ROUTE_KEY)
+    raw_stages = override.get("stages") if isinstance(override, dict) else None
+    return _normalize_stage_defs({"stages": raw_stages or SELF_BOOKED_DEFAULT_STAGES})
+
+
+async def claim_stage_defs(claim: ClaimDraft, cfg: dict, db: AsyncSession) -> list[dict]:
+    """The stage definitions this claim follows: the CEO's route + Finance for the CEO's own
+    claims, otherwise its category's route. `cfg` is get_workflow_config(db, category=…)."""
+    if on_ceo_route(claim):
+        return _ceo_claim_stage_defs(cfg)
+    return _normalize_stage_defs(cfg)
+
+
+async def travel_stage_defs(travel_request, cfg: dict, db: AsyncSession) -> list[dict]:
+    """The stage definitions this travel request follows: the CEO's route for the CEO's own
+    requests, the self-booked route for trips the employee booked themselves, otherwise the
+    travel request route."""
+    if on_ceo_route(travel_request):
+        return ceo_route_stage_defs(cfg)
+    if getattr(travel_request, "approval_route", None) == SELF_BOOKED_ROUTE_KEY:
+        return self_booked_stage_defs(cfg)
+    return _travel_request_stage_defs(cfg)
+
+
 def relocation_request_stage_defs(config: dict) -> list[dict]:
     override = (config.get("category_overrides") or {}).get("RELOCATION_REQUEST")
     raw_stages = override.get("stages") if isinstance(override, dict) else None
@@ -3060,7 +3227,9 @@ async def init_travel_request_approval_chain(travel_request, db: AsyncSession) -
     from app.models.travel_request import TravelRequestApprovalStage
 
     cfg = await get_workflow_config(db)
-    stage_defs = _travel_request_stage_defs(cfg)
+    # The CEO's own requests follow the CEO's route (no manager or department head steps on it).
+    await set_approval_route(travel_request, db)
+    stage_defs = await travel_stage_defs(travel_request, cfg, db)
     if any(s["route_role"] == DEPARTMENT_HEAD for s in stage_defs):
         subject = await db.get(User, travel_request.employee_user_id)
         if not await department_head_applies(subject.employee_id if subject else None, "travel_requests", cfg, db):
@@ -3153,8 +3322,28 @@ async def _finalize_travel_request_approval(
     """A fully approved request goes straight to the travel agent for booking. The link is sent
     in the name of the HRBP who approved it (they're told when the agent books), or the final
     approver when no HRBP stage was involved. With no agent email configured it waits on the
-    Travel Desk for a manual send instead."""
-    from app.services.travel_request_service import issue_agent_booking_link
+    Travel Desk for a manual send instead.
+
+    A trip the employee booked themselves is booked straight away instead: its tickets become
+    booked trips (claimable after travel), and nothing goes to the travel agent."""
+    from app.services.travel_request_service import _notify_stakeholders_once_booked, issue_agent_booking_link
+
+    if getattr(travel_request, "booked_by", None) == "SELF":
+        from app.services.self_booked_travel_service import book_self_booked_trip
+
+        await book_self_booked_trip(travel_request, db, _now())
+        await create_notification(
+            user_id=travel_request.employee_user_id,
+            title="Travel Request Approved",
+            body=f"Your travel request for {travel_request.from_city or 'your trip'} -> "
+            f"{travel_request.to_city or ''} has been approved. It's booked with the tickets you "
+            "attached; claim the fares on your travel claim after you travel.",
+            link="/travel-requests",
+            category=NotificationCategory.CLAIM_UPDATE.value,
+            db=db,
+        )
+        await _notify_stakeholders_once_booked(travel_request, db)
+        return
 
     await create_notification(
         user_id=travel_request.employee_user_id,
@@ -3219,7 +3408,7 @@ async def approve_travel_request_stage(
         raise HTTPException(status_code=409, detail="No pending approval stage")
 
     cfg = await get_workflow_config(db)
-    stage_defs = _travel_request_stage_defs(cfg)
+    stage_defs = await travel_stage_defs(req, cfg, db)
     stage_def = next((s for s in stage_defs if int(s["number"]) == pending.stage_number), None)
     if stage_def is None:
         raise HTTPException(status_code=500, detail="Approval chain is misconfigured")
@@ -3445,13 +3634,19 @@ async def create_travel_exception_request(
 
     cfg = await get_workflow_config(db)
     subject = await db.get(User, travel_request.employee_user_id)
-    required_roles = await _without_inapplicable_head(
-        shared_exception_route(cfg, TRAVEL_EXCEPTIONS_ROUTE),
-        subject.employee_id if subject else None,
-        "exceptions",
-        cfg,
-        db,
-    )
+    await set_approval_route(travel_request, db)
+    if on_ceo_route(travel_request):
+        # The CEO has no policy limits, so this shouldn't happen; if it does, the CEO's route
+        # decides, not the shared exception route.
+        required_roles = ceo_route_roles(cfg)
+    else:
+        required_roles = await _without_inapplicable_head(
+            shared_exception_route(cfg, TRAVEL_EXCEPTIONS_ROUTE),
+            subject.employee_id if subject else None,
+            "exceptions",
+            cfg,
+            db,
+        )
     steps = [
         ExceptionApproval(exception_request_id=row.id, required_role=role, status="AWAITING")
         for role in required_roles
@@ -3618,9 +3813,15 @@ async def raise_claim_exception_request(
         row.exception_request_id = req.id
     db.add_all(rows)
 
-    route = await _without_inapplicable_head(
-        shared_exception_route(cfg, CLAIM_EXCEPTIONS_ROUTE), claim.employee_id, "exceptions", cfg, db
-    )
+    await set_approval_route(claim, db)
+    if on_ceo_route(claim):
+        # The CEO has no policy limits, so this shouldn't happen; if it does, the CEO's route
+        # decides, not the shared exception route.
+        route = ceo_route_roles(cfg)
+    else:
+        route = await _without_inapplicable_head(
+            shared_exception_route(cfg, CLAIM_EXCEPTIONS_ROUTE), claim.employee_id, "exceptions", cfg, db
+        )
     steps = [ExceptionApproval(exception_request_id=req.id, required_role=role, status="AWAITING") for role in route]
     db.add_all(steps)
     await start_exception_step(steps[0], req, cfg, db)
@@ -4727,7 +4928,13 @@ async def process_auto_approvals(db: AsyncSession) -> None:
     Check for pending claim stages whose claim total is at or under the auto-approve threshold
     (up to and including it — the settings say "₹X or less"),
     and auto-approve them if they have been pending for at least 5 minutes.
+
+    Does nothing while auto-approve is hidden (settings.auto_approve_enabled off).
     """
+    from app.core.config import settings
+
+    if not settings.auto_approve_enabled:
+        return
     now = _now()
     # threshold/exception_chains/submission are shared across categories, but stage_defs
     # (route_role per stage number) can differ per category override — resolved per claim below.
@@ -4755,10 +4962,12 @@ async def process_auto_approvals(db: AsyncSession) -> None:
             continue
 
         category = claim.reimbursement_category.value
-        if category not in stage_defs_by_category:
+        is_ceo_claim = on_ceo_route(claim)
+        defs_key = f"{category}:{is_ceo_claim}"
+        if defs_key not in stage_defs_by_category:
             category_cfg = await get_workflow_config(db, category=category)
-            stage_defs_by_category[category] = _normalize_stage_defs(category_cfg)
-        stage_defs = stage_defs_by_category[category]
+            stage_defs_by_category[defs_key] = await claim_stage_defs(claim, category_cfg, db)
+        stage_defs = stage_defs_by_category[defs_key]
 
         # Finance stage is never auto-approved
         stage_def = next((s for s in stage_defs if int(s["number"]) == pending.stage_number), None)

@@ -1,5 +1,6 @@
 import { AlertTriangle, Bus, Check, ChevronDown, FileText, Paperclip, Plane, TrainFront, X } from 'lucide-react';
 
+import { formatDate, formatDatetime } from '../../utils/formatters';
 import { RouteTimeline } from '../approvals/ApprovalDetail';
 import { DateBox, dayOf, shortDate, today, weekdayDate } from '../home/HomeParts';
 import { travelRouteItems } from './TravelApprovalPanel';
@@ -51,8 +52,39 @@ function Route({ cities, roundTrip = false }) {
   );
 }
 
+/** A booked trip the Travel Desk cancelled: greyed, struck through, no buttons, doesn't open. */
+function CancelledRow({ date, route, sub, refLabel }) {
+  return (
+    <div
+      aria-label={`${route.join(' to ')}, cancelled`}
+      className="grid cursor-default grid-cols-[48px_minmax(0,1fr)] items-center gap-x-3.5 gap-y-2 border-t border-slate-100 bg-slate-50/70 px-4 py-[11px] first:border-t-0 md:grid-cols-[48px_minmax(0,1.5fr)_minmax(0,1.3fr)_210px_18px]"
+    >
+      <div className="row-span-2 self-start opacity-50 grayscale md:row-span-1 md:self-center">
+        {date ? <DateBox date={date} /> : <div className="flex h-[58px] w-12 items-center justify-center rounded-[10px] border border-slate-200 text-slate-400">—</div>}
+      </div>
+      <div className="min-w-0 text-slate-400">
+        <div className="truncate text-[13.5px] font-extrabold line-through decoration-slate-400" title={route.join(' → ')}>
+          {route.join(' → ')}
+        </div>
+        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs">
+          <span className="truncate line-through decoration-slate-300">{sub}</span>
+          {refLabel ? <span className="whitespace-nowrap rounded-md bg-slate-100 px-1.5 font-mono text-[10.5px] font-semibold text-slate-400">{refLabel}</span> : null}
+        </div>
+      </div>
+      <div className="col-start-2 flex min-w-0 flex-col gap-[3px] md:col-start-auto">
+        <span className="self-start whitespace-nowrap rounded-full bg-slate-200 px-2 py-0.5 text-[11px] font-bold text-slate-600">Cancelled</span>
+        <span className="truncate text-xs text-slate-400">Cancelled by the travel desk</span>
+      </div>
+    </div>
+  );
+}
+
 /** One line per request. `actions` are its buttons (they stop the click from opening the row). */
 export function TravelRequestRow({ request, view, open, onToggle, actions }) {
+  if (view.cancelledBooking) {
+    const sub = [view.modes.map((m) => MODE_NAME[m] || m).join(' · '), cap(request.purpose)].filter(Boolean).join(' · ');
+    return <CancelledRow date={view.start} route={view.route} sub={sub} refLabel={travelRef(request.id)} />;
+  }
   const { start, end } = view;
   const isToday = start && start.getTime() === today().getTime();
   const bits = [
@@ -166,7 +198,7 @@ export function TravelRequestDetail({ request, view, chain, onViewTicket, onView
   const facts = [
     ['Purpose', cap(request.purpose)],
     ['Travel type', `${request.travel_type === 'PROJECT' ? 'Project' : 'Non-project'}${request.project_code ? ` · ${request.project_code}` : ''}`],
-    ['Requested', request.requested_at ? shortDate(new Date(request.requested_at)) + ` ${new Date(request.requested_at).getFullYear()}` : null],
+    ['Requested', request.requested_at ? formatDate(request.requested_at) : null],
   ].filter((f) => f[1]);
   const routeItems = travelRouteItems(request, chain, { employeeName: 'you', decided: true, now: Date.now() });
 
@@ -314,12 +346,38 @@ export function EntitlementChips({ text }) {
   );
 }
 
-/** One booked trip (My trips): the ticket, and whether it's been claimed. */
-export function TripRow({ trip, claim, actions }) {
+/** One booked trip (My trips): the ticket, and whether it's been claimed. Clicking it (anywhere
+ * but its buttons) opens TripDetail below it. */
+export function TripRow({ trip, claim, actions, open, onToggle }) {
   const d = dayOf(trip.travel_date);
   const Icon = MODE_ICON[trip.mode] || FileText;
+  if (trip.status === 'CANCELLED') {
+    const sub = [MODE_NAME[trip.mode] || trip.mode, trip.provider, trip.reference_id].filter(Boolean).join(' · ');
+    return (
+      <CancelledRow
+        date={d}
+        route={[cap(trip.from_city), cap(trip.to_city)]}
+        sub={sub}
+        refLabel={trip.travel_request_id ? travelRef(trip.travel_request_id) : null}
+      />
+    );
+  }
   return (
-    <div className="grid grid-cols-[48px_minmax(0,1fr)] items-center gap-x-3.5 gap-y-2 border-t border-slate-100 px-4 py-[11px] first:border-t-0 md:grid-cols-[48px_minmax(0,1.4fr)_minmax(0,1.2fr)_210px]">
+    <div
+      role="button"
+      tabIndex={0}
+      aria-expanded={open}
+      onClick={(e) => {
+        if (e.target.closest('button, a')) return;
+        onToggle();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && e.target === e.currentTarget) onToggle();
+      }}
+      className={`grid cursor-pointer grid-cols-[48px_minmax(0,1fr)_18px] items-center gap-x-3.5 gap-y-2 border-t border-slate-100 px-4 py-[11px] first:border-t-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand md:grid-cols-[48px_minmax(0,1.4fr)_minmax(0,1.2fr)_210px_18px] ${
+        open ? 'bg-[#f7faf9]' : 'hover:bg-[#fbfdfc]'
+      }`}
+    >
       <div className="row-span-3 self-start md:row-span-1 md:self-center">{d ? <DateBox date={d} /> : null}</div>
       <div className="min-w-0">
         <Route cities={[cap(trip.from_city), cap(trip.to_city)]} />
@@ -333,13 +391,157 @@ export function TripRow({ trip, claim, actions }) {
           ) : null}
         </div>
       </div>
-      <div className="flex min-w-0 flex-col gap-[3px]">
+      <ChevronDown
+        size={16}
+        className={`col-start-3 row-start-1 justify-self-end text-slate-400 transition-transform md:order-last md:col-start-auto md:row-start-auto ${open ? 'rotate-180' : ''}`}
+        aria-hidden="true"
+      />
+      <div className="col-span-2 flex min-w-0 flex-col gap-[3px] md:col-span-1">
         <span className={`self-start whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-bold ${claim.claimed ? PILL.ok : claim.open ? PILL.amber : PILL.slate}`}>
           {claim.claimed ? 'On a claim' : claim.open ? 'Not claimed yet' : 'Not claimed'}
         </span>
         {claim.text ? <span className={`truncate text-xs ${claim.open ? 'font-semibold text-amber-700' : 'text-slate-500'}`}>{claim.text}</span> : null}
       </div>
-      <div className="flex flex-wrap items-center justify-start gap-1.5 md:justify-end">{actions}</div>
+      <div className="col-span-2 flex flex-wrap items-center justify-start gap-1.5 md:col-span-1 md:justify-end">{actions}</div>
+    </div>
+  );
+}
+
+const TRIP_STATUS = { CONFIRMED: 'Confirmed', WAITLIST: 'Waitlisted', CANCELLED: 'Cancelled' };
+const rupees = (v) => `₹${Number(v).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+// "PREMIUM_ECONOMY" → "Premium economy"; train codes like "3A", "SL", "CC" stay as they are.
+const classLabel = (v) => {
+  const s = String(v || '').trim();
+  return /^[A-Z_]{4,}$/.test(s) ? cap(s.toLowerCase().replace(/_/g, ' ')) : s || null;
+};
+
+/** The banner on an opened trip, worded like an opened booked request's (requestBanner). */
+function tripBanner(trip, claim) {
+  const refunded = Number(trip.refunded_amount || 0);
+  if (trip.status === 'CANCELLED') {
+    return { tone: 'slate', title: 'Cancelled', text: `This booking was cancelled${refunded ? `. ${rupees(refunded)} refunded` : ''}.` };
+  }
+  if (trip.status === 'WAITLIST') return { tone: 'amber', title: 'Waitlisted', text: 'The travel desk will confirm the ticket once the waitlist clears.' };
+  if (claim.claimed) return { tone: 'ok', title: 'Booked. On a claim', text: 'This trip is already on one of your claims.' };
+  if (claim.upcoming) return { tone: 'ok', title: 'Booked', text: 'Your ticket is ready. Claim it after you travel.' };
+  if (claim.archived) return { tone: 'slate', title: 'Booked. Archived: too late to claim', text: claim.text };
+  if (claim.late) return { tone: 'amber', title: 'Booked. Claim it now (late)', text: claim.text };
+  return { tone: 'ok', title: 'Booked. Now claim it', text: claim.text || 'You can claim this trip now.' };
+}
+
+/**
+ * The opened trip (My trips), laid out like an opened booked request: banner, then the trip leg
+ * with its ticket and facts (left) and the ticket's details (right). `details`: undefined while
+ * loading, false if it couldn't be loaded, null when the trip has no uploaded ticket.
+ */
+export function TripDetail({ trip, claim, details, onViewTicket, footer }) {
+  const banner = tripBanner(trip, claim);
+  const BannerIcon = banner.tone === 'ok' ? Check : banner.tone === 'rose' ? X : AlertTriangle;
+  const t = details || {};
+  const Icon = MODE_ICON[trip.mode] || FileText;
+  const d = dayOf(trip.travel_date);
+  const back = trip.return_date && trip.return_date !== trip.travel_date ? dayOf(trip.return_date) : null;
+  const travelClass = classLabel(t.ticket_travel_class || trip.travel_class);
+  const amount = t.ticket_amount ?? trip.amount;
+  const pnr = t.pnr_or_booking_ref || trip.reference_id;
+  const facts = [
+    ['Purpose', cap(trip.purpose)],
+    ['Travel type', trip.travel_type ? `${trip.travel_type === 'PROJECT' ? 'Project' : 'Non-project'}${trip.project_code ? ` · ${trip.project_code}` : ''}` : null],
+    ['Booking status', TRIP_STATUS[trip.status] || trip.status],
+  ].filter((f) => f[1]);
+  const ticketRows = [
+    ['PNR / booking ref', pnr, true],
+    ['Class', travelClass],
+    ['Ticket amount', amount != null ? rupees(amount) : null, true],
+    ['Booked via', t.external_booking_source || trip.provider],
+    ['Refunded', Number(trip.refunded_amount || 0) ? rupees(trip.refunded_amount) : null, true],
+  ].filter((r) => r[1]);
+
+  return (
+    <div className="border-t border-slate-100 bg-[#fbfcfc] px-4 pb-4 pt-3.5 md:pl-[78px]">
+      <div className={`mb-3 flex items-start gap-2.5 rounded-[11px] border px-3 py-2.5 text-[12.5px] ${BANNER[banner.tone]}`}>
+        <BannerIcon size={16} className="mt-px flex-none" />
+        <div>
+          <b className="block text-[13px]">{banner.title}</b>
+          {banner.text}
+        </div>
+      </div>
+      <div className="grid gap-4 md:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
+        <div className="min-w-0">
+          <p className={EYEBROW}>Trip</p>
+          <div className="mb-3.5 grid grid-cols-[26px_minmax(0,1fr)_auto] items-center gap-2.5 rounded-[10px] border border-slate-200 bg-white px-2.5 py-2">
+            <span className="flex h-[26px] w-[26px] items-center justify-center rounded-lg bg-slate-100 text-slate-500">
+              <Icon size={14} />
+            </span>
+            <div className="min-w-0">
+              <b className="block truncate text-[12.5px] text-ink">
+                {cap(trip.from_city)} → {cap(trip.to_city)}
+              </b>
+              <span className="text-[11.5px] text-slate-500">
+                {MODE_NAME[trip.mode] || trip.mode}
+                {d ? ` · ${weekdayDate(d)}` : ''}
+                {back ? ` · back ${shortDate(back)}` : ''}
+              </span>
+              {travelClass || amount != null ? (
+                <span className="mt-0.5 block text-[11.5px] text-slate-600">
+                  Booked: <b className="text-ink">{[travelClass, amount != null ? rupees(amount) : null].filter(Boolean).join(' · ')}</b>
+                </span>
+              ) : null}
+            </div>
+            {trip.desk_ticket_id ? (
+              <button
+                type="button"
+                onClick={onViewTicket}
+                className="inline-flex h-7 max-w-[190px] items-center gap-1 rounded-lg border border-emerald-200 bg-white px-2.5 text-[11.5px] font-bold text-emerald-700 hover:bg-emerald-50"
+              >
+                <Check size={12} className="flex-none" />
+                <span className="truncate">Ticket{pnr ? ` · PNR ${pnr}` : ''}</span>
+              </button>
+            ) : null}
+          </div>
+
+          {facts.length ? (
+            <div className="mb-3.5 grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {facts.map(([k, v]) => (
+                <div key={k} className="min-w-0 rounded-[10px] border border-slate-200 bg-white px-2.5 py-[7px]">
+                  <div className="text-[10.5px] font-semibold text-slate-500">{k}</div>
+                  <div className="break-words text-[12.5px] font-extrabold text-ink">{v}</div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          {t.notes_for_employee ? <Quote label="Note from the travel desk" text={t.notes_for_employee} /> : null}
+        </div>
+
+        <div className="min-w-0">
+          <p className={EYEBROW}>Ticket</p>
+          <div className="overflow-hidden rounded-[10px] border border-slate-200 bg-white">
+            {ticketRows.map(([k, v, mono]) => (
+              <div key={k} className="flex items-baseline justify-between gap-3 border-t border-slate-100 px-3 py-2 first:border-t-0">
+                <span className="text-[11.5px] font-semibold text-slate-500">{k}</span>
+                <span className={`min-w-0 break-words text-right text-[12.5px] text-ink ${mono ? 'font-mono font-semibold' : 'font-extrabold'}`}>{v}</span>
+              </div>
+            ))}
+          </div>
+          <p className="mt-2 text-[11.5px] leading-relaxed text-slate-500">
+            {!trip.desk_ticket_id ? (
+              'No ticket file was uploaded for this trip.'
+            ) : details === undefined ? (
+              'Loading the ticket’s details…'
+            ) : details === false ? (
+              'The ticket’s details couldn’t be loaded. Use Ticket to open the file.'
+            ) : (
+              <>
+                Uploaded as <b className="break-all text-slate-700">{details.original_filename}</b>
+                {details.uploaded_by_name ? ` by ${details.uploaded_by_name}` : ''}
+                {details.uploaded_at ? ` · ${formatDatetime(details.uploaded_at)}` : ''}
+              </>
+            )}
+          </p>
+        </div>
+      </div>
+      {footer ? <div className="mt-1 flex flex-wrap justify-end gap-2">{footer}</div> : null}
     </div>
   );
 }

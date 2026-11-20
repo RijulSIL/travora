@@ -39,7 +39,7 @@ export default function LoginModal({ open, onClose, onSuccess }) {
     <>
       <button
         type="button"
-        className="fixed inset-0 z-[100] bg-slate-900/50"
+        className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm"
         aria-label="Close sign-in dialog"
         onClick={onClose}
       />

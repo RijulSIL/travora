@@ -31,6 +31,10 @@ _WRITE_TRAVEL_OPTIONS = [Depends(require_permission("configure_policy")), Depend
 async def _audit(entity_type: str, item, action: str, claims: dict, old: dict | None, db: AsyncSession) -> None:
     """Audit row for a travel option / project recipient change. Call before committing."""
     await db.flush()
+    if not action.endswith("_deleted"):
+        # created_at is filled in by the database, so after the INSERT it isn't loaded yet; reading
+        # it in row_snapshot would lazy-load outside async (MissingGreenlet). Load it here first.
+        await db.refresh(item)
     await log_event(
         entity_type=entity_type,
         entity_id=str(item.id),

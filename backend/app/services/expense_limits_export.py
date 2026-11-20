@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.timezone import now_ist, today_ist
+from app.core.timezone import format_date, format_datetime, now_ist, today_ist
 from app.models.policy import CityGroup, CityGroupTier, ExpenseLimit, ImpactLevel, PolicyVersion
 
 # (column title, model field prefix), in the order the page shows them.
@@ -22,7 +22,7 @@ def _level_sort_key(code: str) -> list:
 
 
 def _day(value: date | None) -> str:
-    return value.strftime("%d %b %Y") if value else "not set"
+    return format_date(value, "not set")
 
 
 def _version_line(version: PolicyVersion) -> str:
@@ -101,7 +101,7 @@ async def build_expense_limits_workbook(policy_version_id: int, db: AsyncSession
     ws = wb.add_worksheet("Expense limits")
     ws.write(0, 0, "Expense limits", title)
     ws.write(1, 0, _version_line(version), muted)
-    ws.write(2, 0, f"Downloaded {now_ist().strftime('%d %b %Y, %H:%M')} IST", muted)
+    ws.write(2, 0, f"Downloaded {format_datetime(now_ist())} IST", muted)
     ws.write(
         3,
         0,
@@ -155,7 +155,7 @@ async def build_expense_limits_workbook(policy_version_id: int, db: AsyncSession
     cs.write(
         1,
         0,
-        f"Cities in each group as of {today.strftime('%d %b %Y')}. Any city not listed uses the default group.",
+        f"Cities in each group as of {format_date(today)}. Any city not listed uses the default group.",
         muted,
     )
     for col, h in enumerate(["City group", "Default", "Cities"]):

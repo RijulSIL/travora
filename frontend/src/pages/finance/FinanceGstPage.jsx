@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { Empty, money, rupees } from '../../components/finance/FinanceParts';
 import { BTN_GHOST, CARD, CardHead, Seg } from '../../components/policy/PolicyAdminParts';
+import DateInput from '../../components/ui/DateInput';
 import { TipBody, useFloatingTip } from '../../components/ui/FloatingTip';
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { reimbursementApi } from '../../services/reimbursementApi';
@@ -142,9 +143,9 @@ export default function FinanceGstPage() {
         <Seg label="Period" options={PERIODS} value={period} onChange={setPeriod} />
         {period === 'custom' ? (
           <>
-            <input aria-label="From" type="date" className={INPUT} value={custom.from} onChange={(e) => setCustom((c) => ({ ...c, from: e.target.value }))} />
+            <DateInput aria-label="From" className={INPUT} value={custom.from} onChange={(e) => setCustom((c) => ({ ...c, from: e.target.value }))} />
             <span className="text-xs text-slate-500">to</span>
-            <input aria-label="To" type="date" className={INPUT} value={custom.to} min={custom.from} onChange={(e) => setCustom((c) => ({ ...c, to: e.target.value }))} />
+            <DateInput aria-label="To" className={INPUT} value={custom.to} min={custom.from} onChange={(e) => setCustom((c) => ({ ...c, to: e.target.value }))} />
           </>
         ) : null}
         <select aria-label="Department" className={SELECT} value={department} onChange={(e) => setDepartment(e.target.value)}>

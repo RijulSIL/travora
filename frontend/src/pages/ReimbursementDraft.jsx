@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
+import DateInput from '../components/ui/DateInput';
 import TicketPreviewDrawer from '../components/ui/TicketPreviewDrawer';
 import { useSetPageTitle } from '../context/PageTitleContext';
 import { useAsyncAction } from '../hooks/useAsyncAction';
 import useToast from '../hooks/useToast';
 import { reimbursementApi } from '../services/reimbursementApi';
+import { formatDate } from '../utils/formatters';
 
 function money(value) {
   return Number(value || 0).toLocaleString('en-IN', {
@@ -150,7 +152,7 @@ export default function ReimbursementDraft() {
                           onChange={(e) => toggleTrip(t.id, e.target.checked)}
                         />
                       </td>
-                      <td className="whitespace-nowrap py-2 pr-3 text-center">{t.travel_date}</td>
+                      <td className="whitespace-nowrap py-2 pr-3 text-center">{formatDate(t.travel_date)}</td>
                       <td className="py-2 pr-3 text-center">
                         {t.from_city} → {t.to_city}
                       </td>
@@ -219,18 +221,16 @@ export default function ReimbursementDraft() {
                 </label>
                 <label className="block">
                   <span className="mb-1 block text-xs font-medium text-slate-500">Departure Date</span>
-                  <input
-                    className="field"
-                    type="date"
+                  <DateInput
+                    className="field w-full"
                     value={form.departure_date}
                     onChange={(event) => setForm({ ...form, departure_date: event.target.value })}
                   />
                 </label>
                 <label className="block">
                   <span className="mb-1 block text-xs font-medium text-slate-500">Return Date</span>
-                  <input
-                    className="field"
-                    type="date"
+                  <DateInput
+                    className="field w-full"
                     value={form.return_date}
                     onChange={(event) => setForm({ ...form, return_date: event.target.value })}
                   />

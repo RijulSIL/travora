@@ -13,6 +13,7 @@ import { reimbursementApi } from '../../services/reimbursementApi';
 import { useAuthStore } from '../../store/authStore';
 import useToast from '../../hooks/useToast';
 import { normalizeApiError } from '../../utils/apiErrors';
+import { formatDate, formatDatesInText } from '../../utils/formatters';
 
 function slaClass(bucket) {
   if (bucket === 'breached') return 'sla-breached';
@@ -216,7 +217,7 @@ export default function ManagerDashboard() {
                 <tr key={row.claim_id} className="border-b border-slate-50 last:border-none hover:bg-slate-50/50 transition-colors">
                   <td className="px-5 py-3.5 text-center font-bold text-ink">{row.claim_reference}</td>
                   <td className="px-5 py-3.5 text-center font-medium text-slate-700">{row.employee_label}</td>
-                  <td className="max-w-[220px] truncate px-5 py-3.5 text-center text-xs text-slate-500">{row.trip_summary}</td>
+                  <td className="max-w-[220px] truncate px-5 py-3.5 text-center text-xs text-slate-500">{formatDatesInText(row.trip_summary)}</td>
                   <td className="px-5 py-3.5 text-center font-bold text-ink">₹{row.amount}</td>
                   <td className="px-5 py-3.5 text-center">
                     <div className={`inline-flex items-center justify-center gap-1.5 text-xs font-semibold ${slaClass(row.sla_bucket)}`}>
@@ -282,7 +283,7 @@ export default function ManagerDashboard() {
                 <tr key={item.request.id} className="border-b border-slate-50 last:border-none hover:bg-slate-50/50 transition-colors">
                   <td className="px-5 py-3.5 text-center font-medium text-slate-700">{item.employee_display_name}</td>
                   <td className="px-5 py-3.5 text-center text-slate-500">
-                    {item.request.trip_type === 'MULTI_CITY' && item.request.legs?.length > 0 ? item.request.legs[0].travel_date : item.request.travel_date}
+                    {formatDate(item.request.trip_type === 'MULTI_CITY' && item.request.legs?.length > 0 ? item.request.legs[0].travel_date : item.request.travel_date)}
                   </td>
                   <td className="px-5 py-3.5 text-center text-ink">
                     {item.request.trip_type === 'MULTI_CITY' && item.request.legs && item.request.legs.length > 0 ? (
@@ -369,7 +370,7 @@ export default function ManagerDashboard() {
               {teamTrips.map((trip) => (
                 <tr key={trip.id} className="border-b border-slate-50 last:border-none hover:bg-slate-50/50 transition-colors">
                   <td className="px-5 py-3.5 text-center font-medium text-slate-700">{trip.employee_name}</td>
-                  <td className="px-5 py-3.5 text-center text-slate-500">{trip.travel_date}</td>
+                  <td className="px-5 py-3.5 text-center text-slate-500">{formatDate(trip.travel_date)}</td>
                   <td className="px-5 py-3.5 text-center text-ink">{trip.route}</td>
                   <td className="px-5 py-3.5 text-center">
                     <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-600">

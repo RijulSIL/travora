@@ -6,21 +6,59 @@ export const formatCurrency = (amount) =>
     minimumFractionDigits: 2,
   }).format(Number(amount || 0));
 
-export const formatDate = (dateString) =>
-  new Date(dateString).toLocaleDateString('en-IN', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-  });
+/*
+ * Dates are shown as DD/MM/YYYY everywhere (04/11/2026), with the time as "04/11/2026, 2:05 pm".
+ * Always format through these helpers — never toLocaleDateString / toLocaleString, whose output
+ * depends on the viewer's browser language (a US browser shows 11/04/2026).
+ */
+const pad2 = (n) => String(n).padStart(2, '0');
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-export const formatDatetime = (dateString) =>
-  new Date(dateString).toLocaleString('en-IN', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+/**
+ * A Date from an API value (or a Date). A plain 'YYYY-MM-DD' is a calendar day, so it's read as
+ * that day locally — new Date('2026-11-04') is UTC midnight, which is the 3rd west of Greenwich.
+ * null when there's no valid date.
+ */
+export const toDate = (value) => {
+  if (value == null || value === '') return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value).trim());
+  const d = day ? new Date(Number(day[1]), Number(day[2]) - 1, Number(day[3])) : new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+};
+
+/** DD/MM/YYYY. '' when there's no date. */
+export const formatDate = (value) => {
+  const d = toDate(value);
+  return d ? `${pad2(d.getDate())}/${pad2(d.getMonth() + 1)}/${d.getFullYear()}` : '';
+};
+
+/** 12-hour time: "2:05 pm". */
+export const formatTime = (value) => {
+  const d = toDate(value);
+  if (!d) return '';
+  const h = d.getHours();
+  return `${h % 12 || 12}:${pad2(d.getMinutes())} ${h < 12 ? 'am' : 'pm'}`;
+};
+
+/** DD/MM/YYYY, h:mm am|pm — "04/11/2026, 2:05 pm". */
+export const formatDatetime = (value) => {
+  const d = toDate(value);
+  return d ? `${formatDate(d)}, ${formatTime(d)}` : '';
+};
+
+/** "Wed, 04/11/2026" — where the day of the week helps (travel legs, trips). */
+export const formatWeekdayDate = (value) => {
+  const d = toDate(value);
+  return d ? `${WEEKDAYS[d.getDay()]}, ${formatDate(d)}` : '';
+};
+
+/** Text from the API with ISO days in it ("Delhi → Mumbai · 2026-10-02–2026-10-18") with each shown as DD/MM/YYYY. */
+export const formatDatesInText = (text) =>
+  text == null ? text : String(text).replace(/\b(\d{4})-(\d{2})-(\d{2})\b/g, (_, y, m, d) => `${d}/${m}/${y}`);
+
+/** 'YYYY-MM-DD' for a Date in local time: what date fields and the API take. */
+export const toIsoDay = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 
 export const ROLE_LABELS = {
   EMPLOYEE: 'Employee',

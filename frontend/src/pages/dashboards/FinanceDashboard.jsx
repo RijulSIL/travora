@@ -6,6 +6,7 @@ import { Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer,
 import { useSetPageTitle } from '../../context/PageTitleContext';
 import { reimbursementApi } from '../../services/reimbursementApi';
 import { useAuthStore } from '../../store/authStore';
+import { formatDate } from '../../utils/formatters';
 
 // Deeper/more saturated than the old palette (which read flat) — brand green always lands on
 // whichever category is largest, since the backend already returns rows sorted by amount desc.
@@ -178,7 +179,7 @@ export default function FinanceDashboard() {
           <div className="stat-card-icon bg-purple-500">
             <ReceiptIndianRupee className="h-5 w-5" />
           </div>
-          <div className="stat-card-label">GST this month ({boundsThisMonth().from_date} → today)</div>
+          <div className="stat-card-label">GST this month ({formatDate(boundsThisMonth().from_date)} → today)</div>
           {gstLoading ? (
             <p className="mt-3 text-sm text-slate-400">Loading GST…</p>
           ) : gst ? (

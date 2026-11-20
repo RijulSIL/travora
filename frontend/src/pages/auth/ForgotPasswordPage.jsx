@@ -1,8 +1,14 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Mail, KeyRound, Lock, AlertCircle, Eye, EyeOff, Check } from 'lucide-react';
+import { ArrowLeft, Mail, Lock, AlertCircle, Eye, EyeOff, Check } from 'lucide-react';
+import AuthBrandPanel, { AuthMobileLogo } from '../../components/auth/AuthBrandPanel';
 import api from '../../services/api';
 import useToast from '../../hooks/useToast';
+
+// Printed in every welcome email (backend welcome_service.TEMPORARY_PASSWORD).
+const TEMPORARY_PASSWORD = 'Welcome@123';
+// Reset codes are always 6 characters (backend auth_service.generate_and_send_otp).
+const OTP_LENGTH = 6;
 
 export default function ForgotPasswordPage() {
   const navigate = useNavigate();
@@ -17,14 +23,17 @@ export default function ForgotPasswordPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  const validateComplexity = (pwd) => {
-    if (pwd.length < 8) return 'Password must be at least 8 characters long';
-    if (!/[A-Z]/.test(pwd)) return 'Password must contain at least one uppercase letter';
-    if (!/[a-z]/.test(pwd)) return 'Password must contain at least one lowercase letter';
-    if (!/[0-9]/.test(pwd)) return 'Password must contain at least one number';
-    if (!/[!@#$%^&*()_+={}[\]|\\:;"'<>,.?/~`-]/.test(pwd)) return 'Password must contain at least one special character';
-    return null;
-  };
+  // Same rules as the first sign-in page (SetInitialPasswordPage); Reset Password stays off until all pass.
+  const rules = [
+    [password.length >= 8, 'At least 8 characters'],
+    [/[A-Z]/.test(password), 'At least 1 uppercase letter'],
+    [/[a-z]/.test(password), 'At least 1 lowercase letter'],
+    [/[0-9]/.test(password), 'At least 1 number'],
+    [/[!@#$%^&*()_+={}[\]|\\:;"'<>,.?/~`-]/.test(password), 'At least 1 special character'],
+    [Boolean(password) && password !== TEMPORARY_PASSWORD, 'Not the temporary password'],
+    [Boolean(password) && password === confirmPassword, 'Both passwords match'],
+  ];
+  const ready = otpCode.trim().length === OTP_LENGTH && rules.every(([ok]) => ok);
 
   const handleRequestOtp = async (e) => {
     e.preventDefault();
@@ -43,17 +52,7 @@ export default function ForgotPasswordPage() {
 
   const handleResetPassword = async (e) => {
     e.preventDefault();
-
-    if (password !== confirmPassword) {
-      setError('Passwords do not match');
-      return;
-    }
-
-    const complexityError = validateComplexity(password);
-    if (complexityError) {
-      setError(complexityError);
-      return;
-    }
+    if (!ready) return;
 
     setError(null);
     setLoading(true);
@@ -75,25 +74,8 @@ export default function ForgotPasswordPage() {
 
   return (
     <div className="flex min-h-screen w-full bg-slate-50">
-      {/* Left Image Panel (Hidden on mobile) */}
-      <div className="relative hidden w-1/2 lg:block overflow-hidden">
-        <img
-          src="https://images.unsplash.com/photo-1436491865332-7a61a109cc05?q=80&w=2074&auto=format&fit=crop"
-          alt="Corporate Travel"
-          className="absolute inset-0 h-full w-full object-cover transition-transform duration-10000 hover:scale-105"
-        />
-        <div className="absolute inset-0 bg-brand/60 mix-blend-multiply" />
-        <div className="absolute inset-0 bg-gradient-to-t from-slate-900/90 via-slate-900/40 to-transparent" />
-
-        <div className="absolute bottom-16 left-16 right-16 text-white">
-          <h2 className="text-4xl font-extrabold tracking-tight mb-4 leading-tight">
-            Simplify Your Corporate Travel & Expenses
-          </h2>
-          <p className="text-lg text-white/80 font-medium leading-relaxed max-w-xl">
-            Experience a seamless, unified platform for booking trips, managing approvals, and settling reimbursements instantly. Built for the modern enterprise.
-          </p>
-        </div>
-      </div>
+      {/* Left photo panel with the logo (hidden on mobile) — shared by every sign-in screen */}
+      <AuthBrandPanel />
 
       {/* Right Content Panel */}
       <div className="flex w-full items-center justify-center lg:w-1/2 p-6 lg:p-12 relative overflow-hidden bg-white">
@@ -104,8 +86,8 @@ export default function ForgotPasswordPage() {
         <div className="relative z-10 w-full max-w-[400px]">
           {step === 'email' ? (
             <>
-              <div className="mb-10 text-left">
-                <img src="/assets/travora-si-logo.png" alt="Travora" className="h-11 w-auto object-contain mb-8" />
+              <div className="mb-8 text-left">
+                <AuthMobileLogo />
                 <h1 className="text-3xl font-extrabold tracking-tight text-slate-900">Reset Password</h1>
                 <p className="mt-2 text-sm text-slate-500 font-medium">Enter your email and we&apos;ll send you a one-time code to reset your password.</p>
               </div>
@@ -143,13 +125,11 @@ export default function ForgotPasswordPage() {
             </>
           ) : (
             <>
-              <div className="mb-10 text-left">
-                <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-brand/10 text-brand mb-6 shadow-sm border border-brand/20">
-                  <KeyRound size={24} />
-                </div>
+              <div className="mb-8 text-left">
+                <AuthMobileLogo />
                 <h1 className="text-3xl font-extrabold tracking-tight text-slate-900">Enter Code & New Password</h1>
                 <p className="mt-2 text-sm text-slate-500 font-medium">
-                  We sent a 6-character code to <strong>{email}</strong>. It expires in a few minutes.
+                  If an account exists for <strong>{email}</strong>, we&apos;ve sent it a 6-character code. It expires in a few minutes.
                 </p>
               </div>
 
@@ -166,7 +146,7 @@ export default function ForgotPasswordPage() {
                   <input
                     type="text"
                     required
-                    maxLength={6}
+                    maxLength={OTP_LENGTH}
                     className="field h-12 tracking-[0.3em] font-mono text-center uppercase"
                     placeholder="------"
                     value={otpCode}
@@ -227,65 +207,47 @@ export default function ForgotPasswordPage() {
                   </div>
                 </div>
 
-                <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-4 text-[11px] font-medium text-slate-500 space-y-2.5 shadow-sm">
-                  <p className="font-bold text-slate-800 text-xs mb-1">Password Requirements:</p>
-                  <div className="space-y-1.5">
-                    <div className={`flex items-center gap-2 transition-colors ${password.length >= 8 ? 'text-emerald-600' : 'text-red-500'}`}>
-                      {password.length >= 8 ? <Check size={14} strokeWidth={3} className="shrink-0" /> : <div className="h-1.5 w-1.5 rounded-full bg-red-400 ml-1 mr-0.5 shrink-0" />}
-                      <span>At least 8 characters</span>
-                    </div>
-                    <div className={`flex items-center gap-2 transition-colors ${/[A-Z]/.test(password) ? 'text-emerald-600' : 'text-red-500'}`}>
-                      {/[A-Z]/.test(password) ? <Check size={14} strokeWidth={3} className="shrink-0" /> : <div className="h-1.5 w-1.5 rounded-full bg-red-400 ml-1 mr-0.5 shrink-0" />}
-                      <span>At least 1 uppercase letter</span>
-                    </div>
-                    <div className={`flex items-center gap-2 transition-colors ${/[a-z]/.test(password) ? 'text-emerald-600' : 'text-red-500'}`}>
-                      {/[a-z]/.test(password) ? <Check size={14} strokeWidth={3} className="shrink-0" /> : <div className="h-1.5 w-1.5 rounded-full bg-red-400 ml-1 mr-0.5 shrink-0" />}
-                      <span>At least 1 lowercase letter</span>
-                    </div>
-                    <div className={`flex items-center gap-2 transition-colors ${/[0-9]/.test(password) ? 'text-emerald-600' : 'text-red-500'}`}>
-                      {/[0-9]/.test(password) ? <Check size={14} strokeWidth={3} className="shrink-0" /> : <div className="h-1.5 w-1.5 rounded-full bg-red-400 ml-1 mr-0.5 shrink-0" />}
-                      <span>At least 1 number</span>
-                    </div>
-                    <div className={`flex items-center gap-2 transition-colors ${/[!@#$%^&*()_+={}[\]|\\:;"'<>,.?/~`-]/.test(password) ? 'text-emerald-600' : 'text-red-500'}`}>
-                      {/[!@#$%^&*()_+={}[\]|\\:;"'<>,.?/~`-]/.test(password) ? <Check size={14} strokeWidth={3} className="shrink-0" /> : <div className="h-1.5 w-1.5 rounded-full bg-red-400 ml-1 mr-0.5 shrink-0" />}
-                      <span>At least 1 special character</span>
-                    </div>
-                    {/* Printed in every welcome email (backend welcome_service.TEMPORARY_PASSWORD). */}
-                    <div className={`flex items-center gap-2 transition-colors ${password && password !== 'Welcome@123' ? 'text-emerald-600' : 'text-red-500'}`}>
-                      {password && password !== 'Welcome@123' ? <Check size={14} strokeWidth={3} className="shrink-0" /> : <div className="h-1.5 w-1.5 rounded-full bg-red-400 ml-1 mr-0.5 shrink-0" />}
-                      <span>Not the temporary password</span>
-                    </div>
+                <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-4 text-[11px] font-medium text-slate-500 shadow-sm">
+                  <p className="font-bold text-slate-800 text-xs mb-2.5">Password Requirements:</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-2">
+                    {rules.map(([ok, label]) => (
+                      <div key={label} className={`flex items-center gap-2 transition-colors ${ok ? 'text-emerald-600' : 'text-red-500'}`}>
+                        {ok ? <Check size={14} strokeWidth={3} className="shrink-0" /> : <div className="h-1.5 w-1.5 rounded-full bg-red-400 ml-1 mr-0.5 shrink-0" />}
+                        <span>{label}</span>
+                      </div>
+                    ))}
                   </div>
                 </div>
 
                 <button
                   type="submit"
-                  disabled={loading || !otpCode || !password || !confirmPassword || password === 'Welcome@123'}
+                  disabled={loading || !ready}
                   className="btn-primary w-full h-12 mt-2 text-[15px] shadow-lg shadow-brand/25 transition-all hover:-translate-y-0.5 hover:shadow-xl hover:shadow-brand/40"
                 >
                   {loading ? 'Resetting Password...' : 'Reset Password'}
-                </button>
-
-                <button
-                  type="button"
-                  className="w-full text-center text-[13px] font-semibold text-slate-400 hover:text-slate-600 transition-colors"
-                  onClick={() => {
-                    setStep('email');
-                    setOtpCode('');
-                    setError(null);
-                  }}
-                  disabled={loading}
-                >
-                  Use a different email
                 </button>
               </form>
             </>
           )}
 
-          <div className="mt-10 text-center lg:text-left">
+          <div className="mt-6 flex items-center justify-center gap-6 lg:justify-between">
             <Link to="/login" className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-slate-400 hover:text-slate-600 transition-colors">
               <ArrowLeft size={16} /> Back to Login
             </Link>
+            {step === 'otp' && (
+              <button
+                type="button"
+                className="text-[13px] font-semibold text-slate-400 hover:text-slate-600 transition-colors"
+                onClick={() => {
+                  setStep('email');
+                  setOtpCode('');
+                  setError(null);
+                }}
+                disabled={loading}
+              >
+                Use a different email
+              </button>
+            )}
           </div>
         </div>
       </div>

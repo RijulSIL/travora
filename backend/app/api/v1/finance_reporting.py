@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.rbac import get_current_claims, get_extra_permissions, require_any_permission, require_permission
+from app.core.timezone import format_datetime
 from app.models.auth import Role
 from app.schemas.finance_reporting import (
     AuditLogOut,
@@ -43,6 +44,7 @@ from app.services.finance_reporting_service import (
     list_scheduled_reports,
     page_audit_logs,
     post_ledger_entry_to_erp,
+    readable_report_rows,
     schedule_report,
     set_report_schedule_active,
 )
@@ -267,7 +269,7 @@ async def audit_logs_export(
         writer.writerow(
             [
                 row.id,
-                row.timestamp.isoformat(),
+                format_datetime(row.timestamp, seconds=True),
                 row.entity_type,
                 row.entity_id,
                 row.action,
@@ -415,7 +417,7 @@ async def export_report(
         fieldnames = list(rows[0].keys())
         writer = csv.DictWriter(output, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows(readable_report_rows(rows))
     else:
         output.write(json.dumps(report))
     output.seek(0)

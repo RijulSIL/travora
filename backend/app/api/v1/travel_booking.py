@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.rbac import get_current_claims, require_permission
+from app.models.travel_booking import TripStatus
 from app.schemas.travel_booking import (
     BoardingPassOut,
     BusBookIn,
@@ -22,7 +23,7 @@ from app.schemas.travel_booking import (
     TrainSearchIn,
     TripOut,
 )
-from app.services.reimbursement_service import archived_trip_ids, trip_ids_on_claims
+from app.services.reimbursement_service import archived_trip_ids, trip_claim_references, trip_ids_on_claims
 from app.services.travel_booking_service import (
     book_bus,
     book_flight,
@@ -173,6 +174,10 @@ async def my_trips(
     # With unlinked_only: keep archived trips (flagged archived) — My Travel Requests shows them
     # as archived; the claim wizard and Home leave them out.
     include_archived: bool = Query(False),
+    # The travel claim's trip list: every trip that can still be claimed — on other claims or
+    # not (a trip can go on any number of claims until it's archived), each with the claims it's
+    # already on (claim_references).
+    claimable: bool = Query(False),
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ) -> list[TripOut]:
@@ -182,12 +187,10 @@ async def my_trips(
 
     trips = await list_trips(int(claims["sub"]), db)
     archived = await archived_trip_ids(trips, db)
-    if unlinked_only:
-        # "Still to claim": drop trips already on a claim (any but a rejected one — see
-        # reimbursement_service.assert_trips_not_on_other_claim) and archived ones (too long after
-        # the trip to claim). The claim being edited keeps its own trips, so reopening it in the
-        # wizard still shows them as selected.
-        linked = await trip_ids_on_claims([t.id for t in trips], db, exclude_claim_id=editing_claim_id)
+    claim_refs: dict[int, list[str]] = {}
+    if unlinked_only or claimable:
+        # The claim being edited keeps its own trips, so reopening it in the wizard still shows
+        # them as selected, even once they're archived.
         own = set()
         if editing_claim_id:
             from app.models.reimbursement import ClaimTrip
@@ -197,7 +200,23 @@ async def my_trips(
                 .scalars()
                 .all()
             )
-        trips = [t for t in trips if t.id not in linked and (include_archived or t.id not in archived or t.id in own)]
+        # "Not claimed yet" (Home, My Travel Requests) also drops trips already on a claim (any
+        # but a rejected one); the claim form's list keeps them.
+        linked = (
+            await trip_ids_on_claims([t.id for t in trips], db, exclude_claim_id=editing_claim_id)
+            if unlinked_only and not claimable
+            else {}
+        )
+        # A trip the Travel Desk cancelled is never claimable, nor one archived (too long after it).
+        trips = [
+            t
+            for t in trips
+            if t.id not in linked
+            and t.status != TripStatus.CANCELLED
+            and (include_archived or t.id not in archived or t.id in own)
+        ]
+        if claimable:
+            claim_refs = await trip_claim_references([t.id for t in trips], db, exclude_claim_id=editing_claim_id)
     desk_ids = await desk_ticket_ids_for_trips(trips, db)
 
     # Fetch return date / trip type / purpose / travel type / project code from travel requests
@@ -231,6 +250,7 @@ async def my_trips(
             "travel_type": _req_field(t, "travel_type"),
             "project_code": _req_field(t, "project_code"),
             "archived": t.id in archived,
+            "claim_references": claim_refs.get(t.id, []),
         })
         for t in trips
     ]

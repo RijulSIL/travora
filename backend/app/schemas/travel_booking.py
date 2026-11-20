@@ -130,9 +130,11 @@ class TripOut(BaseModel):
     purpose: str | None = None
     travel_type: str | None = None
     project_code: str | None = None
-    # More than the archive window (Approval Matrix, default 15 days) after its trip's to date: it
+    # More than the archive window (Approval Matrix, default 30 days) after its trip's to date: it
     # can no longer be claimed (claim_submission_rules.claim_lateness).
     archived: bool = False
+    # With claimable=true: the other claims this trip is already on (it can be on several).
+    claim_references: list[str] = Field(default_factory=list)
     created_at: datetime
 
 
