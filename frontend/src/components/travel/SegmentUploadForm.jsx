@@ -28,20 +28,23 @@ export const EMPTY_UPLOAD_FIELDS = {
 /** What the traveler chose for this leg when requesting: an option found with Google by Gemini,
  * or their own description. A suggestion — whoever books checks fare and seats first. */
 export function TravelerPick({ pick }) {
-  if (!pick || (pick.choice !== 'own' && pick.choice !== 'bus' && !pick.option)) return null;
+  if (!pick || (!['own', 'bus', 'times'].includes(pick.choice) && !pick.option)) return null;
   const o = pick.option;
   const foundOn = formatDate(pick.searched_at) || null;
   const own = pick.choice === 'own';
   const when = leaveWindowsText(pick.time_windows);
-  if (pick.choice === 'bus') {
-    // Buses aren't searched: the traveler said what kind of bus and when; whoever books finds one.
+  if (pick.choice === 'bus' || pick.choice === 'times') {
+    // Buses and trains aren't searched: the traveler said when (and what kind of bus); whoever
+    // books finds one.
     return (
       <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
         <div className="border-b border-slate-100 bg-slate-50 px-3 py-2">
           <span className="text-[10px] font-bold text-brand uppercase tracking-wide">Traveler’s request</span>
         </div>
         <div className="px-3 py-2.5 text-xs leading-relaxed">
-          <span className="font-semibold text-slate-800">{busTypesText(pick.bus_types) || 'Any bus'}</span>
+          <span className="font-semibold text-slate-800">
+            {pick.choice === 'times' ? 'Any train in the traveler’s class' : busTypesText(pick.bus_types) || 'Any bus'}
+          </span>
           {when ? <span className="block text-[11px] text-slate-500">Wanted to leave {when}</span> : null}
         </div>
       </div>

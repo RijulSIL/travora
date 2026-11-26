@@ -1,4 +1,4 @@
-import { Bus, CalendarDays, ClipboardList, Pencil, Plane, Plus, ReceiptIndianRupee, Ticket, Train, Undo2 } from 'lucide-react';
+import { Bus, CalendarDays, ClipboardList, Pencil, Plane, Plus, ReceiptIndianRupee, Ticket, Train, Undo2, UploadCloud } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
@@ -20,6 +20,8 @@ import {
   today,
 } from '../../components/home/HomeParts';
 import { AdminSection, CompanyReports, FinanceSection, TeamSection } from '../../components/home/RoleSections';
+import SelfTicketUploadDialog from '../../components/travel/SelfTicketUploadDialog';
+import { awaitingSelfTickets } from '../../components/travel/selfTickets';
 import { useApprovalQueues } from '../../components/home/useApprovalQueues';
 import { requestRoute, useOwnHome } from '../../components/home/useOwnHome';
 import { useSetPageTitle } from '../../context/PageTitleContext';
@@ -112,6 +114,8 @@ export default function HomeDashboard() {
   const can = (p) => hasPermission(permissions, p);
   const [limitsOpen, setLimitsOpen] = useState(false);
   const closeLimits = useCallback(() => setLimitsOpen(false), []);
+  // An approved self-booked trip whose tickets are being uploaded from Home, or null.
+  const [uploadFor, setUploadFor] = useState(null);
 
   const own = useOwnHome(profile);
   const queues = useApprovalQueues(profile, role);
@@ -126,6 +130,19 @@ export default function HomeDashboard() {
   }));
   const mine = [];
   if (!own.loading) {
+    // Approved trips they booked themselves: the tickets are theirs to upload.
+    own.ticketsDue.forEach((t) =>
+      mine.push({
+        key: `tu-${t.request.id}`,
+        icon: UploadCloud,
+        iconTone: t.urgent ? 'rose' : 'amber',
+        title: `Upload your tickets: ${t.route}`,
+        sub: t.sub,
+        when: t.when,
+        whenTone: t.urgent ? 'rose' : 'amber',
+        action: { label: 'Upload tickets', onClick: () => setUploadFor(t.request) },
+      }),
+    );
     own.sentBack.forEach(({ claim, note }) =>
       mine.push({
         key: `sb-${claim.id}`,
@@ -171,6 +188,7 @@ export default function HomeDashboard() {
   const bits = [];
   if (waitingTotal) bits.push(<b key="w">{plural(waitingTotal, 'thing')} waiting on you</b>);
   if (!own.loading) {
+    if (own.ticketsDue.length) bits.push(<b key="tu">{plural(own.ticketsDue.length, 'trip')} with tickets to upload</b>);
     if (own.sentBack.length) bits.push(<b key="sb">{plural(own.sentBack.length, 'claim')} sent back</b>);
     if (own.drafts.length) bits.push(<span key="d">{plural(own.drafts.length, 'draft')}</span>);
     if (nextClaim) {
@@ -259,6 +277,16 @@ export default function HomeDashboard() {
     <div className="flex flex-col gap-4">
       <HomeHeader firstName={firstName} summary={summary} profile={profile} onOpenLimits={() => setLimitsOpen(true)} />
       <MyLimitsModal open={limitsOpen} onClose={closeLimits} />
+      {uploadFor ? (
+        <SelfTicketUploadDialog
+          request={uploadFor}
+          onClose={() => setUploadFor(null)}
+          onSubmitted={() => {
+            setUploadFor(null);
+            own.reload();
+          }}
+        />
+      ) : null}
 
       <AttentionPanel
         approvals={approvals}
@@ -268,7 +296,7 @@ export default function HomeDashboard() {
         emptyTitle={own.claims?.length || approvals.length ? "You're all caught up" : "You're all set"}
         emptyText={
           own.claims?.length
-            ? 'Nothing is waiting on you. Sent-back claims, drafts and trips to claim will show up here.'
+            ? 'Nothing is waiting on you. Tickets to upload, sent-back claims, drafts and trips to claim will show up here.'
             : 'Things you need to do, like a claim sent back to you or a trip to claim, will show up here.'
         }
       />
@@ -338,7 +366,15 @@ export default function HomeDashboard() {
                 : 'Need to travel for work? Raise a travel request. Once it is approved, the travel desk books your tickets.'}
             </EmptyState>
           ) : null}
-          {!own.loading ? own.upcoming.map((t) => <TripRow key={t.request.id} trip={t} onOpen={() => navigate('/travel-requests')} />) : null}
+          {!own.loading
+            ? own.upcoming.map((t) => (
+                <TripRow
+                  key={t.request.id}
+                  trip={t}
+                  onOpen={() => (awaitingSelfTickets(t.request) ? setUploadFor(t.request) : navigate('/travel-requests'))}
+                />
+              ))
+            : null}
           {!own.loading && own.moreUpcoming ? (
             <div className="border-t border-slate-100 px-4 py-2.5 text-xs text-slate-500">
               + {own.moreUpcoming} more upcoming ·{' '}

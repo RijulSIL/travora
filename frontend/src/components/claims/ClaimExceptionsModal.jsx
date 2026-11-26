@@ -30,8 +30,8 @@ const EXCEPTION_COPY = {
   TRAIN_TATKAL: ['Tatkal Train Ticket Exception', 'Tatkal train bookings need explicit justification and approval.'],
   AIR_TRAVEL_L5_L6: ['Restricted Air Class Exception', 'Air travel at your level is conditional and needs exception approval.'],
   HIRED_TAXI_UNAUTHORIZED: [
-    'Unauthorized Local Hired Taxi Exception',
-    'Hired taxi claims at your level need approval as local conveyance exceptions.',
+    'Local Conveyance Mode Exception',
+    "This kind of ride (for example a hired taxi or a premium cab) isn't one your impact level may use, so it needs an exception.",
   ],
   ROOM_RENT_DEVIATION: ['Room Rent Limit Deviation', 'Hotel room rent exceeds the policy cap for your destination city group.'],
   FOOD_DEVIATION: ['Food & Meals Limit Deviation', 'Food & Meals spend exceeds the policy cap for your level/city.'],

@@ -1,10 +1,12 @@
-import { Bell, ChevronDown, LogOut, Menu, User } from 'lucide-react';
+import { Bell, ChevronDown, Compass, LogOut, Menu, User } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 
 import api, { currentRefreshToken } from '../../services/api';
 import { reimbursementApi } from '../../services/reimbursementApi';
 import { clearSession, selectResolvedRole, useAuthStore } from '../../store/authStore';
+import { useTourStore } from '../../store/tourStore';
+import { TOURS } from '../tour/tours';
 import NotificationPanel from '../ui/NotificationPanel';
 import { ROLE_LABELS, showsManager } from '../../utils/formatters';
 import { roleAccent } from './roleAccent';
@@ -119,6 +121,15 @@ export default function AppNavbar({ onOpenSidebar }) {
     navigate('/', { replace: true });
   };
 
+  // Replaying a welcome tour (components/tour): they run on Home.
+  const startTour = useTourStore((state) => state.start);
+  const tours = (profile?.available_tours || []).filter((key) => TOURS[key]);
+  const takeTour = (key) => {
+    setUserMenuOpen(false);
+    navigate('/dashboard');
+    startTour([key], 'menu');
+  };
+
   const handleSelectNotification = async (item) => {
     if (!item.is_read) await reimbursementApi.markNotificationRead(item.sqlid);
     setOpen(false);
@@ -155,6 +166,7 @@ export default function AppNavbar({ onOpenSidebar }) {
           <div className="relative" ref={bellRef}>
             <button
               type="button"
+              data-tour="bell"
               className="relative inline-flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 transition-colors"
               aria-label="Notifications"
               aria-expanded={open}
@@ -218,6 +230,24 @@ export default function AppNavbar({ onOpenSidebar }) {
                   <User size={15} className="text-slate-400" />
                   Profile
                 </NavLink>
+                {tours.length ? (
+                  <div className="border-y border-slate-100 py-1">
+                    {tours.length > 1 ? (
+                      <div className="px-4 pb-0.5 pt-1.5 text-[10px] font-extrabold uppercase tracking-[0.1em] text-slate-400">Take a tour</div>
+                    ) : null}
+                    {tours.map((key) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => takeTour(key)}
+                        className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-[13px] font-medium text-slate-600 transition-colors hover:bg-slate-50 hover:text-ink"
+                      >
+                        <Compass size={15} className="text-slate-400" />
+                        {tours.length > 1 ? TOURS[key].title : 'Take the tour'}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
                 <button
                   type="button"
                   onClick={handleLogout}

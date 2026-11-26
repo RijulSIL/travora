@@ -4,10 +4,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.expense_category import ExpenseCategory
 from app.models.policy import ImpactLevel
 
+# Travel policy Table 1: nobody flies Business or First; Premium Economy is for Level 1 only.
 AIR_TRAVEL_CLASS_BLACKLIST = ("Business Class", "First Class")
-AIR_TRAVEL_CLASS_BLACKLIST_NORMALIZED = {
-    item.lower() for item in AIR_TRAVEL_CLASS_BLACKLIST
-}
+PREMIUM_ECONOMY = "Premium Economy"
+PREMIUM_ECONOMY_LEVELS = {"L1"}
 
 
 async def _resolve_impact_level_code(
@@ -34,18 +34,13 @@ async def check_blacklist(
     categories = result.scalars().all()
     matched: list[str] = []
     for category in categories:
-        if category.name == "Air Travel" and resolved_level_code != "L1":
+        if category.name == "Air Travel":
             for item in AIR_TRAVEL_CLASS_BLACKLIST:
                 if item.lower() in normalized:
                     matched.append(item)
+            if resolved_level_code not in PREMIUM_ECONOMY_LEVELS and PREMIUM_ECONOMY.lower() in normalized:
+                matched.append(PREMIUM_ECONOMY)
         for item in category.blacklisted_items or []:
-            normalized_item = item.lower()
-            if (
-                category.name == "Air Travel"
-                and resolved_level_code == "L1"
-                and normalized_item in AIR_TRAVEL_CLASS_BLACKLIST_NORMALIZED
-            ):
-                continue
-            if normalized_item in normalized:
+            if item.lower() in normalized:
                 matched.append(item)
     return bool(matched), list(dict.fromkeys(matched))

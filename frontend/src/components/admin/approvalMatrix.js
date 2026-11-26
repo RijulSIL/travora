@@ -32,18 +32,14 @@ export const TRAVEL_EXCEPTIONS = {
   TRAVEL_REQUEST_LEAD_TIME_OVERRIDE: 'Request raised too late (other modes)',
 };
 
-// Short-notice checks on travel requests and how their notice period is counted (workflow_service.
-// TRAVEL_NOTICE_TYPES): [default days, how a request is flagged with N days].
+// Short-notice checks on travel requests (workflow_service.TRAVEL_NOTICE_TYPES): [default days, how a
+// request is flagged with N days]. Every mode: flagged when the trip is fewer than N calendar days away.
+const noticeText = (what) => (n) =>
+  n === 0 ? 'Never flagged (0 days).' : `Flagged when ${what} is less than ${n} calendar day${n === 1 ? '' : 's'} away.`;
 export const TRAVEL_NOTICE = {
-  FLIGHT_ADVANCE_BOOKING_OVERRIDE: [7, (n) => `Flagged when the flight is less than ${n} calendar day${n === 1 ? '' : 's'} away.`],
-  TRAIN_ADVANCE_BOOKING_OVERRIDE: [
-    2,
-    (n) => (n === 0 ? 'Flagged when the train leaves the same day.' : `Flagged when the train is ${n} calendar day${n === 1 ? '' : 's'} away or sooner.`),
-  ],
-  TRAVEL_REQUEST_LEAD_TIME_OVERRIDE: [
-    2,
-    (n) => `Flagged when a bus (or other mode) is sooner than ${n} working day${n === 1 ? '' : 's'} away (weekends don't count).`,
-  ],
+  FLIGHT_ADVANCE_BOOKING_OVERRIDE: [15, noticeText('the flight')],
+  TRAIN_ADVANCE_BOOKING_OVERRIDE: [15, noticeText('the train')],
+  TRAVEL_REQUEST_LEAD_TIME_OVERRIDE: [15, noticeText('a bus (or other mode)')],
 };
 
 /** A whole number of notice days from 0 to 365, or `fallback`. */

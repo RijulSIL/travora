@@ -922,7 +922,7 @@ export default function WorkflowConfig() {
                                   })
                                 }
                               />
-                              {type === 'TRAVEL_REQUEST_LEAD_TIME_OVERRIDE' ? 'working days' : 'days'}
+                              days
                             </label>
                           ) : null}
                           {allowBlock ? (

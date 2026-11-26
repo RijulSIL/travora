@@ -1,15 +1,16 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useNavigate } from 'react-router-dom';
-import { ArrowLeftRight, ChevronDown, Clock, Plus, Send, ShieldAlert, Ticket, X } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { ArrowLeftRight, ChevronDown, Clock, Plus, Send, ShieldAlert, Ticket, UploadCloud, X } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 
 import { RELOCATION_PURPOSE } from '../../components/claims/ClaimRelocationSteps';
 import TicketPreviewDrawer from '../../components/ui/TicketPreviewDrawer';
 import { EntitlementChips, TravelRequestDetail, TravelRequestRow, TripDetail, TripRow } from '../../components/travel/TravelRequestList';
 import { claimWindow, claimWindowDays, describeRequest } from '../../components/travel/travelRequestView';
+import { awaitingSelfTickets } from '../../components/travel/selfTickets';
 import LegPicker, { pickDone, segmentComplete } from '../../components/travel/LegPicker';
-import SelfTicketSlots, { selfTicketError, selfTicketsPayload } from '../../components/travel/SelfTicketSlots';
+import SelfTicketUploadDialog from '../../components/travel/SelfTicketUploadDialog';
 import { EMPTY_TRAVELLER_ID, MealChoice, TravellerIdFields, travellerIdErrors } from '../../components/travel/TravellerId';
 import {
   CapsPanel,
@@ -77,8 +78,8 @@ const TRIP_TYPES = [
   { value: 'MULTI_CITY', label: 'Multi-city' },
 ];
 const BOOKED_BY = [
-  { value: 'COMPANY', label: 'The company' },
-  { value: 'SELF', label: 'I’ve booked it' },
+  { value: 'COMPANY', label: 'Company booking' },
+  { value: 'SELF', label: 'Self booking' },
 ];
 const TRAVEL_TYPES = [
   { value: 'NON_PROJECT', label: 'Non-project' },
@@ -162,6 +163,9 @@ export default function TravelRequestsPage() {
 
   const [preview, setPreview] = useState({ open: false, blob: null, name: '', type: '', title: '' });
   const [confirmCancelId, setConfirmCancelId] = useState(null);
+  // An approved self-booked request whose tickets are being uploaded, or null.
+  const [uploadFor, setUploadFor] = useState(null);
+  const [searchParams, setSearchParams] = useSearchParams();
   const [expandedIds, setExpandedIds] = useState(() => new Set());
   // Only one row's ticket picker is ever open at a time — id of that request, or null.
   // Rendered through a portal (see below) so it isn't clipped by the table's own
@@ -359,13 +363,9 @@ export default function TravelRequestsPage() {
       .catch(() => {});
   }, [modalOpen]);
 
-  // Who books the tickets: the company (the travel agent, once approved) or the employee, who then
-  // attaches a ticket for every leg (and follows the self-booked approval route).
+  // Who books the tickets: the company (the travel agent, once approved) or the employee, who
+  // follows the self-booked approval route and uploads their tickets once it's approved.
   const [bookedBy, setBookedBy] = useState('COMPANY');
-  const [selfTickets, setSelfTickets] = useState({});
-  const [ticketUploading, setTicketUploading] = useState(false);
-  const [showTicketErrors, setShowTicketErrors] = useState(false);
-  const ticketsRef = useRef(null);
 
   const resetTraveller = () => {
     setTravellerId(EMPTY_TRAVELLER_ID);
@@ -374,8 +374,6 @@ export default function TravelRequestsPage() {
     setPassport({ number: '', expiry: '' });
     setShowIdErrors(false);
     setBookedBy('COMPANY');
-    setSelfTickets({});
-    setShowTicketErrors(false);
   };
   const pickSegments = useMemo(() => {
     const v = form.values;
@@ -462,6 +460,31 @@ export default function TravelRequestsPage() {
       cancelled = true;
     };
   }, [loadAll, showToast]);
+
+  // The approval notification links to ?upload=<id>: open that request's ticket upload.
+  const uploadParam = searchParams.get('upload');
+  useEffect(() => {
+    if (!uploadParam || loading) return;
+    const match = rows.find(({ request }) => String(request.id) === uploadParam);
+    if (match && awaitingSelfTickets(match.request)) setUploadFor(match.request);
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('upload');
+        return next;
+      },
+      { replace: true },
+    );
+  }, [uploadParam, loading, rows, setSearchParams]);
+
+  async function onTicketsSubmitted() {
+    setUploadFor(null);
+    try {
+      await loadAll();
+    } catch {
+      // The list refreshes on the next visit; the tickets are already saved.
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -567,16 +590,17 @@ export default function TravelRequestsPage() {
       purpose: form.values.purpose || null,
       notes: form.values.notes || null,
       legs,
-      leg_picks: pickSegments
-        .filter(segmentComplete)
-        .map((seg, i) => ({ seq: i + 1, ...(legPicks[seg.key] || {}) })),
+      // Already booked by the employee: there's no flight, train or bus to choose.
+      leg_picks:
+        bookedBy === 'SELF'
+          ? []
+          : pickSegments.filter(segmentComplete).map((seg, i) => ({ seq: i + 1, ...(legPicks[seg.key] || {}) })),
       id_name: travellerId.id_name.trim(),
       id_type: travellerId.id_type,
       id_proof_ref: travellerId.id_proof_ref,
       id_proof_filename: travellerId.id_proof_filename,
       save_id_to_profile: idDiffersFromSaved && saveIdToProfile,
       booked_by: bookedBy,
-      self_tickets: bookedBy === 'SELF' ? selfTicketsPayload(pickSegments, selfTickets) : [],
       meal_preference: meal,
       passport_number: tidyPassport(passport.number) || null,
       passport_expiry: tidyPassport(passport.number) && passport.expiry ? passport.expiry : null,
@@ -598,14 +622,9 @@ export default function TravelRequestsPage() {
     try {
       if (!form.validateAll()) return;
       if (form.values.trip_type === 'MULTI_CITY' && form.values.legs.some((_, i) => legDateError(form.values.legs, i))) return;
-      if (pickSegments.some((seg) => !segmentComplete(seg) || !pickDone(legPicks[seg.key]))) {
+      if (bookedBy !== 'SELF' && pickSegments.some((seg) => !segmentComplete(seg) || !pickDone(legPicks[seg.key]))) {
         setShowPickErrors(true);
         pickerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        return;
-      }
-      if (bookedBy === 'SELF' && (ticketUploading || pickSegments.some((seg) => selfTicketError(selfTickets[seg.key])))) {
-        setShowTicketErrors(true);
-        ticketsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
         return;
       }
       if (Object.values(idErrors).some(Boolean) || idUploading) {
@@ -913,6 +932,18 @@ export default function TravelRequestsPage() {
                     onToggle={() => toggleExpand(request.id)}
                     actions={
                       <>
+                        {rv.needsTickets ? (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setUploadFor(request);
+                            }}
+                            className="relative z-[1] inline-flex h-7 items-center gap-1 rounded-lg bg-brand px-2.5 text-[11.5px] font-bold text-white hover:bg-brand/90"
+                          >
+                            <UploadCloud size={13} /> Upload tickets
+                          </button>
+                        ) : null}
                         {canClaim ? (
                           <button
                             type="button"
@@ -992,6 +1023,15 @@ export default function TravelRequestsPage() {
                       onViewDocument={viewSupportingDocument}
                       footer={
                         <>
+                          {rv.needsTickets ? (
+                            <button
+                              type="button"
+                              onClick={() => setUploadFor(request)}
+                              className="inline-flex h-7 items-center gap-1 rounded-lg bg-brand px-2.5 text-[11.5px] font-bold text-white hover:bg-brand/90"
+                            >
+                              <UploadCloud size={13} /> Upload tickets
+                            </button>
+                          ) : null}
                           {rv.cancellable ? (
                             <button
                               type="button"
@@ -1114,6 +1154,10 @@ export default function TravelRequestsPage() {
         />
       ) : null}
 
+      {uploadFor ? (
+        <SelfTicketUploadDialog request={uploadFor} onClose={() => setUploadFor(null)} onSubmitted={onTicketsSubmitted} />
+      ) : null}
+
       {/* Modal: New Request Dialog */}
       {modalOpen ? createPortal(
         <div className="fixed inset-0 z-[100] grid place-items-center bg-slate-900/60 p-4 backdrop-blur-sm">
@@ -1126,7 +1170,11 @@ export default function TravelRequestsPage() {
             <div className="flex shrink-0 items-start justify-between gap-2.5 border-b border-slate-100 px-4 pb-3.5 pt-[18px] sm:px-[22px]">
               <div className="min-w-0">
                 <h2 id="new-travel-request-title" className="text-[17px] font-extrabold text-ink">New travel request</h2>
-                <p className="mt-0.5 text-[12.5px] text-slate-500">The travel desk books your tickets once it&apos;s approved.</p>
+                <p className="mt-0.5 text-[12.5px] text-slate-500">
+                  {bookedBy === 'SELF'
+                    ? 'Tickets are to be uploaded by you upon approval of this request.'
+                    : 'Tickets will be arranged by the Travel Desk upon approval of this request.'}
+                </p>
                 <PolicyChips limits={policyLimits} />
               </div>
               <button
@@ -1145,17 +1193,17 @@ export default function TravelRequestsPage() {
                 <section className="space-y-3">
                   <p className={EYEBROW}>Your trip</p>
                   <div>
-                    <span className={LABEL}>Who&apos;s booking the tickets?</span>
+                    <span className={LABEL}>Mode of ticket booking</span>
                     <SegButtons
-                      label="Who's booking the tickets?"
+                      label="Mode of ticket booking"
                       options={BOOKED_BY}
                       value={bookedBy}
                       onChange={setBookedBy}
                     />
                     <p className="mt-1 text-[11px] text-slate-500">
                       {bookedBy === 'SELF'
-                        ? 'Attach your tickets below. Once it’s approved, the trip is booked with them.'
-                        : 'The travel agent books it once it’s approved.'}
+                        ? 'Kindly upload your tickets upon approval of this request. The booking will be confirmed thereafter.'
+                        : 'Tickets will be booked by the travel agent upon approval of this request.'}
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2.5">
@@ -1378,19 +1426,9 @@ export default function TravelRequestsPage() {
                   {showExpenseLimits ? <CapsPanel limits={cityLimits} loading={limitsLoading} /> : null}
                 </section>
 
-                <div ref={pickerRef}>
-                  <LegPicker segments={pickSegments} picks={legPicks} onChange={setLegPicks} showErrors={showPickErrors} paused={editingCity} />
-                </div>
-
-                {bookedBy === 'SELF' ? (
-                  <div ref={ticketsRef}>
-                    <SelfTicketSlots
-                      segments={pickSegments}
-                      tickets={selfTickets}
-                      onChange={setSelfTickets}
-                      showErrors={showTicketErrors}
-                      onUploadingChange={setTicketUploading}
-                    />
+                {bookedBy !== 'SELF' ? (
+                  <div ref={pickerRef}>
+                    <LegPicker segments={pickSegments} picks={legPicks} onChange={setLegPicks} showErrors={showPickErrors} paused={editingCity} />
                   </div>
                 ) : null}
 

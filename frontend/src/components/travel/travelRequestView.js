@@ -1,5 +1,6 @@
 import { dayOf, daysBetween, shortDate, today, weekdayDate } from '../home/HomeParts';
 import { formatRole } from '../../utils/formatters';
+import { awaitingSelfTickets } from './selfTickets';
 
 /*
  * How a travel request reads on the employee's Travel Requests page: which tab it belongs in
@@ -52,7 +53,7 @@ const addDays = (date, days) => {
 export function claimWindowDays(profile) {
   const archiveDays = profile?.workflow_claim_archive_after_days || 30;
   return {
-    lateDays: profile?.role === 'CEO' ? archiveDays : profile?.workflow_claim_late_after_days || 7,
+    lateDays: profile?.role === 'CEO' ? archiveDays : profile?.workflow_claim_late_after_days || 15,
     archiveDays,
   };
 }
@@ -62,7 +63,7 @@ export function claimWindowDays(profile) {
  * as the server's claim_submission_rules.claim_lateness: an ordinary claim for `lateDays` days, then
  * a late claim (needs a late-claim exception) until `archiveDays`, then archived (can't be claimed).
  */
-export function claimWindow(end, { lateDays = 7, archiveDays = 15 } = {}, now = today()) {
+export function claimWindow(end, { lateDays = 15, archiveDays = 30 } = {}, now = today()) {
   const onTimeUntil = addDays(end, lateDays);
   const lastDay = addDays(end, archiveDays);
   if (now > lastDay) {
@@ -122,6 +123,8 @@ export function describeRequest(request, chain, { trips = [], unclaimedIds = new
   // doesn't open. (A request cancelled before it was booked stays under Cancelled & rejected.)
   const cancelledBooking = isCancelledBooking(request);
   const selfBooked = request.booked_by === 'SELF';
+  // Approved, and it's the employee's turn: they booked it themselves and upload the tickets.
+  const needsTickets = awaitingSelfTickets(request);
   // A trip more than the archive window past its to date is archived: it can no longer be claimed.
   const claimState = past && !cancelledBooking ? claimWindow(end, windowDays, now) : null;
   const bucket = cancelledBooking
@@ -159,7 +162,7 @@ export function describeRequest(request, chain, { trips = [], unclaimedIds = new
   } else if (status === 'APPROVED') {
     pill = 'Approved';
     tone = 'sky';
-    note = 'Sent to the travel agent to book';
+    note = needsTickets ? 'Upload your tickets' : 'Sent to the travel agent to book';
   } else if (status === 'PARTIALLY_BOOKED') {
     pill = 'Partly booked';
     tone = 'sky';
@@ -178,7 +181,8 @@ export function describeRequest(request, chain, { trips = [], unclaimedIds = new
     pill = 'Cancelled';
     if (cancelledBooking) note = 'Cancelled by the travel desk';
   }
-  const stale = past && ['PENDING', 'PENDING_EXCEPTION', 'APPROVED', 'PARTIALLY_BOOKED'].includes(status);
+  // (Not an approved self-booked trip: its tickets can still be uploaded after the date.)
+  const stale = past && !needsTickets && ['PENDING', 'PENDING_EXCEPTION', 'APPROVED', 'PARTIALLY_BOOKED'].includes(status);
 
   // Booked trips from this request that aren't on a claim yet, with where the claim window stands.
   let claim = null;
@@ -209,6 +213,8 @@ export function describeRequest(request, chain, { trips = [], unclaimedIds = new
     cancellable: status === 'PENDING' || status === 'PENDING_EXCEPTION',
     cancelledBooking,
     selfBooked,
+    needsTickets,
+    past,
   };
 }
 
@@ -229,6 +235,15 @@ export const isCancelledBooking = (request) =>
 
 /** The opened request's status banner: tone, title and one line of text. */
 export function requestBanner(request, view) {
+  if (view.needsTickets) {
+    return {
+      tone: 'sky',
+      title: 'Approved. Upload your tickets',
+      text: view.past
+        ? 'The trip date has passed. Upload your tickets so the trip is booked and you can claim it.'
+        : 'Attach the ticket for each part of the journey. We read the details for you to check, and submitting books the trip.',
+    };
+  }
   if (view.stale && (request.status === 'PENDING' || request.status === 'PENDING_EXCEPTION')) {
     return {
       tone: 'amber',
@@ -242,7 +257,8 @@ export function requestBanner(request, view) {
       const title = view.claim.closed ? 'Booked. Archived: too late to claim' : view.claim.late ? 'Booked. Claim it now (late)' : 'Booked. Now claim it';
       return { tone: view.claim.closed ? 'slate' : view.claim.late ? 'amber' : 'ok', title, text: view.claim.text };
     }
-    return { tone: 'ok', title: 'Booked', text: `${view.ticketed.length} ticket${view.ticketed.length === 1 ? '' : 's'} uploaded by the travel desk.` };
+    const by = view.selfBooked ? 'you' : 'the travel desk';
+    return { tone: 'ok', title: 'Booked', text: `${view.ticketed.length} ticket${view.ticketed.length === 1 ? '' : 's'} uploaded by ${by}.` };
   }
   if (request.status === 'REJECTED') return { tone: 'rose', title: 'Rejected', text: view.note || request.rejection_reason || '' };
   if (request.status === 'CANCELLED') {

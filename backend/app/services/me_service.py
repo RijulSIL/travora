@@ -16,6 +16,7 @@ from app.models.policy import CityGroupTier, ExpenseLimit, ImpactLevel, PolicyVe
 from app.schemas.me import ApproverScopeOut, CityTierLimitsOut, MeOut, MyPolicyLimitsOut, PolicyCapOut, TravellerIdOut
 from app.services.advance_service import get_outstanding_advance
 from app.services.claim_submission_rules import claim_windows, parse_auto_approve_threshold
+from app.services.onboarding_tour_service import available_tours, pending_tours
 from app.services.policy_engine import get_active_policy_version, get_expense_limits
 from app.services.travel_id_proof_service import needs_traveller_profile, saved_traveller_id
 from app.services.workflow_service import (
@@ -294,6 +295,8 @@ async def build_me_profile(user_id: int, db: AsyncSession) -> MeOut:
         needs_traveller_profile=needs_traveller_profile(user),
         meal_preference=user.meal_preference,
         traveller_id=TravellerIdOut(**saved_id) if (saved_id := saved_traveller_id(user)) else None,
+        pending_tours=pending_tours(user),
+        available_tours=available_tours(user),
         auto_approve_enabled=settings.auto_approve_enabled,
         auto_approve_threshold=auto_approve_threshold_str,
         org_auto_approve_ceiling=org_auto_approve_ceiling_str,

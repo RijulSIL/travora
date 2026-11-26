@@ -41,7 +41,8 @@ _DEFAULT_SUBJECT = "Welcome to Travora, {{first_name}}"
 _DEFAULT_BODY = (
     "Hi {{first_name}},\n\nYour Travora account is ready.\n\nYour first sign-in\n"
     "1. Sign in with your email and the temporary password below.\n2. Enter the code we email you.\n"
-    "3. Set your own password. The temporary one stops working after that."
+    "3. Set your own password. The temporary one stops working after that.\n"
+    "4. Add your meal preference and ID for travel, then take a 2-minute tour of Travora."
 )
 
 

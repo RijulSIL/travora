@@ -46,9 +46,13 @@ class Settings(BaseSettings):
     # amount on My profile) is hidden for now (2026-11-19): while off, no claim is auto-approved and
     # the settings aren't shown. Their saved values are kept, so turning this on brings it back.
     auto_approve_enabled: bool = False
-    travel_request_min_lead_working_days: int = 2
-    flight_advance_booking_min_days: int = 7
-    train_advance_booking_min_days: int = 2
+    # Notice a travel request needs, in calendar days before the trip: requested any later and it
+    # needs a short-notice exception. 15 for every mode by default (2026-11-23); the Approval Matrix
+    # setting wins. (travel_request_min_lead_working_days keeps its name for existing env files but
+    # is calendar days now, like the other two.)
+    travel_request_min_lead_working_days: int = 15
+    flight_advance_booking_min_days: int = 15
+    train_advance_booking_min_days: int = 15
     # Optional GSTN live validation.
     gstn_public_api_base: str | None = None
     gstn_http_timeout_seconds: float = 8.0

@@ -21,6 +21,8 @@ from app.schemas.travel_request import (
     CityExpenseLimitOut,
     DeskQueueItemOut,
     EntitlementNoteOut,
+    SelfTicketClaimOut,
+    SelfTicketsSubmitIn,
     SupportingDocumentUploadOut,
     TravelApproveIn,
     TravelDeskCancelIn,
@@ -97,7 +99,6 @@ async def create_request(
             leg_picks=body.leg_picks,
             traveller_id=_traveller_id(body),
             booked_by=body.booked_by,
-            self_tickets=body.self_tickets,
             db=db,
         )
     return _build_request_out(row)
@@ -125,18 +126,6 @@ async def upload_id_proof(
     from app.services.travel_id_proof_service import store_id_proof
 
     return await store_id_proof(int(claims["sub"]), file)
-
-
-@router.post("/self-tickets", dependencies=[Depends(require_permission("submit_claim"))])
-async def upload_self_ticket(
-    file: UploadFile = File(...),
-    claims: dict = Depends(get_current_claims),
-) -> dict:
-    """Upload a ticket you booked yourself, for a self-booked request you're about to raise; the
-    request then refers to it by `ref` (self_booked_travel_service)."""
-    from app.services.self_booked_travel_service import store_pending_ticket
-
-    return await store_pending_ticket(int(claims["sub"]), file)
 
 
 @router.get("/id-proof/last", dependencies=[Depends(require_permission("submit_claim"))])
@@ -197,7 +186,6 @@ async def create_request_with_exception(
             leg_picks=body.leg_picks,
             traveller_id=_traveller_id(body),
             booked_by=body.booked_by,
-            self_tickets=body.self_tickets,
             justification=body.justification,
             db=db,
         )
@@ -677,6 +665,50 @@ async def read_ticket(
     """Reads a ticket before it's uploaded: PNR, provider, route and date, plus a warning if it
     looks like it's for another leg. Nothing is stored."""
     return await svc.read_ticket_for_leg(request_id=request_id, leg_sequence=leg_sequence, file=file, db=db)
+
+
+@router.post(
+    "/{request_id}/self-tickets/upload",
+    dependencies=[Depends(require_permission("submit_claim"))],
+)
+async def upload_self_ticket(
+    request_id: int,
+    file: Annotated[UploadFile, File(...)],
+    leg_sequence: Annotated[int, Form()] = 1,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Your approved self-booked trip: saves one leg's ticket and reads it (booking reference,
+    airline/railway/operator, fare) for you to check. Submit them all with /self-tickets."""
+    from app.services.self_booked_travel_service import upload_and_read_ticket
+
+    return await upload_and_read_ticket(
+        request_id=request_id, user_id=int(claims["sub"]), leg_sequence=leg_sequence, file=file, db=db
+    )
+
+
+@router.post(
+    "/{request_id}/self-tickets",
+    dependencies=[Depends(require_permission("submit_claim"))],
+)
+async def submit_self_tickets(
+    request_id: int,
+    body: SelfTicketsSubmitIn,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Your checked tickets, one for every leg: the trip is booked and HRBPs are told. With
+    `claim_fares`, a travel claim for the fares is created and submitted too; `claim` says what
+    happened to it."""
+    from app.services.self_booked_travel_service import submit_self_tickets as submit
+
+    row, claim = await submit(
+        request_id=request_id, user_id=int(claims["sub"]), tickets=body.tickets, db=db, claim_fares=body.claim_fares
+    )
+    return {
+        "request": _build_request_out(row).model_dump(mode="json"),
+        "claim": SelfTicketClaimOut(**claim).model_dump() if claim else None,
+    }
 
 
 @router.post(

@@ -199,9 +199,9 @@ DEFAULT_EXCEPTION_SUBMISSION_MODE: dict[str, str] = {
 
 
 # How much notice a travel request needs before it's flagged as short notice, per exception type
-# (Approval Matrix -> Travel request exceptions; stored as travel_notice_days). Flight: flagged
-# when it's less than N calendar days away. Train: N calendar days away or sooner. Any other mode:
-# sooner than N working days. The server config values are only the starting defaults.
+# (Approval Matrix -> Travel request exceptions; stored as travel_notice_days). For every mode the
+# same rule: flagged when the trip is fewer than N calendar days away (15 by default since
+# 2026-11-23). The server config values are only the starting defaults.
 TRAVEL_NOTICE_TYPES = (
     "FLIGHT_ADVANCE_BOOKING_OVERRIDE",
     "TRAIN_ADVANCE_BOOKING_OVERRIDE",
@@ -3324,12 +3324,31 @@ async def _finalize_travel_request_approval(
     approver when no HRBP stage was involved. With no agent email configured it waits on the
     Travel Desk for a manual send instead.
 
-    A trip the employee booked themselves is booked straight away instead: its tickets become
-    booked trips (claimable after travel), and nothing goes to the travel agent."""
-    from app.services.travel_request_service import _notify_stakeholders_once_booked, issue_agent_booking_link
+    A trip the employee booked themselves never goes to the travel agent: it stays APPROVED and
+    they're told to upload their tickets, which books it (self_booked_travel_service). One raised
+    before 23/11/2026 already has its tickets, so it's booked straight away."""
+    from app.services.travel_request_service import (
+        _notify_stakeholders_once_booked,
+        _trip_route_and_dates,
+        issue_agent_booking_link,
+    )
 
     if getattr(travel_request, "booked_by", None) == "SELF":
-        from app.services.self_booked_travel_service import book_self_booked_trip
+        from app.services.self_booked_travel_service import book_self_booked_trip, has_tickets, upload_link
+
+        if not await has_tickets(travel_request.id, db):
+            await db.refresh(travel_request, ["legs"])
+            from_city, to_city, _start, _end = _trip_route_and_dates(travel_request)
+            await create_notification(
+                user_id=travel_request.employee_user_id,
+                title="Travel Request Approved: upload your tickets",
+                body=f"Your travel request for {from_city} -> {to_city} has been approved. Upload your "
+                "tickets now: each one is read for you, and you check the details before you submit.",
+                link=upload_link(travel_request.id),
+                category="ACTION_REQUIRED",
+                db=db,
+            )
+            return
 
         await book_self_booked_trip(travel_request, db, _now())
         await create_notification(

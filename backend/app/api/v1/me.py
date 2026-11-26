@@ -15,6 +15,8 @@ from app.schemas.me import (
     DelegationOut,
     MeOut,
     MyPolicyLimitsOut,
+    TourOutcomeIn,
+    TourStateOut,
     TravellerProfileIn,
 )
 from app.services.audit_service import log_event
@@ -110,6 +112,25 @@ async def save_traveller_profile(
         return await build_me_profile(user_id, db)
     except ValueError:
         raise HTTPException(status_code=404, detail="User not found") from None
+
+
+@router.post("/me/tours/{tour}", response_model=TourStateOut)
+async def record_my_tour(
+    tour: str,
+    payload: TourOutcomeIn,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> TourStateOut:
+    """They finished or skipped a welcome tour, so it won't start by itself again (it can still be
+    replayed from the account menu)."""
+    from app.services.onboarding_tour_service import available_tours, pending_tours, record_tour
+
+    user = await db.get(User, int(claims["sub"]))
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    record_tour(user, tour, payload.outcome)
+    await db.commit()
+    return TourStateOut(pending_tours=pending_tours(user), available_tours=available_tours(user))
 
 
 @router.get("/me/policy-limits", response_model=MyPolicyLimitsOut)

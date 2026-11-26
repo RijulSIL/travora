@@ -1,8 +1,9 @@
 import asyncio
-from datetime import date
+from decimal import Decimal
 
 from sqlalchemy import select
 
+from app.core import policy_defaults as P
 from app.core.database import AsyncSessionLocal
 from app.models.expense_category import ExpenseCategory
 from app.models.policy import (
@@ -17,7 +18,12 @@ from app.models.policy import (
 )
 
 
+def _money(value: int | str | None) -> Decimal | None:
+    return None if value is None else Decimal(str(value))
+
+
 async def seed() -> None:
+    """A fresh install's first policy version: the travel policy in app.core.policy_defaults."""
     async with AsyncSessionLocal() as db:
         existing = await db.scalar(select(PolicyVersion.id).limit(1))
         if existing:
@@ -26,144 +32,68 @@ async def seed() -> None:
         version = PolicyVersion(
             id=1,
             version_number="1.0",
-            effective_from=date(2026, 4, 27),
+            effective_from=P.POLICY_EFFECTIVE_FROM,
             effective_to=None,
             status=PolicyStatus.ACTIVE,
         )
         db.add(version)
         await db.flush()
 
-        levels = [
-            (1, "L1", "CXO / Director", AirEligibility.YES, AirClass.BUSINESS, False, 28, 10),
-            (2, "L2", "VP / Senior Director", AirEligibility.YES, AirClass.PREMIUM_ECONOMY, False, 26, 9),
-            (3, "L3A", "Senior Manager", AirEligibility.CONDITIONAL, AirClass.ECONOMY, False, 24, 8),
-            (4, "L3B", "Manager", AirEligibility.CONDITIONAL, AirClass.ECONOMY, False, 23, 8),
-            (5, "L4A", "Deputy Manager", AirEligibility.CONDITIONAL, AirClass.ECONOMY, False, 22, 7),
-            (6, "L4B", "Assistant Manager", AirEligibility.CONDITIONAL, AirClass.ECONOMY, False, 21, 7),
-            (7, "L4C", "Senior Executive", AirEligibility.NO, None, False, 20, 6),
-            (8, "L5A", "Executive", AirEligibility.NO, None, False, 19, 6),
-            (9, "L5B", "Senior Associate", AirEligibility.NO, None, True, 18, 5),
-            (10, "L6A", "Associate I", AirEligibility.NO, None, True, 18, 5),
-            (11, "L6B", "Associate II", AirEligibility.NO, None, True, 17, 5),
-            (12, "L6C", "Associate III", AirEligibility.NO, None, True, 17, 5),
-            (13, "L6D", "Trainee", AirEligibility.NO, None, True, 16, 4),
-        ]
-        for level_id, code, name, air, air_class, twin, rate_4w, rate_2w in levels:
+        level_ids: dict[str, int] = {}
+        for level_id, (code, name, air, air_class, trains, modes, twin) in enumerate(P.IMPACT_LEVELS, start=1):
+            level_ids[code] = level_id
             db.add(
                 ImpactLevel(
                     id=level_id,
                     level_code=code,
                     level_name=name,
-                    air_eligibility=air,
-                    air_class_allowed=air_class,
-                    air_eligibility_conditions={"approval_required": air == AirEligibility.CONDITIONAL},
-                    train_classes_allowed=["1A", "2A", "3A", "CC"]
-                    if level_id <= 4
-                    else ["3A", "CC", "SL"],
-                    local_conveyance_modes=[
-                        "Own Vehicle 4W",
-                        "Own Vehicle 2W",
-                        "Hired Taxi",
-                        "Auto/Cab",
-                    ],
-                    vehicle_rate_4w=rate_4w,
-                    vehicle_rate_2w=rate_2w,
+                    air_eligibility=AirEligibility(air),
+                    air_class_allowed=AirClass(air_class) if air_class else None,
+                    air_eligibility_conditions={"approval_required": air == AirEligibility.CONDITIONAL.value},
+                    train_classes_allowed=list(trains),
+                    local_conveyance_modes=list(modes),
+                    vehicle_rate_4w=Decimal(P.VEHICLE_RATE_4W),
+                    vehicle_rate_2w=Decimal(P.VEHICLE_RATE_2W),
                     twin_sharing_mandatory=twin,
                     policy_version_id=1,
                 )
             )
 
-        tiers = [("A", "Group A", False), ("B", "Group B", False), ("C", "Group C", True)]
-        for code, display_name, is_default in tiers:
+        for code, display_name, is_default in P.CITY_GROUP_TIERS:
             db.add(CityGroupTier(code=code, display_name=display_name, is_default=is_default))
 
-        for city, group in [
-            ("Bengaluru", "A"),
-            ("Chennai", "A"),
-            ("Delhi NCR", "A"),
-            ("Hyderabad", "A"),
-            ("Kolkata", "A"),
-            ("Mumbai", "A"),
-            ("Pune", "A"),
-            ("Ahmedabad", "A"),
-            ("Chandigarh", "B"),
-            ("Coimbatore", "B"),
-            ("Indore", "B"),
-            ("Jaipur", "B"),
-            ("Kochi", "B"),
-            ("Lucknow", "B"),
-        ]:
+        for city, group in P.city_group_rows():
+            db.add(CityGroup(city_name=city, group_type=group, effective_from=P.POLICY_EFFECTIVE_FROM))
+
+        for row in P.expense_limit_rows():
             db.add(
-                CityGroup(
-                    city_name=city,
-                    group_type=group,
-                    effective_from=date(2026, 4, 27),
+                ExpenseLimit(
+                    policy_version_id=1,
+                    impact_level_id=level_ids[row["level_code"]],
+                    city_group=row["city_group"],
+                    hotel_cap=_money(row["hotel_cap"]),
+                    hotel_is_hard_block=row["hotel_is_hard_block"],
+                    food_cap=_money(row["food_cap"]),
+                    food_is_hard_block=row["food_is_hard_block"],
+                    incidental_cap=_money(row["incidental_cap"]),
+                    incidental_is_hard_block=row["incidental_is_hard_block"],
+                    day_visit_cap=_money(row["day_visit_cap"]),
+                    day_visit_is_hard_block=row["day_visit_is_hard_block"],
                 )
             )
 
-        group_multiplier = {"A": 1.0, "B": 0.8, "C": 0.65}
-        base_by_level = {
-            1: 12000,
-            2: 10000,
-            3: 8500,
-            4: 7500,
-            5: 6500,
-            6: 5500,
-            7: 4500,
-            8: 3500,
-            9: 3200,
-            10: 2800,
-            11: 2500,
-            12: 2300,
-            13: 2200,
-        }
-        for level_id, base in base_by_level.items():
-            for group, multiplier in group_multiplier.items():
-                db.add(
-                    ExpenseLimit(
-                        policy_version_id=1,
-                        impact_level_id=level_id,
-                        city_group=group,
-                        hotel_cap=int(base * multiplier),
-                        hotel_is_hard_block=level_id >= 5,
-                        food_cap=int(base * multiplier * 0.35),
-                        food_is_hard_block=False,
-                        incidental_cap=int(base * multiplier * 0.15),
-                        incidental_is_hard_block=False,
-                        day_visit_cap=int(base * multiplier * 0.25),
-                        day_visit_is_hard_block=level_id >= 10,
-                    )
-                )
-
-        categories = [
-            ("Air Travel", None, True, True, ["Business Class", "First Class"], "Book ≥ 7 days in advance"),
-            ("Train Travel", None, True, False, [], "Tatkal needs pre-approval"),
-            ("Bus Travel", None, True, False, [], None),
-            ("Local Conveyance", None, False, False, [], None),
-            ("Cab/Taxi", 4, True, True, [], None),
-            ("Uber", 4, True, True, [], None),
-            ("Auto", 4, True, False, [], None),
-            ("Metro", 4, True, False, [], None),
-            ("Personal Vehicle", 4, False, False, [], "₹8.50/km (4W), ₹4/km (2W)"),
-            ("Hotel/Accommodation", None, True, True, [], "Guest house stay = food + IE only"),
-            ("Food & Meals", None, True, False, ["Alcohol", "Cigarettes"], "Only for outstation overnight travel"),
-            ("Breakfast", 11, True, False, ["Alcohol", "Cigarettes"], None),
-            ("Lunch", 11, True, False, ["Alcohol", "Cigarettes"], None),
-            ("Dinner", 11, True, False, ["Alcohol", "Cigarettes"], None),
-            ("Incidental Expenses", None, False, False, [], "Capped per level/night"),
-            ("Communication", None, True, True, [], None),
-            ("Day Visit Expenses", None, False, False, [], "Prior CEO approval for external meetings"),
-        ]
-        for index, row in enumerate(categories, start=1):
+        category_ids: dict[str, int] = {}
+        for index, (name, parent, bill, gst, blacklist, notes) in enumerate(P.EXPENSE_CATEGORIES, start=1):
+            category_ids[name] = index
             db.add(
                 ExpenseCategory(
                     id=index,
-                    name=row[0],
-                    parent_category_id=row[1],
-                    bill_mandatory=row[2],
-                    gst_invoice_required=row[3],
-                    blacklisted_items=row[4],
-                    notes=row[5],
+                    name=name,
+                    parent_category_id=category_ids[parent] if parent else None,
+                    bill_mandatory=bill,
+                    gst_invoice_required=gst,
+                    blacklisted_items=list(blacklist),
+                    notes=notes,
                     policy_version_id=1,
                 )
             )

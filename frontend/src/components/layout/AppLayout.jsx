@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Outlet } from 'react-router-dom';
 
 import { PageTitleProvider } from '../../context/PageTitleContext';
+import WelcomeTour from '../tour/WelcomeTour';
 import AppNavbar from './AppNavbar';
 import AppSidebar from './AppSidebar';
 
@@ -32,6 +33,8 @@ export default function AppLayout() {
           </main>
         </div>
       </div>
+      {/* The welcome tours on Home; opens the phone menu for sidebar stops. */}
+      <WelcomeTour setMenuOpen={setMobileOpen} />
     </PageTitleProvider>
   );
 }

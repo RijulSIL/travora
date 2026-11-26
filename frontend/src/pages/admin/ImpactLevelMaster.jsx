@@ -29,7 +29,16 @@ const emptyForm = {
   air_eligibility: 'NO',
   air_class_allowed: '',
   train_classes_allowed: [],
-  local_conveyance_modes: ['Own Vehicle 4W', 'Own Vehicle 2W', 'Hired Taxi', 'Auto/Cab'],
+  // Travel policy Table 1 modes, most to least expensive (backend app/core/policy_defaults.py).
+  local_conveyance_modes: [
+    'Hired Taxi / Innova',
+    'Ride Hailing (Sedan / Premium)',
+    'Ride Hailing (Go) / Shared Taxi',
+    'Company Booked Vehicle',
+    'Auto Rickshaw',
+    'Metro / Public Transport',
+    'Personal Vehicle',
+  ],
   vehicle_rate_4w: '',
   vehicle_rate_2w: '',
   twin_sharing_mandatory: false,

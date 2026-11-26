@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, Bus, Download, ExternalLink, FileText, Plane, TrainFront, X } from 'lucide-react';
+import { AlertTriangle, Bus, Download, ExternalLink, FileText, Minus, Plane, Plus, TrainFront, X } from 'lucide-react';
 
 import PdfPages from './PdfPages';
 import useBodyScrollLock from '../../hooks/useBodyScrollLock';
 import { reimbursementApi } from '../../services/reimbursementApi';
-import { formatDate, formatDatetime } from '../../utils/formatters';
+import { formatDate, formatDatetime, formatWeekdayDate } from '../../utils/formatters';
 
 const EYEBROW = 'text-[10.5px] font-bold uppercase tracking-[0.07em] text-slate-400';
 const ZOOM_STEPS = [50, 75, 100, 125, 150, 200, 250];
@@ -64,14 +64,21 @@ function fileTripMismatch(filename, segment) {
 function Fact({ label, value, mono = false, empty = 'Not recorded', wide = false }) {
   const shown = value != null && String(value).trim() !== '';
   return (
-    <div className={`min-w-0 rounded-[10px] bg-slate-50 px-3 py-2.5 ${wide ? 'col-span-2' : ''}`}>
+    <div className={`min-w-0 rounded-[10px] border border-slate-100 bg-slate-50 px-3 py-2.5 ${wide ? 'col-span-2' : ''}`}>
       <div className="text-[10.5px] font-semibold text-slate-500">{label}</div>
-      <div className={`mt-0.5 break-words text-[13px] ${shown ? `font-extrabold text-ink ${mono ? 'font-mono font-semibold' : ''}` : 'font-semibold text-slate-400'}`}>
+      <div
+        className={`mt-0.5 break-words text-[13.5px] tabular-nums ${
+          shown ? `font-extrabold text-ink ${mono ? 'font-mono font-bold tracking-wide' : ''}` : 'font-semibold text-slate-400'
+        }`}
+      >
         {shown ? value : empty}
       </div>
     </div>
   );
 }
+
+const ZOOM_BUTTON =
+  'flex h-[30px] w-[30px] items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-40';
 
 /**
  * Ticket / document preview. A PDF is drawn as clean white pages (pdf.js, falling back to the
@@ -153,7 +160,16 @@ export default function TicketPreviewDrawer({ open, onClose, title, blob, conten
   const zoomDown = [...ZOOM_STEPS].reverse().find((z) => z < current) ?? null;
   const canZoom = Boolean(url) && kind !== 'other';
   const headerTitle = segment ? `${segment.from_city} → ${segment.to_city}` : title || 'Ticket preview';
-  const legLabel = segment && request?.segment_count > 1 ? segment.label : null;
+  // "Leg 1 of 2" on a trip with more than one ticket (the route is already the title).
+  const legText = segment && request?.segment_count > 1 ? `Leg ${segment.seq} of ${request.segment_count}` : null;
+  const travelDay = segment?.travel_date ? formatWeekdayDate(segment.travel_date) : null;
+  const fileFacts = [
+    kind === 'pdf' ? 'PDF' : kind === 'image' ? 'Image' : null,
+    pageCount && kind === 'pdf' ? `${pageCount} page${pageCount > 1 ? 's' : ''}` : null,
+    details?.file_size_bytes ? `${Math.max(1, Math.round(details.file_size_bytes / 1024))} KB` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
 
   return createPortal(
     <div className="fixed inset-0 z-[1000] flex items-center justify-center p-3 md:p-6" role="dialog" aria-modal="true" aria-label="Ticket preview">
@@ -165,26 +181,22 @@ export default function TicketPreviewDrawer({ open, onClose, title, blob, conten
         }`}
       >
         {/* Header */}
-        <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-gradient-to-r from-brand/[0.06] via-white to-white px-5 py-4">
+        <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-gradient-to-r from-brand/[0.06] via-white to-white px-4 py-3.5 sm:px-5 sm:py-4">
           <div className="flex min-w-0 items-center gap-3">
-            <div className="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-[11px] bg-brand/10 text-brand">
-              <ModeIcon size={20} />
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[11px] bg-brand/10 text-brand sm:h-[42px] sm:w-[42px]">
+              <ModeIcon size={19} />
             </div>
             <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex min-w-0 items-center gap-2">
                 <h2 className="truncate text-[15.5px] font-extrabold text-ink">{headerTitle}</h2>
                 {showPanel && mode ? (
-                  <span className="rounded-full bg-brand/10 px-2 py-0.5 text-[10.5px] font-bold text-brand">
-                    {titleCase(mode)} ticket{legLabel ? ` · ${legLabel.split(':')[0]}` : ''}
+                  <span className="hidden shrink-0 whitespace-nowrap rounded-full bg-brand/10 px-2 py-0.5 text-[10.5px] font-bold text-brand sm:inline">
+                    {titleCase(mode)} ticket{legText ? ` · ${legText}` : ''}
                   </span>
                 ) : null}
               </div>
-              <p className="mt-0.5 truncate text-[11.5px] text-slate-500">
-                {request
-                  ? [request.reference, request.employee_name, details.file_size_bytes ? `${kind === 'pdf' ? 'PDF' : 'File'} · ${Math.max(1, Math.round(details.file_size_bytes / 1024))} KB` : null]
-                      .filter(Boolean)
-                      .join(' · ')
-                  : filename}
+              <p className="mt-0.5 line-clamp-2 text-[11.5px] text-slate-500 sm:truncate">
+                {request ? [request.reference, request.employee_name, travelDay].filter(Boolean).join(' · ') : filename}
               </p>
             </div>
           </div>
@@ -232,13 +244,12 @@ export default function TicketPreviewDrawer({ open, onClose, title, blob, conten
           {/* The file */}
           <section
             aria-label="Document"
-            className={`flex min-h-[60vh] flex-col bg-[#f3f5f6] md:min-h-0 ${showPanel ? 'border-b border-slate-200 md:border-b-0 md:border-r' : ''}`}
+            className={`flex min-h-[55vh] flex-col bg-[#f3f5f6] md:min-h-0 ${showPanel ? 'border-b border-slate-200 md:border-b-0 md:border-r' : ''}`}
           >
             {canZoom ? (
               <div className="flex items-center justify-between gap-2.5 border-b border-slate-200 bg-white px-3.5 py-2">
                 <span className="truncate text-[11.5px] font-semibold text-slate-500">
-                  {showPanel ? (kind === 'pdf' ? 'Ticket PDF' : 'Ticket image') : kind === 'pdf' ? 'PDF' : 'Image'}
-                  {kind === 'pdf' && pageCount ? ` · ${pageCount} page${pageCount > 1 ? 's' : ''}` : ''}
+                  {fileFacts || (kind === 'pdf' ? 'PDF' : 'Image')}
                 </span>
                 <div className="inline-flex items-center gap-1">
                   <button
@@ -246,9 +257,9 @@ export default function TicketPreviewDrawer({ open, onClose, title, blob, conten
                     aria-label="Zoom out"
                     disabled={zoomDown == null}
                     onClick={() => setZoom(zoomDown)}
-                    className="flex h-[30px] w-[30px] items-center justify-center rounded-lg border border-slate-200 bg-white font-extrabold text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                    className={ZOOM_BUTTON}
                   >
-                    −
+                    <Minus size={14} />
                   </button>
                   <span className="min-w-[46px] text-center text-[11.5px] font-bold tabular-nums text-slate-500">
                     {zoom == null ? 'Fit' : `${zoom}%`}
@@ -258,9 +269,9 @@ export default function TicketPreviewDrawer({ open, onClose, title, blob, conten
                     aria-label="Zoom in"
                     disabled={zoomUp == null}
                     onClick={() => setZoom(zoomUp)}
-                    className="flex h-[30px] w-[30px] items-center justify-center rounded-lg border border-slate-200 bg-white font-extrabold text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                    className={ZOOM_BUTTON}
                   >
-                    +
+                    <Plus size={14} />
                   </button>
                   {zoom != null ? (
                     <button
@@ -333,7 +344,7 @@ export default function TicketPreviewDrawer({ open, onClose, title, blob, conten
                 <p className="text-xs text-slate-500">The ticket&apos;s details couldn&apos;t be loaded. The file itself is shown on the left.</p>
               ) : (
                 <>
-                  <div className={EYEBROW}>Trip as booked{legLabel ? ` · ${legLabel.split(':')[0]}` : ''}</div>
+                  <div className={EYEBROW}>Trip as booked{legText ? ` · ${legText}` : ''}</div>
                   {segment ? (
                     <div className="grid grid-cols-[auto_1fr_auto] items-center gap-2.5">
                       <div className="min-w-0">
@@ -355,35 +366,39 @@ export default function TicketPreviewDrawer({ open, onClose, title, blob, conten
                   <div className="grid grid-cols-2 gap-2">
                     <Fact label="Travel date" value={segment?.travel_date ? formatDate(segment.travel_date) : null} />
                     <Fact
-                      label="Mode · class"
+                      label={details.ticket_travel_class ? 'Mode · class' : 'Mode'}
                       value={[mode ? titleCase(mode) : null, details.ticket_travel_class ? titleCase(details.ticket_travel_class) : null]
                         .filter(Boolean)
                         .join(' · ')}
                     />
                     <Fact label="PNR / booking ref" value={details.pnr_or_booking_ref} mono />
-                    <Fact label="Ticket amount" value={details.ticket_amount != null ? inr(details.ticket_amount) : null} mono />
-                    <Fact label="Booked via" value={details.external_booking_source} wide />
+                    <Fact label="Fare" value={details.ticket_amount != null ? inr(details.ticket_amount) : null} />
+                    {details.external_booking_source ? <Fact label="Booked with" value={details.external_booking_source} wide /> : null}
                   </div>
 
-                  <div>
-                    <div className={`${EYEBROW} mb-1.5`}>Note from the travel desk</div>
-                    {details.notes_for_employee ? (
+                  {details.notes_for_employee ? (
+                    <div>
+                      <div className={`${EYEBROW} mb-1.5`}>Note from the travel desk</div>
                       <p className="m-0 whitespace-pre-wrap break-words border-l-[3px] border-brand/30 py-0.5 pl-3 text-[13px] leading-relaxed text-slate-700">
                         {details.notes_for_employee}
                       </p>
-                    ) : (
-                      <p className="m-0 border-l-[3px] border-slate-200 py-0.5 pl-3 text-[13px] italic text-slate-400">No note</p>
-                    )}
-                  </div>
+                    </div>
+                  ) : null}
 
                   <div>
                     <div className={`${EYEBROW} mb-1.5`}>File</div>
-                    <div className="rounded-[10px] border border-slate-200 px-3 py-2.5 text-xs leading-relaxed">
-                      Uploaded as <b className="break-all text-ink">{details.original_filename}</b>
-                      <div className="text-slate-500">
-                        {[details.uploaded_by_name ? `by ${details.uploaded_by_name}` : null, details.uploaded_at ? formatDatetime(details.uploaded_at) : null]
-                          .filter(Boolean)
-                          .join(' · ')}
+                    <div className="flex items-start gap-2.5 rounded-[10px] border border-slate-200 px-3 py-2.5 text-xs leading-relaxed">
+                      <FileText size={15} className="mt-0.5 flex-none text-slate-400" />
+                      <div className="min-w-0">
+                        <b className="block break-all text-ink">{details.original_filename}</b>
+                        <div className="text-slate-500">
+                          {[
+                            details.uploaded_by_name ? `Uploaded by ${details.uploaded_by_name}` : 'Uploaded',
+                            details.uploaded_at ? formatDatetime(details.uploaded_at) : null,
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </div>
                       </div>
                     </div>
                   </div>

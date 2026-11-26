@@ -1,11 +1,14 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Search, FileText, CheckCircle2,
   ArrowRight, UploadCloud, Send,
-  Clock, AlertCircle, Paperclip, ChevronDown, ChevronUp, Ban
+  Clock, AlertCircle, Paperclip, ChevronDown, ChevronUp, Ban, Eye, Ticket
 } from 'lucide-react';
 
 import SegmentUploadForm, { EMPTY_UPLOAD_FIELDS, ModeIcon } from '../../components/travel/SegmentUploadForm';
+import RequestTickets, { CARD_EYEBROW } from '../../components/travel/RequestTickets';
+import { awaitingSelfTickets } from '../../components/travel/selfTickets';
 import TravellerId from '../../components/travel/TravellerId';
 import { deskCanCancel, isCancelledBooking } from '../../components/travel/travelRequestView';
 import ConfirmDialog from '../../components/ui/ConfirmDialog';
@@ -29,6 +32,7 @@ function AdditionalDocumentsSection({ request, onUploaded, onViewDocument }) {
   const [busy, setBusy] = useState(false);
   // Bumped after each upload to remount the file input — React can't clear a file input's value.
   const [inputKey, setInputKey] = useState(0);
+  const inputId = `additional-doc-${request.id}`;
 
   async function onSubmit(e) {
     e.preventDefault();
@@ -57,58 +61,85 @@ function AdditionalDocumentsSection({ request, onUploaded, onViewDocument }) {
 
   if (!canUpload && !documents.length) return null;
   return (
-    <div className="space-y-2.5 rounded-lg border border-slate-200 bg-white p-3.5">
-      <div>
-        <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wide">
-          Additional Documents <span className="normal-case tracking-normal font-semibold">(optional)</span>
-        </span>
-        <p className="mt-0.5 text-[11px] text-slate-500">
-          Anything else for this trip — a hotel voucher, an itinerary. The traveler can download these. They don&apos;t change the request&apos;s status.
-        </p>
+    <section className="rounded-xl border border-slate-200 bg-white p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className={CARD_EYEBROW}>Additional documents</h3>
+        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10.5px] font-bold text-slate-500">Optional</span>
       </div>
+      <p className="mt-1 text-[11.5px] leading-relaxed text-slate-500">
+        A hotel voucher, an itinerary or anything else for this trip. The traveller can download them; they don&apos;t change the request&apos;s status.
+      </p>
 
       {documents.length ? (
-        <div className="space-y-1">
+        <ul className="mt-3 space-y-2">
           {documents.map((doc) => (
-            <button
-              key={doc.id}
-              type="button"
-              className="flex max-w-full items-center gap-1.5 text-left text-[11px] font-semibold text-brand hover:underline"
-              onClick={() => onViewDocument(doc)}
-            >
-              <Paperclip size={11} className="shrink-0" />
-              <span className="truncate">{doc.description || doc.original_filename}</span>
-            </button>
+            <li key={doc.id} className="flex items-center gap-3 rounded-[10px] border border-slate-100 bg-slate-50/70 px-3 py-2">
+              <span className="flex h-8 w-8 flex-none items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500">
+                <Paperclip size={14} />
+              </span>
+              <span className="min-w-0 flex-1">
+                <b className="block truncate text-[12.5px] text-ink" title={doc.description || doc.original_filename}>
+                  {doc.description || doc.original_filename}
+                </b>
+                {doc.description ? <span className="block truncate text-[11.5px] text-slate-500">{doc.original_filename}</span> : null}
+              </span>
+              <button
+                type="button"
+                onClick={() => onViewDocument(doc)}
+                aria-label={`View ${doc.description || doc.original_filename}`}
+                className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-bold text-ink hover:bg-slate-50"
+              >
+                <Eye size={14} /> <span className="hidden sm:inline">View</span>
+              </button>
+            </li>
           ))}
-        </div>
+        </ul>
       ) : null}
 
       {canUpload ? (
-        <form className="space-y-2" onSubmit={onSubmit}>
+        <form className="mt-3 space-y-2" onSubmit={onSubmit}>
           <input
             key={inputKey}
+            id={inputId}
             type="file"
             accept=".pdf,.png,.jpg,.jpeg,.heic"
-            aria-label="Additional document"
-            className="block w-full text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-[11px] file:font-bold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200"
+            className="sr-only"
             onChange={(e) => setFile(e.target.files?.[0] || null)}
           />
-          <input
-            className="w-full h-8 px-3 text-xs rounded-lg border border-slate-250 focus:border-slate-400 outline-none transition-all bg-white"
-            placeholder="Short description (e.g. Hotel voucher)"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-          />
-          <button
-            type="submit"
-            className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white text-[11px] font-bold text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50"
-            disabled={busy || !file}
+          <label
+            htmlFor={inputId}
+            className={`flex cursor-pointer items-center gap-3 rounded-[10px] border px-3 py-2.5 transition-colors ${
+              file ? 'border-slate-200 bg-slate-50/70' : 'border-dashed border-slate-300 bg-white hover:border-brand/50 hover:bg-brand/[0.03]'
+            }`}
           >
-            <UploadCloud size={12} /> {busy ? 'Uploading…' : 'Upload Document'}
-          </button>
+            <span className={`flex h-8 w-8 flex-none items-center justify-center rounded-lg ${file ? 'border border-slate-200 bg-white text-slate-500' : 'bg-brand/10 text-brand'}`}>
+              {file ? <FileText size={15} /> : <UploadCloud size={15} />}
+            </span>
+            <span className="min-w-0 flex-1">
+              <b className="block truncate text-[12.5px] text-ink">{file ? file.name : 'Choose a document'}</b>
+              <span className="block text-[11.5px] text-slate-500">{file ? 'Click to choose a different file' : 'PDF, JPG, PNG or HEIC'}</span>
+            </span>
+          </label>
+          <div className="flex gap-2">
+            <input
+              className="h-9 min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 text-[12.5px] text-ink outline-none transition-colors focus:border-brand focus:ring-2 focus:ring-brand/15"
+              placeholder="What is it? e.g. Hotel voucher"
+              aria-label="Document description"
+              maxLength={255}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+            />
+            <button
+              type="submit"
+              className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg bg-brand px-3.5 text-[12px] font-bold text-white transition-colors hover:bg-brand/90 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
+              disabled={busy || !file}
+            >
+              <UploadCloud size={14} /> {busy ? 'Uploading…' : 'Upload'}
+            </button>
+          </div>
         </form>
       ) : null}
-    </div>
+    </section>
   );
 }
 
@@ -152,7 +183,8 @@ function sortRows(rows, sortBy) {
   return sorted;
 }
 
-function getStatusDetails(status) {
+function getStatusDetails(status, request = null) {
+  if (awaitingSelfTickets(request)) return { label: 'Approved - Awaiting Employee’s Tickets', bg: 'bg-sky-100 text-sky-800' };
   switch (status) {
     case 'BOOKED':
       return { label: 'Booked', bg: 'bg-emerald-100 text-emerald-800' };
@@ -183,7 +215,10 @@ function withAgentPillVisible(request) {
 export default function TravelDeskPage() {
   useSetPageTitle('Travel Desk');
   const { showToast } = useToast();
-  const [mode, setMode] = useState('queue');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [mode, setMode] = useState(() => (searchParams.get('view') === 'all' ? 'all' : 'queue'));
+  // The request a link asked to open in All requests, until it's found there.
+  const [pendingOpenId, setPendingOpenId] = useState(() => Number(searchParams.get('open')) || null);
   const [queue, setQueue] = useState([]);
   const [allRows, setAllRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -365,6 +400,18 @@ export default function TravelDeskPage() {
     setAllPage(1);
   }, [allQ, statusFilter, allDateFrom, allDateTo, allImpactLevel, allSortBy]);
 
+  // Opened from a link: once All requests has loaded, go to that request's page and open it.
+  useEffect(() => {
+    if (!pendingOpenId || mode !== 'all' || loading) return;
+    const index = sortedAllRows.findIndex((row) => row.request.id === pendingOpenId);
+    if (index >= 0) {
+      setAllPage(Math.floor(index / QUEUE_PAGE_SIZE) + 1);
+      setExpandedAllId(pendingOpenId);
+    }
+    setPendingOpenId(null);
+    setSearchParams({}, { replace: true });
+  }, [pendingOpenId, mode, loading, sortedAllRows, setSearchParams]);
+
   async function loadQueue() {
     const r = await reimbursementApi.travelDeskQueue();
     setQueue(r.data || []);
@@ -409,6 +456,23 @@ export default function TravelDeskPage() {
     }, 280);
     return () => clearTimeout(t);
   }, [mode, allQ, statusFilter, allDateFrom, allDateTo, allImpactLevel]);
+
+  async function viewTicket(ticket, title) {
+    try {
+      const resp = await reimbursementApi.travelTicketFileBlob(ticket.id);
+      setPreview({
+        open: true,
+        // The ticket's id shows its trip, booking details and uploader beside the file.
+        ticketId: ticket.id,
+        blob: resp.data,
+        name: ticket.original_filename || 'ticket.pdf',
+        type: ticket.content_type || resp.headers['content-type'] || '',
+        title,
+      });
+    } catch (e) {
+      showToast('Could not open the ticket', 'error');
+    }
+  }
 
   async function viewSupportingDocument(doc) {
     try {
@@ -904,12 +968,19 @@ export default function TravelDeskPage() {
                         return (
                           <div key={seg.seq} className="rounded-lg border border-emerald-200 bg-emerald-50/60 p-3 flex items-start gap-2">
                             <CheckCircle2 size={14} className="text-emerald-600 mt-0.5 shrink-0" />
-                            <div className="text-[11px] text-emerald-800">
+                            <div className="min-w-0 flex-1 text-[11px] text-emerald-800">
                               <div className="font-bold">{seg.label}</div>
                               <div className="text-emerald-700/80">
                                 PNR {seg.ticket.pnr_or_booking_ref || '—'}
                               </div>
                             </div>
+                            <button
+                              type="button"
+                              onClick={() => viewTicket(seg.ticket, `Ticket · ${seg.label}`)}
+                              className="inline-flex shrink-0 items-center gap-1 rounded-md border border-emerald-200 bg-white px-2 py-1 text-[10.5px] font-bold text-emerald-800 hover:bg-emerald-50"
+                            >
+                              <Eye size={11} /> View
+                            </button>
                           </div>
                         );
                       }
@@ -1080,11 +1151,13 @@ export default function TravelDeskPage() {
                   </tr>
                 ) : (
                   pagedAllRows.map(({ request: r, employee_display_name, impact_level_code }, index) => {
-                    const statusDetails = getStatusDetails(r.status);
+                    const statusDetails = getStatusDetails(r.status, r);
                     // A booked trip the desk cancelled: greyed and struck through, and it doesn't open.
                     const cancelledBooking = isCancelledBooking(r);
                     const isExpanded = expandedAllId === r.id && !cancelledBooking;
                     const struck = cancelledBooking ? 'line-through decoration-slate-500 opacity-50' : '';
+                    const ticketCount = (r.segments || []).filter((s) => s.ticket).length;
+                    const opensTickets = ticketCount > 0 || r.booked_by === 'SELF';
 
                     return (
                       <Fragment key={r.id}>
@@ -1163,6 +1236,16 @@ export default function TravelDeskPage() {
                                 Self-booked
                               </span>
                             ) : null}
+                            {ticketCount && !cancelledBooking ? (
+                              <button
+                                type="button"
+                                onClick={() => setExpandedAllId(isExpanded ? null : r.id)}
+                                aria-expanded={isExpanded}
+                                className="mt-0.5 inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] font-bold text-slate-700 hover:bg-slate-50"
+                              >
+                                <Ticket size={10} /> {isExpanded ? 'Hide' : 'View'} ticket{ticketCount === 1 ? '' : 's'}
+                              </button>
+                            ) : null}
                             {deskCanCancel(r) ? (
                               <button
                                 type="button"
@@ -1175,13 +1258,17 @@ export default function TravelDeskPage() {
                           </div>
                         </td>
                         <td className="px-2 py-3 text-center">
-                          {!cancelledBooking && (SUPPORTING_DOC_STATUSES.includes(r.status) || r.supporting_documents?.length) ? (
+                          {!cancelledBooking && (SUPPORTING_DOC_STATUSES.includes(r.status) || r.supporting_documents?.length || ticketCount) ? (
                             <button
                               type="button"
                               className="flex h-6 w-6 items-center justify-center rounded-lg text-amber-600 hover:bg-amber-50 transition-colors"
                               onClick={() => setExpandedAllId(isExpanded ? null : r.id)}
-                              aria-label={isExpanded ? 'Hide additional documents' : 'Show additional documents'}
-                              title="Additional documents"
+                              aria-label={
+                                opensTickets
+                                  ? `${isExpanded ? 'Hide' : 'Show'} tickets and additional documents`
+                                  : `${isExpanded ? 'Hide' : 'Show'} additional documents`
+                              }
+                              title={opensTickets ? 'Tickets and additional documents' : 'Additional documents'}
                             >
                               {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                             </button>
@@ -1191,7 +1278,13 @@ export default function TravelDeskPage() {
                       {isExpanded ? (
                         <tr className="bg-slate-50/60">
                           <td colSpan={9} className="px-5 py-4">
-                            <div className="max-w-xl">
+                            {/* Below lg the table scrolls sideways: the panel stays put at the visible width. */}
+                            <div
+                              className={`grid grid-cols-1 items-start gap-4 max-lg:sticky max-lg:left-4 max-lg:w-[calc(100vw-4.5rem)] ${
+                                opensTickets ? 'lg:grid-cols-2' : 'max-w-2xl'
+                              }`}
+                            >
+                              <RequestTickets request={r} name={employee_display_name || 'the employee'} onView={viewTicket} />
                               <AdditionalDocumentsSection
                                 request={r}
                                 onUploaded={refreshAfterDocumentUpload}
@@ -1265,6 +1358,7 @@ export default function TravelDeskPage() {
 
       <TicketPreviewDrawer
         open={preview.open}
+        ticketId={preview.ticketId}
         onClose={() => setPreview((p) => ({ ...p, open: false }))}
         blob={preview.blob}
         contentType={preview.type}

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { hasAnyPermission } from '../../services/permissions';
 import { selectResolvedRole, useAuthStore } from '../../store/authStore';
-import { getNavConfig } from './navConfig';
+import { getNavConfig, tourKeyFor } from './navConfig';
 import { NAV_ICON_MAP } from './navIcons';
 
 function NavBadge({ children, variant = 'red' }) {
@@ -37,6 +37,7 @@ function NavRow({ to, end, icon, label, onNavigate, badge, badgeVariant, extra, 
       to={to}
       end={end}
       onClick={onNavigate}
+      data-tour={tourKeyFor(to)}
       className={({ isActive }) =>
         [ROW, extra ? 'min-h-[38px] py-1.5' : small ? 'h-8 text-[12.5px]' : 'h-[38px]', (hasQuery ? exactActive : isActive) ? ROW_ACTIVE : ROW_IDLE].join(' ')
       }
@@ -77,7 +78,7 @@ function NavGroup({ icon, label, options, onNavigate, badge, badgeVariant }) {
   }, [childIsActive]);
 
   return (
-    <div className="mb-0.5">
+    <div className="mb-0.5" data-tour={tourKeyFor(options[0]?.to)}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -199,7 +200,7 @@ function NewClaimButton({ options, onNavigate }) {
   }, [open]);
 
   return (
-    <div className="relative mx-3 mb-3 mt-1" ref={ref}>
+    <div className="relative mx-3 mb-3 mt-1" ref={ref} data-tour="new-claim">
       <button
         type="button"
         aria-haspopup="menu"
@@ -259,7 +260,11 @@ function SidebarBody({ onNavigate }) {
           const items = (section.items || []).filter((item) => visible(item) && !isNewClaimItem(item));
           if (!items.length) return [];
           return toGroups({ ...section, items }).map((group, gIdx) => (
-            <div key={`${section.title ?? `s${sIdx}`}-${group.title ?? gIdx}`} className={sIdx === 0 && gIdx === 0 ? '' : 'mt-3'}>
+            <div
+              key={`${section.title ?? `s${sIdx}`}-${group.title ?? gIdx}`}
+              className={sIdx === 0 && gIdx === 0 ? '' : 'mt-3'}
+              data-tour={group.title ? `group:${group.title}` : undefined}
+            >
               {group.title ? (
                 <div className="px-2.5 pb-1.5 text-[10px] font-extrabold uppercase tracking-[0.1em] text-slate-400">{group.title}</div>
               ) : null}

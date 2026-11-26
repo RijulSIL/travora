@@ -171,7 +171,7 @@ class ClaimExpenseOut(BaseModel):
 
 
 class LateClaimOut(BaseModel):
-    """A travel claim raised more than the late window (default 7 days) after its trip's to date:
+    """A travel claim raised more than the late window (default 15 days) after its trip's to date:
     a late-claim exception for the whole claim, with the same exception fields as a flagged
     expense (see reimbursement_service.late_claim_item)."""
 

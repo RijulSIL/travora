@@ -44,8 +44,8 @@ TRAIN_ALLOWED_CLASSES: dict[str, set[str]] = {
     "L4B": {"2AC", "CC"},
     "L4C": {"2AC", "CC"},
     "L5A": {"2AC", "CC"},
-    "L5B": {"3AC", "CC", "SL"},
-    "L5C": {"3AC", "CC", "SL"},
+    "L5B": {"2AC", "CC"},  # travel policy Table 1: Levels 5A to 5C travel 2AC / AC Chair Car
+    "L5C": {"2AC", "CC"},
     "L6A": {"3AC", "CC", "SL"},
     "L6B": {"3AC", "CC", "SL"},
     "L6C": {"3AC", "CC", "SL"},

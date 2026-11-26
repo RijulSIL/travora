@@ -2,6 +2,15 @@ import { AlertCircle, AlertTriangle, CheckCircle2, ShieldCheck } from 'lucide-re
 
 import { Card, Note, StepActions, inr } from './ClaimWizardShell';
 
+// Room rent and food limits are before taxes (travel policy 2.1), so they're measured on the
+// taxable value, as reimbursement_service._build_claim_expenses checks them.
+const BEFORE_TAX = /hotel|accommodation|room rent|food|meal/i;
+const isBeforeTax = (expense) => BEFORE_TAX.test(expense.category_name || '');
+function checkedAmount(expense) {
+  const taxable = Number(expense.taxable_value || 0);
+  return isBeforeTax(expense) && taxable > 0 ? taxable : Number(expense.amount || 0);
+}
+
 // What happens to an expense at submit. Exceptions are raised together from the submit step's
 // modal, never one by one here.
 function StatusPill({ expense }) {
@@ -37,21 +46,24 @@ function StatusPill({ expense }) {
       </span>
     );
   }
-  const over = expense.cap_amount != null && Number(expense.amount) > Number(expense.cap_amount);
+  const checked = checkedAmount(expense);
+  const over = expense.cap_amount != null && checked > Number(expense.cap_amount);
   return (
     <span className={`${pill} ${expense.policy_status === 'HARD_BLOCK' ? 'bg-rose-50 text-rose-700' : 'bg-amber-50 text-amber-700'}`}>
-      <AlertTriangle size={11} /> {over ? `Over by ${inr(Number(expense.amount) - Number(expense.cap_amount))}` : 'Outside policy'}
+      <AlertTriangle size={11} /> {over ? `Over by ${inr(checked - Number(expense.cap_amount))}` : 'Outside policy'}
     </span>
   );
 }
 
 function ExpenseCard({ expense, cityGroup }) {
   const amount = Number(expense.amount || 0);
+  const checked = checkedAmount(expense);
+  const beforeTax = isBeforeTax(expense) && checked !== amount;
   const cap = expense.cap_amount != null ? Number(expense.cap_amount) : null;
   const flagged = Boolean(expense.exception_reason_required);
   const blocked = flagged && expense.exception_mode === 'BLOCK';
   const hard = expense.policy_status === 'HARD_BLOCK';
-  const scale = cap ? Math.max(amount, cap) : 1;
+  const scale = cap ? Math.max(checked, cap) : 1;
   const breakdown = expense.invoice_breakdown || [];
   const lineCount = breakdown.reduce((n, inv) => n + (inv.line_items?.length || 0), 0);
   const vendors = breakdown.map((inv) => inv.vendor_name || inv.original_filename).filter(Boolean);
@@ -77,13 +89,14 @@ function ExpenseCard({ expense, cityGroup }) {
       {cap ? (
         <>
           <div className="relative h-2 rounded-full bg-slate-100" aria-hidden="true">
-            <i className={`absolute inset-y-0 left-0 rounded-full ${bar}`} style={{ width: `${(amount / scale) * 100}%` }} />
+            <i className={`absolute inset-y-0 left-0 rounded-full ${bar}`} style={{ width: `${(checked / scale) * 100}%` }} />
             <span className="absolute -bottom-[3px] -top-[3px] w-0.5 bg-ink/55" style={{ left: `${(cap / scale) * 100}%` }} />
           </div>
           <div className="flex flex-wrap justify-between gap-2 text-xs text-slate-500">
             <span>
               Cap {inr(cap)}
               {cityGroup ? ` (Group ${cityGroup})` : ''}
+              {beforeTax ? ` · ${inr(checked)} before tax, which the cap is checked on` : ''}
             </span>
             {flagged && !blocked ? <span>Needs an exception: you&apos;ll be asked why when you submit</span> : null}
             {blocked ? <span className="font-bold text-rose-700">Remove this invoice to submit</span> : null}

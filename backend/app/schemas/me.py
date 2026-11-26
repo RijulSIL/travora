@@ -1,5 +1,6 @@
 from datetime import date
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -28,6 +29,19 @@ class TravellerIdOut(BaseModel):
     id_name: str
     id_type: str | None = None
     id_proof_filename: str | None = None
+
+
+class TourOutcomeIn(BaseModel):
+    """POST /me/tours/{tour}: they reached the end of a welcome tour, or skipped it."""
+
+    outcome: Literal["finished", "skipped"]
+
+
+class TourStateOut(BaseModel):
+    """The tour fields of /me, after recording one (merged into the profile the app holds)."""
+
+    pending_tours: list[str] = Field(default_factory=list)
+    available_tours: list[str] = Field(default_factory=list)
 
 
 class TravellerProfileIn(BaseModel):
@@ -70,7 +84,7 @@ class MeOut(BaseModel):
     company_office_locations: list[str] = Field(default_factory=list)
     # A trip's claim window, in days after its to date: late (needs a late-claim exception) after
     # the first, archived (can't be claimed) after the second — claim_submission_rules.claim_windows.
-    workflow_claim_late_after_days: int = 7
+    workflow_claim_late_after_days: int = 15
     workflow_claim_archive_after_days: int = 30
     is_acting_delegate: bool = False
     # Roles of everyone currently delegating to this user — must match frontend's
@@ -95,6 +109,10 @@ class MeOut(BaseModel):
     # VEG / NON_VEG, and the saved ID — travel requests are filled in from these.
     meal_preference: str | None = None
     traveller_id: TravellerIdOut | None = None
+    # Welcome tours (onboarding_tour_service): the ones still to see (Home starts the first by
+    # itself), and the ones the account menu offers to replay.
+    pending_tours: list[str] = Field(default_factory=list)
+    available_tours: list[str] = Field(default_factory=list)
     # Whether claim auto-approve is shown and used at all (hidden for now — settings.auto_approve_enabled).
     auto_approve_enabled: bool = False
     # Only populated for managers: their personal claim auto-approve threshold

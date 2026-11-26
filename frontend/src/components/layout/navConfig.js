@@ -450,6 +450,32 @@ function applyNavFiltersToSections(sections, scope, permissions) {
   }));
 }
 
+/** A sidebar link's mark for the welcome tours (components/tour): its path without the query
+ * string, so every Pending Approvals tab shares one mark. AppSidebar puts it on the link. */
+export function tourKeyFor(to) {
+  return `nav:${String(to || '').split('?')[0]}`;
+}
+
+/** The marks a welcome tour can point at in this person's sidebar, as AppSidebar renders them
+ * (data-tour): tourKeyFor per link, `group:<title>` per titled section, and `new-claim` for the
+ * New claim button. A tour leaves out any stop whose marks aren't here. */
+export function navTourKeys(role, profile) {
+  const keys = new Set();
+  for (const section of getNavConfig(role, profile).sections) {
+    const items = section.items || [];
+    if (section.title && items.length) keys.add(`group:${section.title}`);
+    for (const item of items) {
+      if (item.children?.length) {
+        keys.add('new-claim');
+        continue;
+      }
+      const to = item.to ?? item.submenu?.[0]?.to;
+      if (to) keys.add(tourKeyFor(to));
+    }
+  }
+  return keys;
+}
+
 export function getNavConfig(role, profile = null) {
   const baseConfig = navByRole[role] || navByRole.EMPLOYEE;
   const delegatedRoles = profile?.delegated_roles || [];

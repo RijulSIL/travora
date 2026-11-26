@@ -51,6 +51,8 @@ def pick_lines(pick: dict | None) -> list[str]:
     if choice == "bus":
         kinds = ", ".join(BUS_TYPE_LABELS.get(b, b) for b in pick.get("bus_types") or []) or "Any bus"
         lines.append(f"Bus: {kinds}")
+    elif choice == "times":
+        lines.append("Train: any train in a class the traveller is entitled to")
     elif choice == "own":
         if pick.get("note"):
             lines.append(f"“{pick['note']}”")

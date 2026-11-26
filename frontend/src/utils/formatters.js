@@ -94,7 +94,7 @@ export const EXCEPTION_TYPE_LABELS = {
   ROOM_RENT_DEVIATION: 'Room Rent Deviation',
   FOOD_DEVIATION: 'Food & Meals Deviation',
   INCIDENTAL_DEVIATION: 'Incidental Expenses Deviation',
-  HIRED_TAXI_UNAUTHORIZED: 'Hired Taxi (Unauthorized)',
+  HIRED_TAXI_UNAUTHORIZED: 'Local Conveyance Mode (Not Eligible)',
   MODE_DEVIATION: 'Mode of Travel Deviation',
   LATE_CLAIM: 'Late Claim',
   DAY_VISIT_EXTERNAL_MEETING: 'Day Visit External Meeting',
@@ -139,7 +139,7 @@ export const EXCEPTION_TYPE_DESCRIPTIONS = {
   INCIDENTAL_DEVIATION:
     "Incidental expenses exceed the policy cap for this employee's level/city.",
   HIRED_TAXI_UNAUTHORIZED:
-    'A hired taxi is being used without the prior authorization normally required for this mode of travel.',
+    "A local conveyance mode this employee's impact level isn't eligible for (for example a hired taxi or a premium cab).",
   MODE_DEVIATION:
     'The mode of travel selected deviates from what policy permits for this employee/route.',
   DAY_VISIT_EXTERNAL_MEETING:

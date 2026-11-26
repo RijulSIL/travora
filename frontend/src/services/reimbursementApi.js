@@ -18,8 +18,16 @@ export const reimbursementApi = {
     api.post('travel-requests/id-proof', formData, { headers: { 'Content-Type': 'multipart/form-data' }, suppressErrorToast: true }),
   lastTravelIdProof: () => api.get('travel-requests/id-proof/last'),
   // A ticket the employee booked themselves, attached to a self-booked request before it's raised.
-  uploadSelfTicket: (formData) =>
-    api.post('travel-requests/self-tickets', formData, { headers: { 'Content-Type': 'multipart/form-data' }, suppressErrorToast: true }),
+  // An approved self-booked trip: upload one leg's ticket (saved and read for the employee to
+  // check), then submit every leg's checked details together, which books the trip.
+  uploadSelfTicket: (requestId, formData) =>
+    api.post(`travel-requests/${requestId}/self-tickets/upload`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      suppressErrorToast: true,
+    }),
+  // `claimFares`: a travel claim for the fares is created and submitted too (response.claim).
+  submitSelfTickets: (requestId, tickets, claimFares = false) =>
+    api.post(`travel-requests/${requestId}/self-tickets`, { tickets, claim_fares: claimFares }, { suppressErrorToast: true }),
   travelIdProofBlob: (requestId) => api.get(`travel-requests/${requestId}/id-proof`, { responseType: 'blob' }),
   // The traveller profile: meal preference + ID, asked for after the first sign-in, changeable on
   // My profile. Upload the ID copy first (returns its ref), then save; the saved copy to view.
@@ -27,6 +35,8 @@ export const reimbursementApi = {
     api.post('me/id-proof', formData, { headers: { 'Content-Type': 'multipart/form-data' }, suppressErrorToast: true }),
   saveTravellerProfile: (payload) => api.put('me/traveller-profile', payload, { suppressErrorToast: true }),
   myIdProofBlob: () => api.get('me/id-proof', { responseType: 'blob' }),
+  // A welcome tour was finished or skipped; answers with the new pending_tours / available_tours.
+  recordTour: (tour, outcome) => api.post(`me/tours/${tour}`, { outcome }, { suppressErrorToast: true }),
   travelRequestsManagerPending: () => api.get('travel-requests/manager/pending'),
   travelRequestsTeamCalendar: () => api.get('travel-requests/manager/team-calendar'),
   travelRequestsCreate: (payload, config) => api.post('travel-requests', payload, config),

@@ -7,9 +7,9 @@ import { EYEBROW } from './TravelRequestFormParts';
 import { BUS_TYPES, leaveWindowsText, TIME_WINDOWS } from './travelRequestView';
 
 /*
- * "Choose your trains" on the travel request form: for each ticketable leg, real options found
- * with Google by Gemini (only classes the traveler is allowed), one of which they pick as their
- * recommendation to the Travel Desk — or, if none suit, a short note saying what they'd like.
+ * "Choose your flights" on the travel request form: for each ticketable flight leg, real options
+ * from the airline schedules (only classes the traveler is allowed), one of which they pick as
+ * their recommendation to the Travel Desk — or, if none suit, a short note saying what they'd like.
  * A choice per leg is required (the server checks too: travel_request_service.validate_leg_picks).
  * Before anything is searched they choose when they want to leave (one or more time windows);
  * each window is searched on its own, so adding one only searches that window.
@@ -17,7 +17,8 @@ import { BUS_TYPES, leaveWindowsText, TIME_WINDOWS } from './travelRequestView';
  * A place the search doesn't know (e.g. Paradeep) is searched from/to its nearest airports or
  * railway stations; the reply's `nearby` says which, shown above the list.
  *
- * Bus legs aren't searched (BusCard): they choose times and kinds of bus, and the desk books it.
+ * Train and bus legs aren't searched (TimesCard): they choose when they want to leave (and, for a
+ * bus, what kind of bus), and whoever books finds one. Trains stopped being searched on 2026-11-23.
  *
  * `segments`: [{ key, mode, from, to, date }];
  * `picks`: { [key]: { time_windows, choice, option, note, searched_at, bus_types } }.
@@ -33,6 +34,7 @@ export const pickDone = (pick) =>
     pick &&
       ((pick.choice === 'option' && pick.option) ||
         (pick.choice === 'own' && (pick.note || '').trim().length >= 5) ||
+        (pick.choice === 'times' && pick.time_windows?.length) ||
         (pick.choice === 'bus' && pick.time_windows?.length && pick.bus_types?.length)),
   );
 
@@ -142,15 +144,21 @@ function TimeChips({ seg, windows, onToggle }) {
   );
 }
 
-/** A bus leg: never searched (no reliable source) — they say when they want to leave and what
- * kind of bus, and the travel desk books it. */
-function BusCard({ seg, index, count, pick, onPick, showErrors }) {
+/** A train or bus leg: not searched — they say when they want to leave (and, for a bus, what kind
+ * of bus), and whoever books finds one. */
+function TimesCard({ seg, index, count, pick, onPick, showErrors }) {
+  const isBus = seg.mode === 'BUS';
   const windows = pick?.time_windows || [];
   const types = pick?.bus_types || [];
   const done = pickDone(pick);
   const title = count > 1 ? `Leg ${index + 1} · ${seg.from} → ${seg.to}` : `${seg.from} → ${seg.to}`;
   const flip = (list, code, all) => all.filter((c) => (c === code ? !list.includes(c) : list.includes(c)));
-  const save = (next) => onPick({ choice: 'bus', option: null, note: null, time_windows: windows, bus_types: types, ...next });
+  const save = (next) =>
+    onPick(
+      isBus
+        ? { choice: 'bus', option: null, note: null, time_windows: windows, bus_types: types, ...next }
+        : { choice: 'times', option: null, note: null, time_windows: windows, ...next },
+    );
 
   if (!segmentComplete(seg)) {
     return (
@@ -169,16 +177,19 @@ function BusCard({ seg, index, count, pick, onPick, showErrors }) {
         <span className={`rounded-full px-2 py-0.5 text-[10.5px] font-extrabold ${done ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
           {done
             ? '✓ Chosen'
-            : !windows.length && !types.length
-              ? 'Choose a time and bus type'
-              : !windows.length
+            : !isBus || windows.length
+              ? !windows.length
                 ? 'Choose a time'
-                : 'Choose a bus type'}
+                : 'Choose a bus type'
+              : !types.length
+                ? 'Choose a time and bus type'
+                : 'Choose a time'}
         </span>
       </div>
 
       <TimeChips seg={seg} windows={windows} onToggle={(code) => save({ time_windows: flip(windows, code, TIME_WINDOWS.map((w) => w.code)) })} />
 
+      {isBus ? (
       <div className="space-y-1.5 px-3 py-2.5">
         <p className="text-xs font-bold text-slate-700">
           What kind of bus? <span className="font-medium text-slate-500">Choose one or more</span>
@@ -204,9 +215,12 @@ function BusCard({ seg, index, count, pick, onPick, showErrors }) {
           })}
         </div>
       </div>
+      ) : null}
 
       <div className="border-t border-slate-100 bg-slate-50 px-3 py-1.5 text-[11.5px] text-slate-500">
-        There’s no bus search: the travel desk finds and books the bus.
+        {isBus
+          ? 'There’s no bus search: the travel desk finds and books the bus.'
+          : 'There’s no train search: the travel desk books a train at these times, in a class your level allows.'}
       </div>
     </div>
   );
@@ -397,15 +411,18 @@ function LegCard({ seg, index, count, pick, onPick, showErrors, paused }) {
 export default function LegPicker({ segments, picks, onChange, showErrors, paused = false }) {
   const modes = new Set(segments.map((s) => s.mode));
   const allBus = modes.size === 1 && modes.has('BUS');
+  const allTrain = modes.size === 1 && modes.has('TRAIN');
+  // Only flights are searched; train and bus legs just say when (and what kind of bus).
+  const anySearch = modes.has('FLIGHT');
   const what = modes.size === 1 ? MODE_PLURAL[[...modes][0]] || 'options' : 'how you’ll travel';
   const left = segments.filter((s) => segmentComplete(s) && !pickDone(picks[s.key])).length;
   return (
     <section className="space-y-2" aria-label="Choose your options">
       <p className={EYEBROW}>
-        {allBus ? 'Your bus' : `Choose your ${what}`} <span className="font-semibold normal-case tracking-normal">· required for each leg</span>
+        {allBus ? 'Your bus' : allTrain ? 'Your train' : modes.size === 1 ? `Choose your ${what}` : 'How you’ll travel'} <span className="font-semibold normal-case tracking-normal">· required for each leg</span>
       </p>
       {segments.map((seg, i) => {
-        const Card = seg.mode === 'BUS' ? BusCard : LegCard;
+        const Card = seg.mode === 'FLIGHT' ? LegCard : TimesCard;
         return (
           <Card
             key={seg.key}
@@ -423,7 +440,9 @@ export default function LegPicker({ segments, picks, onChange, showErrors, pause
         <p role="alert" className="text-xs font-semibold text-rose-600">
           {allBus
             ? `Choose a time and bus type for ${left === 1 ? 'the leg' : `${left} legs`} above.`
-            : `Choose an option for ${left === 1 ? 'the leg' : `${left} legs`} above, or describe what you want.`}
+            : !anySearch
+              ? `Choose when you want to leave for ${left === 1 ? 'the leg' : `${left} legs`} above.`
+              : `Complete ${left === 1 ? 'the leg' : `${left} legs`} above: choose an option, or describe what you want.`}
         </p>
       ) : null}
     </section>

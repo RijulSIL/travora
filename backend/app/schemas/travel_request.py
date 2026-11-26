@@ -121,13 +121,13 @@ class TravelRequestCreate(BaseModel):
     passport_number: str | None = Field(default=None, max_length=32)
     passport_expiry: date | None = None
     # COMPANY (the travel agent books it once approved) or SELF (the employee already booked it and
-    # attaches a ticket for every leg in `self_tickets`, uploaded first to /self-tickets).
+    # uploads a ticket for every leg once it's approved: /{id}/self-tickets).
     booked_by: str = Field(default="COMPANY", max_length=16)
-    self_tickets: list["SelfTicketIn"] = Field(default_factory=list, max_length=12)
 
 
 class SelfTicketIn(BaseModel):
-    """One leg's ticket on a self-booked request."""
+    """One leg's ticket on an approved self-booked request (its file uploaded first to
+    /{id}/self-tickets/upload, which gives the `ref`)."""
 
     seq: int = Field(..., ge=1, le=12)
     ref: str = Field(..., max_length=80)
@@ -137,7 +137,19 @@ class SelfTicketIn(BaseModel):
     ticket_amount: str | None = Field(default=None, max_length=32)
 
 
-TravelRequestCreate.model_rebuild()
+class SelfTicketsSubmitIn(BaseModel):
+    tickets: list[SelfTicketIn] = Field(..., min_length=1, max_length=12)
+    # "Claim the fares": a travel claim with these tickets is created and submitted straight away.
+    claim_fares: bool = False
+
+
+class SelfTicketClaimOut(BaseModel):
+    """What happened to the fares claim: submitted, kept as a draft (with why), or not created."""
+
+    status: str
+    claim_id: int | None = None
+    claim_reference: str | None = None
+    message: str
 
 
 class TravelRequestExceptionCreate(TravelRequestCreate):

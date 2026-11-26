@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.policy_defaults import CATEGORY_DAY_VISIT, CONVEYANCE_MODES
 from app.core.timezone import now_ist
 from app.models.auth import User
 from app.models.claim_workflow import NotificationCategory
@@ -49,6 +50,7 @@ from app.services.claim_submission_rules import (
     claim_windows,
 )
 from app.services.expense_category_service import check_blacklist
+from app.services.expense_classifier import classify_line, conveyance_mode_of, is_truthy
 from app.services.invoice_gemini_extraction import extract_invoice_with_gemini_sync
 from app.services.notification_service import create_notification
 from app.services.policy_engine import (
@@ -444,12 +446,17 @@ async def store_invoice_upload(
 
 
 async def _find_category(
-    name_fragment: str,
+    names: str | tuple[str, ...],
     db: AsyncSession,
     *,
     policy_version_id: int | None = None,
     travel_date: date | None = None,
 ) -> ExpenseCategory | None:
+    """The active category of the policy version in effect (on travel_date) with one of these
+    names, the first name that exists winning (see LineCategory.lookup_names: a ride's mode, then
+    Local Conveyance). Names match exactly, ignoring case: "contains" used to let a fragment like
+    "train" pick up an unrelated category such as "Training"."""
+    wanted = (names,) if isinstance(names, str) else tuple(names)
     resolved_policy_version_id = policy_version_id
     if resolved_policy_version_id is None:
         try:
@@ -462,79 +469,12 @@ async def _find_category(
         .where(
             ExpenseCategory.is_active.is_(True),
             ExpenseCategory.policy_version_id == resolved_policy_version_id,
-            func.lower(ExpenseCategory.name).contains(name_fragment.lower()),
+            func.lower(ExpenseCategory.name).in_([name.lower() for name in wanted]),
         )
-        .limit(1)
+        .order_by(ExpenseCategory.id)
     )
-    return result.scalar_one_or_none()
-
-
-def _has_token(text: str, token: str) -> bool:
-    """Word-boundary match — plain substring containment let "bus" match inside
-    "Business", "air" match inside "affair"/"repair", "cab" inside "cabinet", etc.,
-    which was silently miscategorizing ordinary invoices (a "Google Workspace Business
-    Base" subscription was filed as Bus Travel purely because of this)."""
-    return re.search(rf"\b{re.escape(token)}\b", text) is not None
-
-
-def _infer_category(filename: str) -> tuple[str, str]:
-    # Underscores/hyphens count as "word" characters to \b, so "air_india.pdf" wouldn't
-    # otherwise match \bair\b — treat them as separators like a space would be. Callers pass
-    # in more than just the filename here — Gemini's bill-level expense_category guess and
-    # per-line-item category_hint (see _persist_parsed_extraction) are prepended to the text
-    # this matches against, so a real content-based classification wins over the filename
-    # whenever Gemini provided one.
-    normalized = re.sub(r"[_-]+", " ", filename.lower())
-    if any(_has_token(normalized, token) for token in ("hotel", "accommodation", "stay")):
-        return ("Hotel/Accommodation", "hotel")
-    # Bare "room" is a genuine hotel signal on its own (room-type + night-count is standard
-    # Indian hotel-bill phrasing, e.g. "Executive Room — 2 nights", "Room Rent") — but it
-    # false-positives on any other kind of room a bill happens to mention (observed: a
-    # coworking space's "Meeting room — 2 hours" booking filed as a hotel stay). Exclude the
-    # specific non-hotel room types rather than dropping "room" altogether, which would also
-    # lose genuine hotel lines that never spell out "hotel"/"accommodation"/"stay".
-    if _has_token(normalized, "room") and not any(
-        _has_token(normalized, excl) for excl in ("meeting", "conference", "server", "board", "waiting", "class")
-    ):
-        return ("Hotel/Accommodation", "hotel")
-    if any(_has_token(normalized, token) for token in ("meal", "food", "dinner", "lunch", "breakfast")):
-        return ("Food & Meals", "food")
-    if any(_has_token(normalized, token) for token in ("uber", "taxi", "cab", "auto", "conveyance")):
-        return ("Local Conveyance", "conveyance")
-    if any(_has_token(normalized, token) for token in ("train", "irctc", "railway", "rail")):
-        return ("Train Travel", "train")
-    if any(
-        _has_token(normalized, token)
-        for token in ("flight", "air", "indigo", "vistara", "airindia", "spicejet", "airline", "aeroplane")
-    ):
-        return ("Air Travel", "air")
-    if any(_has_token(normalized, token) for token in ("bus", "redbus", "volvo", "coach")):
-        return ("Bus Travel", "bus")
-    if any(_has_token(normalized, token) for token in ("fuel", "petrol", "diesel", "cng", "fillingstation")):
-        return ("Fuel", "fuel")
-    if any(
-        _has_token(normalized, token)
-        for token in ("software", "subscription", "saas", "license", "licence", "app", "cloud")
-    ):
-        return ("Software/Subscription", "software")
-    if any(
-        _has_token(normalized, token)
-        for token in ("stationery", "stationary", "supplies", "printer", "printing", "office")
-    ):
-        return ("Office Supplies", "supplies")
-    if any(
-        _has_token(normalized, token)
-        for token in ("telecom", "internet", "broadband", "mobile", "sim", "wifi", "airtel", "jio", "vodafone")
-    ):
-        return ("Telecom & Internet", "telecom")
-    if any(
-        _has_token(normalized, token)
-        for token in ("consulting", "consultant", "professional", "legal", "audit", "advisory", "freelance")
-    ):
-        return ("Professional Services", "professional")
-    if any(_has_token(normalized, token) for token in ("courier", "postage", "speedpost", "dtdc", "fedex", "bluedart")):
-        return ("Courier & Postage", "courier")
-    return ("Incidentals", "incidental")
+    by_name = {category.name.lower(): category for category in result.scalars().all()}
+    return next((by_name[name.lower()] for name in wanted if name.lower() in by_name), None)
 
 
 def _coerce_confidence(raw: Any) -> Decimal:
@@ -628,15 +568,16 @@ async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSe
     extracted: dict[str, tuple[str, Decimal]] = {
         key: _parsed_field(raw_fields.get(key)) for key in keys
     }
-    # Bill-level "what is this for" classification (see EXTRACTION_PROMPT) — used below as a
-    # content-based hint for both the synthetic single-line fallback and each real line item,
-    # taking precedence over the filename-only heuristic _infer_category otherwise falls back to.
+    # Bill-level "what is this for" classification (see EXTRACTION_PROMPT) — classify_line's
+    # second signal, after each line's own category_hint, for both the synthetic single-line
+    # fallback and each real line item.
     top_category_hint = extracted["expense_category"][0]
-    # The vendor name is often the single clearest categorization signal there is (e.g. "Osaka
-    # Business Hotel KK" is unambiguously a hotel stay even when Gemini's line-item description
-    # and category_hint are generic, like a bare "Room Charge" or "Service Fee") — both
-    # _infer_category call sites below need it, not just the blacklist check further down.
+    # The vendor name is a fallback signal for classify_line (when Gemini gave no category) and
+    # feeds the blacklist check further down.
     vendor_lower = (extracted.get("vendor_name", ("",))[0] or "").lower()
+    # A kaccha (handwritten / informal) bill goes under Incidental Expenses, all of it (policy 2.2).
+    # Read for classification only, not stored as a reviewed field.
+    is_kaccha_bill = is_truthy(_parsed_field(raw_fields.get("is_kaccha_bill"))[0])
     pos_value, pos_forced_confidence = _normalize_place_of_supply(
         extracted["place_of_supply"][0], extracted["supplier_gstin"][0]
     )
@@ -760,6 +701,7 @@ async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSe
                     "other_tax": str(gap),
                     "total_amount": str(gap),
                     "category_hint": line_raw[0].get("category_hint", "incidental") if line_raw else "incidental",
+                    "conveyance_mode": line_raw[0].get("conveyance_mode", "") if line_raw else "",
                 }
             )
         # The top-level total_taxable_value/cgst/sgst/igst/other_tax fields (shown/edited in
@@ -811,10 +753,15 @@ async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSe
         if not is_foreign_currency and cgst == 0 and sgst == 0 and igst == 0 and tax > 0:
             cgst = (tax / 2).quantize(Decimal("0.01"))
             sgst = (tax - cgst).quantize(Decimal("0.01"))
-        cat_name, cat_frag = _infer_category(f"{top_category_hint} {vendor_lower} {invoice.original_filename}")
+        bill_category = classify_line(
+            bill_category=top_category_hint,
+            vendor=vendor_lower,
+            filename=invoice.original_filename,
+            kaccha=is_kaccha_bill,
+        )
         line_raw = [
             {
-                "description": cat_name,
+                "description": bill_category.name,
                 "quantity": "1.00",
                 "unit": "EA",
                 "unit_price": str(taxable),
@@ -825,7 +772,8 @@ async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSe
                 "igst": str(igst),
                 "other_tax": str(other_tax),
                 "total_amount": str(total) if total > 0 else str(taxable),
-                "category_hint": cat_frag,
+                "category_hint": bill_category.key,
+                "conveyance_mode": bill_category.mode_key,
             }
         ]
         if is_foreign_currency:
@@ -878,11 +826,19 @@ async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSe
         igst = _parsed_money(raw.get("igst"))
         other_tax = _parsed_money(raw.get("other_tax"))
         total_amt = _parsed_money(raw.get("total_amount"))
-        hint = str(raw.get("category_hint") or "").lower()
-        cat_name, cat_frag = _infer_category(
-            f"{hint} {top_category_hint} {vendor_lower} {description} {filename_lower}"
+        # The policy category (expense_classifier): Gemini's answer for the line, else for the
+        # bill, else the words on it — then the policy's own rules (laundry is room rent, a
+        # kaccha bill is incidental, a ride goes under its mode).
+        line_category = classify_line(
+            line_hint=str(raw.get("category_hint") or ""),
+            mode_hint=str(raw.get("conveyance_mode") or ""),
+            bill_category=top_category_hint,
+            description=description,
+            vendor=vendor_lower,
+            filename=filename_lower,
+            kaccha=is_kaccha_bill,
         )
-        category = await _find_category(cat_frag, db, travel_date=travel_date)
+        category = await _find_category(line_category.lookup_names, db, travel_date=travel_date)
         # total_amount must always equal taxable_value + tax by definition — Gemini
         # sometimes reports a line item's own total_amount inconsistently with its own
         # taxable/cgst/sgst/igst fields (observed: taxable=99, cgst=sgst=8.91 each, but
@@ -899,7 +855,13 @@ async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSe
             configured_hit, _matched = await check_blacklist(
                 bl_text, [category.id], db, impact_level_id=impact_level_id
             )
-        is_blacklisted = configured_hit or any(t in bl_text for t in ("alcohol", "tobacco"))
+        # Alcohol and cigarettes are never reimbursed (policy 3.1): the category's list, Gemini's
+        # own flag for the line, or the words themselves.
+        is_blacklisted = (
+            configured_hit
+            or is_truthy(raw.get("restricted"))
+            or any(t in bl_text for t in ("alcohol", "tobacco", "cigarette"))
+        )
         db.add(
             InvoiceLineItem(
                 invoice_id=invoice.id,
@@ -915,7 +877,7 @@ async def _persist_parsed_extraction(invoice: Invoice, parsed: dict, db: AsyncSe
                 other_tax=other_tax,
                 total_amount=total_amt if total_amt > 0 else taxable,
                 category_id=category.id if category else None,
-                category_name=category.name if category else cat_name,
+                category_name=category.name if category else line_category.name,
                 is_blacklisted=is_blacklisted,
             )
         )
@@ -972,8 +934,9 @@ async def run_invoice_extraction(invoice: Invoice, db: AsyncSession) -> None:
 
 async def run_mock_extraction(invoice: Invoice, db: AsyncSession) -> None:
     stem = Path(invoice.original_filename).stem.replace("_", " ").replace("-", " ").title()
-    category_name, category_fragment = _infer_category(invoice.original_filename)
-    category = await _find_category(category_fragment, db, travel_date=date.today())
+    line_category = classify_line(filename=invoice.original_filename)
+    category_name = line_category.name
+    category = await _find_category(line_category.lookup_names, db, travel_date=date.today())
     total = _decimal_from_hash(invoice.file_sha256)
     taxable = (total / Decimal("1.18")).quantize(Decimal("0.01"))
     tax = (total - taxable).quantize(Decimal("0.01"))
@@ -1009,7 +972,7 @@ async def run_mock_extraction(invoice: Invoice, db: AsyncSession) -> None:
         # Mock extraction is always a plain domestic INR invoice — genuinely 0, not a guess.
         "other_tax": ("0.00", Decimal("99.00")),
         "is_tatkal": ("false", BOOLEAN_FIELD_CONFIDENCE),
-        "expense_category": (category_name, FABRICATED_CONFIDENCE),
+        "expense_category": (line_category.bill_label, FABRICATED_CONFIDENCE),
     }
     for key, (value, confidence) in extracted_fields.items():
         db.add(
@@ -1458,12 +1421,15 @@ _GST_STATE_NAMES = {
 }
 
 
-async def _claim_invoice_breakdown(invoice_ids: list[int], db: AsyncSession) -> dict[str, list[dict]]:
+async def _claim_invoice_breakdown(
+    invoice_ids: list[int], db: AsyncSession, *, day_visit: bool = False
+) -> dict[str, list[dict]]:
     """Per-category list of the invoices (vendor + place) behind a ClaimExpense's total.
 
     ClaimExpense rows are aggregated across every invoice sharing a category (see
     _build_claim_expenses below), so the policy-check screen needs this separately to show an
-    employee which actual invoice/vendor/place a flagged category's amount came from.
+    employee which actual invoice/vendor/place a flagged category's amount came from. On a day
+    visit, food and incidentals are listed under Day Visit Expenses, as they're grouped there.
     """
     if not invoice_ids:
         return {}
@@ -1504,7 +1470,7 @@ async def _claim_invoice_breakdown(invoice_ids: list[int], db: AsyncSession) -> 
     totals: dict[tuple[str, int], Decimal] = defaultdict(lambda: Decimal("0.00"))
     line_item_rows: dict[tuple[str, int], list[dict]] = defaultdict(list)
     for item in line_items:
-        category = item.category_name or "Uncategorised"
+        category = _policy_group_name(item.category_name, day_visit)
         key = (category, item.invoice_id)
         totals[key] += item.total_amount
         line_item_rows[key].append({"description": item.description, "amount": item.total_amount})
@@ -1568,6 +1534,56 @@ def _hotel_nights(invoice_ids: set[int], bill_nights: dict[int, int], claim: Cla
     return 1
 
 
+def _trip_nights(claim: ClaimDraft) -> int:
+    """Nights away (return − departure), at least 1: what an incidental-expenses cap covers
+    (policy Table 2, "IE / Night")."""
+    if claim.departure_date and claim.return_date:
+        return max((claim.return_date - claim.departure_date).days, 1)
+    return 1
+
+
+def _is_day_visit(claim: ClaimDraft) -> bool:
+    """A travel claim for a trip that starts and ends on the same day, with no night stay. Its food
+    and incidentals fall under the day-visit limit instead (policy Table 2, last column)."""
+    return (
+        getattr(claim, "reimbursement_category", None) == ReimbursementCategory.TRAVEL
+        and getattr(claim, "departure_date", None) is not None
+        and claim.departure_date == getattr(claim, "return_date", None)
+    )
+
+
+def _policy_group_name(category_name: str | None, day_visit: bool) -> str:
+    """The claim expense a bill line counts toward: its own category, except that a day visit's
+    food and incidentals count toward Day Visit Expenses."""
+    name = category_name or "Uncategorised"
+    if day_visit and _category_limit_field(name) in ("food", "incidental"):
+        return CATEGORY_DAY_VISIT
+    return name
+
+
+def _pre_tax_amount(item: InvoiceLineItem) -> Decimal:
+    """A line's amount before taxes, which room rent and food limits are checked on (policy 2.1).
+    A line read without a taxable value counts in full."""
+    return item.taxable_value if item.taxable_value and item.taxable_value > 0 else item.total_amount
+
+
+def _conveyance_not_allowed(category_name: str | None, impact: ImpactLevel) -> bool:
+    """Whether a local-conveyance expense is for a mode the traveller's level may not use (policy
+    Table 1; Note 1: HRBP and CEO approve it). A ride whose mode isn't known (plain "Local
+    Conveyance") is never flagged. A level whose mode list has none of the policy's mode names (set
+    up before them) keeps the old rule: a taxi at Levels 4-6 without "Hired Taxi" in its list."""
+    modes = list(impact.local_conveyance_modes or [])
+    if any(mode in CONVEYANCE_MODES for mode in modes):
+        mode = conveyance_mode_of(category_name)
+        return mode is not None and mode not in modes
+    normalized = (category_name or "").lower()
+    return (
+        ("taxi" in normalized or "local conveyance" in normalized)
+        and impact.level_code.startswith(("L4", "L5", "L6"))
+        and "Hired Taxi" not in modes
+    )
+
+
 async def _claimant_is_ceo(claim: ClaimDraft, db: AsyncSession) -> bool:
     """The CEO has no policy limits: nothing on their claims is capped or flagged as an exception."""
     from app.services.workflow_service import is_ceo_user
@@ -1596,11 +1612,23 @@ async def _build_claim_expenses(
     line_items = (
         await db.execute(select(InvoiceLineItem).where(InvoiceLineItem.invoice_id.in_(invoice_ids)))
     ).scalars().all()
-    # Policy caps are per night (hotel) / per day (food, incidentals, day visit), so caps are
+    # Policy caps are per night (room rent, incidentals) / per day (food, day visit), so caps are
     # checked against each bill's own date and nights, not the claim's lump total.
     bill_dates, bill_nights = await _invoice_dates_and_nights(invoice_ids, db)
     per_day: dict[tuple[int | None, str], dict] = defaultdict(lambda: defaultdict(lambda: Decimal("0.00")))
+    # Room rent and food limits are before taxes (policy 2.1).
+    grouped_pre_tax: dict[tuple[int | None, str], Decimal] = defaultdict(lambda: Decimal("0.00"))
+    per_day_pre_tax: dict[tuple[int | None, str], dict] = defaultdict(lambda: defaultdict(lambda: Decimal("0.00")))
     group_invoices: dict[tuple[int | None, str], set[int]] = defaultdict(set)
+    # A trip with no night stay: its food and incidentals count toward the day-visit limit.
+    day_visit = _is_day_visit(claim)
+    day_visit_category_id = None
+    if day_visit:
+        try:
+            found = await _find_category(CATEGORY_DAY_VISIT, db, travel_date=claim.departure_date)
+        except HTTPException:
+            found = None
+        day_visit_category_id = found.id if found else None
     for item in line_items:
         gst_summary["taxable_value"] += item.taxable_value
         gst_summary["total_taxable_value"] += item.taxable_value
@@ -1610,10 +1638,16 @@ async def _build_claim_expenses(
         gst_summary["other_tax"] += item.other_tax
         gst_summary["grand_total"] += item.total_amount
         if not item.is_blacklisted:
-            key = (item.category_id, item.category_name or "Uncategorised")
+            group_name = _policy_group_name(item.category_name, day_visit)
+            if group_name == CATEGORY_DAY_VISIT and day_visit:
+                key = (day_visit_category_id, group_name)
+            else:
+                key = (item.category_id, item.category_name or "Uncategorised")
             grouped[key] += item.total_amount
             grouped_taxable[key] += item.taxable_value
+            grouped_pre_tax[key] += _pre_tax_amount(item)
             per_day[key][bill_dates.get(item.invoice_id)] += item.total_amount
+            per_day_pre_tax[key][bill_dates.get(item.invoice_id)] += _pre_tax_amount(item)
             group_invoices[key].add(item.invoice_id)
             gst_summary["itc_eligible_amount"] += item.cgst + item.sgst + item.igst
 
@@ -1688,14 +1722,19 @@ async def _build_claim_expenses(
                 cap_amount = None
             elif field == "hotel":
                 # Nightly cap × nights: the nights on the hotel bills (read at extraction,
-                # correctable in review), or the trip's nights if no bill has them.
+                # correctable in review), or the trip's nights if no bill has them. Before taxes.
                 nights = _hotel_nights(group_invoices[key], bill_nights, claim)
                 cap_amount = unit_cap * nights
+                policy_status, _ = check_cap(limit_row, field, grouped_pre_tax[key], override_cap=cap_amount)
+            elif field == "incidental":
+                # Per night of the trip, all bills together.
+                cap_amount = unit_cap * _trip_nights(claim)
                 policy_status, _ = check_cap(limit_row, field, amount, override_cap=cap_amount)
             else:
                 # Daily cap, checked day by day (bills grouped by their bill date); flagged if any
                 # one day goes over. The cap shown is the daily cap × the number of bill days.
-                days = per_day[key]
+                # Food is checked before taxes.
+                days = per_day_pre_tax[key] if field == "food" else per_day[key]
                 cap_amount = unit_cap * max(len(days), 1)
                 for day_total in days.values():
                     day_status, _ = check_cap(limit_row, field, day_total, override_cap=unit_cap)
@@ -1723,15 +1762,12 @@ async def _build_claim_expenses(
                 policy_status = "HARD_BLOCK"
                 exc_type = "AIR_TRAVEL_L5_L6"
         elif (
-            ("taxi" in normalized_cat or "hired taxi" in normalized_cat or "local conveyance" in normalized_cat)
-            and impact
+            impact
             and is_exception_enabled(cfg, "HIRED_TAXI_UNAUTHORIZED")
+            and _conveyance_not_allowed(category_name, impact)
         ):
-            if impact.level_code.startswith(("L4", "L5", "L6")):
-                modes = impact.local_conveyance_modes or []
-                if "Hired Taxi" not in modes:
-                    policy_status = "HARD_BLOCK"
-                    exc_type = "HIRED_TAXI_UNAUTHORIZED"
+            policy_status = "HARD_BLOCK"
+            exc_type = "HIRED_TAXI_UNAUTHORIZED"
 
         if exc_type is None and policy_status in ("HARD_BLOCK", "SOFT_FLAG"):
             # Cap-driven categories use the type of the cap that flagged them (day visits too —
@@ -1759,7 +1795,7 @@ async def _build_claim_expenses(
         expenses.append(expense)
     await db.flush()
 
-    breakdown = await _claim_invoice_breakdown(invoice_ids, db)
+    breakdown = await _claim_invoice_breakdown(invoice_ids, db, day_visit=day_visit)
     for expense in expenses:
         expense.invoice_breakdown = breakdown.get(expense.category_name, [])
 
@@ -2376,7 +2412,7 @@ async def get_claim_bundle(
         await db.execute(select(ClaimTrip.trip_id).where(ClaimTrip.claim_id == claim_id))
     ).scalars().all()
 
-    breakdown = await _claim_invoice_breakdown(invoice_ids, db)
+    breakdown = await _claim_invoice_breakdown(invoice_ids, db, day_visit=_is_day_visit(claim))
     for expense in expenses:
         expense.invoice_breakdown = breakdown.get(expense.category_name, [])
         if expense.exception_type is None and expense.policy_status != "OK":

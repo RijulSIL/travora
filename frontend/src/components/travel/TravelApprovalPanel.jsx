@@ -16,7 +16,7 @@ import {
   waitingOnYou,
 } from '../approvals/ApprovalDetail';
 import { reimbursementApi } from '../../services/reimbursementApi';
-import { SelfBookedTickets } from './SelfTicketSlots';
+import RequestTickets from './RequestTickets';
 import TravelPicksSummary from './TravelPicksSummary';
 import TravellerId from './TravellerId';
 import { formatDate, formatDatetime, formatRole } from '../../utils/formatters';
@@ -90,12 +90,24 @@ export function travelRouteItems(request, chain, { employeeName, decided, now })
 
   const status = request.status;
   if (request.booked_by === 'SELF') {
-    // The employee booked it: approved, it's booked with their tickets — no travel desk step.
+    // The employee booked it: once approved they upload the tickets, which books it — no travel
+    // desk step. (Requests raised before 23/11/2026 came with their tickets.)
+    const who = employeeName || 'the employee';
+    const attached = (request.segments || []).some((s) => s.ticket);
     items.push({
       key: 'self-booked',
-      state: status === 'BOOKED' ? 'done' : status === 'CANCELLED' ? 'cancelled' : 'todo',
-      title: `Booked by ${employeeName || 'the employee'}`,
-      sub: status === 'BOOKED' ? 'Booked with their tickets' : rejected ? 'Not reached' : 'Booked with their tickets once approved',
+      state: status === 'BOOKED' ? 'done' : status === 'APPROVED' ? 'current' : status === 'CANCELLED' ? 'cancelled' : 'todo',
+      title: `Tickets from ${who}`,
+      sub:
+        status === 'BOOKED'
+          ? 'Uploaded. The trip is booked'
+          : status === 'APPROVED'
+            ? `Waiting for ${who} to upload them`
+            : rejected
+              ? 'Not reached'
+              : attached
+                ? 'Attached. Booked once approved'
+                : 'Uploaded once approved, which books the trip',
     });
     return items;
   }
@@ -194,7 +206,7 @@ export default function TravelApprovalPanel({
           ]}
         />
         <TravellerId request={request} />
-        <SelfBookedTickets request={request} name={name} />
+        <RequestTickets request={request} name={name} />
         <TravelPicksSummary request={request} name={name} />
         <Quote title={`Notes from ${name}`} text={request.notes} />
       </DetailColumn>
@@ -227,8 +239,10 @@ export default function TravelApprovalPanel({
                 <>
                   Approving passes it to <b className="text-ink">{next.label}</b>.
                 </>
-              ) : request.booked_by === 'SELF' ? (
+              ) : request.booked_by === 'SELF' && (request.segments || []).some((s) => s.ticket) ? (
                 <>Yours is the last approval: approving books the trip with the tickets {name} attached.</>
+              ) : request.booked_by === 'SELF' ? (
+                <>Yours is the last approval: approving asks {name} to upload their tickets, which books the trip.</>
               ) : (
                 <>Yours is the last approval: approving sends it to the travel desk for booking.</>
               )}{' '}

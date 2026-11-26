@@ -110,7 +110,9 @@ class TravelRequest(Base):
     notes: Mapped[str | None] = mapped_column(Text)
     # The traveler's choice for each ticketable leg, as a recommendation for the Travel Desk:
     # [{"seq": 1, "choice": "option", "option": {...}, "note": None, "searched_at": "..."}, or
-    #  {"seq": 2, "choice": "own", "option": None, "note": "Any evening train after 6 pm"}].
+    #  {"seq": 2, "choice": "own", "option": None, "note": "Any evening flight after 6 pm"}, or for a
+    #  train leg {"choice": "times", "time_windows": [...]}, or for a bus leg {"choice": "bus",
+    #  "time_windows": [...], "bus_types": [...]}; each may carry time_windows].
     leg_picks: Mapped[list | None] = mapped_column(JSON)
     # The traveller's ID (travel_id_proof_service): full name exactly as on it, which ID it is
     # (AADHAAR, PAN, PASSPORT, ...), and the uploaded copy — stored per user under its content

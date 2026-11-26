@@ -62,6 +62,9 @@ class User(Base):
     id_proof_ref: Mapped[str | None] = mapped_column(String(80), nullable=True)
     id_proof_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
     id_proof_content_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # The welcome tours on Home they've seen: {tour key: "finished" | "skipped" | "existing"}.
+    # A tour for their role that isn't in here starts by itself (onboarding_tour_service).
+    tours_seen: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Deleted by an admin but kept, anonymised, because their claims, approvals or other records
     # still point at them (admin/users.py delete_user). Hidden from User Management.
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

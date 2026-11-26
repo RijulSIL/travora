@@ -4,7 +4,8 @@ import { claimStanding } from '../claims/ClaimListRow';
 import { RELOCATION_PURPOSE } from '../claims/ClaimRelocationSteps';
 import { reimbursementApi } from '../../services/reimbursementApi';
 import { claimWindow, claimWindowDays } from '../travel/travelRequestView';
-import { dayOf, shortDate, today, weekdayDate } from './HomeParts';
+import { awaitingSelfTickets } from '../travel/selfTickets';
+import { dayOf, daysBetween, shortDate, today, weekdayDate } from './HomeParts';
 
 /*
  * Everything Home shows about the viewer's *own* claims and travel — the part every role gets:
@@ -43,6 +44,8 @@ const TRIP_STATUS = {
   BOOKED: { pill: 'Booked', tone: 'ok' },
 };
 
+const SELF_TICKETS_DUE = { pill: 'Approved · upload your tickets', tone: 'amber' };
+
 const MODE_NAME = { FLIGHT: 'Flight', TRAIN: 'Train', BUS: 'Bus' };
 
 function claimTotal(claim) {
@@ -52,6 +55,39 @@ function claimTotal(claim) {
 /** Start of the Indian financial year (1 April) that `d` falls in. */
 function financialYearStart(d) {
   return new Date(d.getMonth() >= 3 ? d.getFullYear() : d.getFullYear() - 1, 3, 1);
+}
+
+/**
+ * Approved trips the viewer booked themselves whose tickets they haven't uploaded, soonest first
+ * (archived ones are left out: the server stops reminding about those too).
+ */
+export function ticketsToUpload(requests, windowDays) {
+  const now = today();
+  return requests
+    .map((row) => row.request || row)
+    .filter(awaitingSelfTickets)
+    .map((request) => ({ request, ...requestSpan(request) }))
+    .filter(({ end }) => !end || end >= now || claimWindow(end, windowDays, now).state !== 'archived')
+    .sort((a, b) => (a.start || 0) - (b.start || 0))
+    .map(({ request, start, end }) => {
+      const inDays = start ? daysBetween(now, start) : null;
+      const passed = Boolean(end && end < now);
+      return {
+        request,
+        route: requestRoute(request).join(' → '),
+        sub: `${travelRef(request.id)} · ${MODE_NAME[request.travel_mode] || 'Trip'}${start ? ` on ${weekdayDate(start)}` : ''} · approved, booked by you`,
+        when: passed
+          ? 'Trip date passed'
+          : inDays === null
+            ? 'Upload now'
+            : inDays <= 0
+              ? 'Trip on now'
+              : inDays === 1
+                ? 'Trip tomorrow'
+                : `Trip in ${inDays} days`,
+        urgent: passed || (inDays !== null && inDays <= 2),
+      };
+    });
 }
 
 /** Booked trips with no claim yet (archived ones are left out), one entry per travel request, with where its claim window stands. */
@@ -105,6 +141,8 @@ function tripsToClaim(bookingTrips, windowDays) {
 
 export function useOwnHome(profile) {
   const [state, setState] = useState({ loading: true });
+  // Bumped to load everything again (e.g. after tickets are uploaded from Home).
+  const [version, setVersion] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -173,7 +211,12 @@ export function useOwnHome(profile) {
         sentBack: sentBack.map((c) => ({ claim: c, note: notes[c.id] })),
         drafts: claims.filter((c) => c.status === 'DRAFT'),
         toClaim: tripsToClaim(booking, claimWindowDays(profile)),
-        upcoming: upcoming.slice(0, UPCOMING).map((t) => ({ ...t, status: TRIP_STATUS[t.request.status] })),
+        ticketsDue: ticketsToUpload(requests, claimWindowDays(profile)),
+        upcoming: upcoming.slice(0, UPCOMING).map((t) => ({
+          ...t,
+          // A trip they booked themselves: once approved, it's their turn to upload the tickets.
+          status: awaitingSelfTickets(t.request) ? SELF_TICKETS_DUE : TRIP_STATUS[t.request.status],
+        })),
         moreUpcoming: Math.max(0, upcoming.length - UPCOMING),
         upcomingCount: upcoming.length,
         inReview,
@@ -195,9 +238,9 @@ export function useOwnHome(profile) {
     return () => {
       cancelled = true;
     };
-    // Loads once per visit; the profile only supplies the claim-deadline settings.
+    // Loads once per visit (and again on reload); the profile only supplies the claim-deadline settings.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [version]);
 
-  return state;
+  return { ...state, reload: () => setVersion((v) => v + 1) };
 }

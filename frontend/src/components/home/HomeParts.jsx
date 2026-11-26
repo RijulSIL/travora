@@ -87,6 +87,7 @@ export function HomeHeader({ firstName, summary, profile, onOpenLimits }) {
       {level ? (
         <button
           type="button"
+          data-tour="limits"
           onClick={onOpenLimits}
           className="inline-flex max-w-full items-center gap-2.5 rounded-xl border border-slate-200 bg-white py-[7px] pl-2 pr-3 text-left transition-colors hover:border-brand/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand"
         >
@@ -158,9 +159,10 @@ export function SectionTitle({ title, note }) {
 }
 
 /** White panel with a title row and an optional "link →" on the right. */
-export function Panel({ title, sub, link, children, badge = null }) {
+/** `tour`: a mark the welcome tours can point at (components/tour). */
+export function Panel({ title, sub, link, children, badge = null, tour }) {
   return (
-    <section className="flex min-w-0 flex-col overflow-hidden rounded-[14px] border border-slate-200 bg-white">
+    <section className="flex min-w-0 flex-col overflow-hidden rounded-[14px] border border-slate-200 bg-white" data-tour={tour}>
       <div className="flex items-center justify-between gap-2.5 border-b border-slate-100 px-4 py-[13px]">
         <div className="min-w-0">
           <h3 className="flex items-center gap-2 text-sm font-extrabold text-ink">
@@ -257,6 +259,7 @@ export function AttentionPanel({ approvals, mine, coming, loading, emptyTitle, e
   const both = approvals.length > 0 && mine.length > 0;
   return (
     <Panel
+      tour="attention"
       title="Needs your attention"
       badge={open ? <span className="rounded-full bg-rose-50 px-2 py-px text-[11px] text-rose-700">{open}</span> : null}
     >

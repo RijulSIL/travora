@@ -36,7 +36,8 @@ Return JSON with this exact structure:
     "other_tax": {"value": "see other_tax rule below", "confidence": 0-100},
     "is_tatkal": {"value": "true or false", "confidence": 0-100},
     "expense_category": {"value": "see expense_category rule below", "confidence": 0-100},
-    "nights": {"value": "see nights rule below", "confidence": 0-100}
+    "nights": {"value": "see nights rule below", "confidence": 0-100},
+    "is_kaccha_bill": {"value": "see is_kaccha_bill rule below", "confidence": 0-100}
   },
   "line_items": [
     {
@@ -51,7 +52,9 @@ Return JSON with this exact structure:
       "igst": "decimal",
       "other_tax": "see other_tax rule below",
       "total_amount": "decimal",
-      "category_hint": "see category_hint rule below"
+      "category_hint": "see category_hint rule below",
+      "conveyance_mode": "see conveyance_mode rule below",
+      "restricted": "see restricted rule below"
     }
   ]
 }
@@ -59,15 +62,33 @@ Rules:
 - nights: for a hotel / accommodation bill only, the number of nights stayed as a whole number
   (check-out date minus check-in date, or the room-nights quantity printed on the bill). Use ""
   for any other kind of bill, or when the stay dates aren't shown.
-- expense_category: classify what this bill/invoice is actually for — a corporate expense
-  reimbursement system uses this to report spend by type. Pick the single best-fitting option
-  based on the vendor name and line items (not the filename), from: Hotel/Accommodation, Air
-  Travel, Train Travel, Bus Travel, Local Conveyance, Fuel, Food & Meals, Software/Subscription,
-  Office Supplies, Telecom & Internet, Professional Services, Courier & Postage, Other. Use
-  "Other" only when genuinely none of the listed options fit.
-- category_hint (per line item): same idea as expense_category but one short lowercase token per
-  line, from: hotel, food, air, train, bus, conveyance, fuel, software, office_supplies, telecom,
-  professional, courier, incidental.
+- expense_category: what this bill is actually for, in the company travel policy's categories.
+  Pick the single best fit from: Air Travel, Train Travel, Bus Travel, Local Conveyance, Hotel Room
+  Rent, Food & Meals, Incidental Expenses, Fuel, Software/Subscription, Office Supplies, Telecom &
+  Internet, Professional Services, Courier & Postage, Other. Judge by what was bought, not by words
+  that merely appear on the bill or in the filename: a restaurant named "Hotel ..." (common in
+  India) is Food & Meals; a cab ride to or from a hotel is Local Conveyance; a flight or train
+  ticket that includes a meal is still Air Travel / Train Travel. Use "Other" only when none fit.
+- category_hint (per line item): what that one line is for, one lowercase token from: air, train,
+  bus, conveyance, room_rent, food, incidental, fuel, software, office_supplies, telecom,
+  professional, courier, other. Policy rules:
+  room_rent = hotel or guest-house room charges, and laundry (room rent includes laundry);
+  food = meals, restaurant bills, room service, breakfast, food and drinks from the minibar;
+  a meal or catering charge bundled into a ticket stays with the ticket (air / train);
+  conveyance = taxi, app cab, auto rickshaw, metro, local bus, car hire within a city;
+  incidental = tips, porterage, tolls, parking, small sundries;
+  a tax, fee or service-charge line takes the token of the item it is charged on.
+- conveyance_mode (per line item, only when category_hint is conveyance or fuel, else ""):
+  hired_taxi = a car hired with a driver for a trip or day (Innova, car rental, outstation cab);
+  ride_premium = an app ride in a sedan / premium / SUV class (Uber Premier, Uber XL, Uber Black,
+  Ola Prime or similar); ride_economy = an app ride in the basic class (Uber Go, Ola Mini or
+  similar) or a shared taxi; company_vehicle = a vehicle booked by the company;
+  auto = auto rickshaw, Uber/Ola Auto, bike taxi; public_transport = metro, local train, city bus;
+  personal_vehicle = own car or bike, fuel. Use "" when the bill doesn't show which.
+- restricted (per line item): "true" if the line is for alcohol (beer, wine, liquor, spirits,
+  cocktails) or cigarettes / tobacco, else "false".
+- is_kaccha_bill: "true" if the bill is handwritten or an informal slip without a printed business
+  name and bill number (a "kaccha bill"), else "false".
 - Use empty string "" and low confidence if a value is not visible.
 - line_items: use one summary row if the document only shows totals; otherwise list itemized rows.
 - All monetary values as strings with dot decimal separator.

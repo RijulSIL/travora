@@ -51,6 +51,7 @@ async def _run_monitors():
     from app.core.database import AsyncSessionLocal
     from app.services.finance_reporting_service import run_scheduled_reports
     from app.services.policy_engine import archive_replaced_policy_versions_job
+    from app.services.self_booked_travel_service import remind_pending_ticket_uploads
     from app.services.workflow_service import process_auto_approvals
     from app.workers.advance_monitor import monitor_advances
     from app.workers.sla_monitor import monitor_slas
@@ -64,6 +65,12 @@ async def _run_monitors():
                     await archive_replaced_policy_versions_job(db)
             except Exception as e:
                 logger.error(f"Error in hourly background monitors: {e}")
+            # Its own try, so a failure above never stops the reminders (or the other way round).
+            try:
+                async with AsyncSessionLocal() as db:
+                    await remind_pending_ticket_uploads(db)
+            except Exception as e:
+                logger.error(f"Error in ticket upload reminders: {e}")
             await asyncio.sleep(3600)  # Run every hour
 
     async def run_sla_monitor():

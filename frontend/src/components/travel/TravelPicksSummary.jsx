@@ -43,10 +43,12 @@ export default function TravelPicksSummary({ request, name }) {
               <div className="text-[11.5px] font-semibold text-slate-500">
                 {[`${leg.from} → ${leg.to}`, day(leg.date)].filter(Boolean).join(' · ')}
               </div>
-              {pick?.choice === 'bus' ? (
+              {pick?.choice === 'bus' || pick?.choice === 'times' ? (
                 <div>
                   <span className="text-slate-500">Asked for: </span>
-                  <b className="text-ink">{busTypesText(pick.bus_types) || 'Any bus'}</b>
+                  <b className="text-ink">
+                    {pick.choice === 'times' ? 'Any train in their class' : busTypesText(pick.bus_types) || 'Any bus'}
+                  </b>
                 </div>
               ) : pick?.choice === 'own' ? (
                 <div>

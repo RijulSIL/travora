@@ -158,10 +158,11 @@ function PickLine({ pick }) {
   const o = pick.option;
   const when = leaveWindowsText(pick.time_windows);
   const wanted = when ? <span className="block text-[11px] text-slate-500">Wanted to leave {when}</span> : null;
-  if (pick.choice === 'bus') {
+  if (pick.choice === 'bus' || pick.choice === 'times') {
     return (
       <span className="mt-0.5 block text-[11.5px] text-slate-600">
-        You asked for: <b className="text-ink">{busTypesText(pick.bus_types) || 'Any bus'}</b>
+        You asked for:{' '}
+        <b className="text-ink">{pick.choice === 'times' ? 'Any train in your class' : busTypesText(pick.bus_types) || 'Any bus'}</b>
         {wanted}
       </span>
     );
@@ -243,7 +244,9 @@ export function TravelRequestDetail({ request, view, chain, onViewTicket, onView
                       <span className="truncate">Ticket{s.ticket.pnr_or_booking_ref ? ` · PNR ${s.ticket.pnr_or_booking_ref}` : ''}</span>
                     </button>
                   ) : ['APPROVED', 'PARTIALLY_BOOKED'].includes(request.status) ? (
-                    <span className="whitespace-nowrap rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-500">Ticket pending</span>
+                    <span className="whitespace-nowrap rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-500">
+                      {view.needsTickets ? 'Ticket to upload' : 'Ticket pending'}
+                    </span>
                   ) : null}
                 </div>
               );

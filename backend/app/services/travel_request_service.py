@@ -69,17 +69,10 @@ def _today_ist() -> date:
     return today_ist()
 
 
-def earliest_travel_date_allowed(today: date, min_lead_working_days: int) -> date:
-    """Smallest allowed travel_date: advance `today` until `min_lead_working_days` weekdays counted (tomorrow-forward)."""
-    if min_lead_working_days <= 0:
-        return today
-    d = today
-    remaining = min_lead_working_days
-    while remaining > 0:
-        d += timedelta(days=1)
-        if d.weekday() < 5:
-            remaining -= 1
-    return d
+def earliest_travel_date_without_exception(today: date, notice_days: int) -> date:
+    """The first travel date a request raised today can have without a short-notice exception:
+    `notice_days` calendar days from today."""
+    return today + timedelta(days=max(notice_days, 0))
 
 
 def _validate_ticket_file(
@@ -829,9 +822,10 @@ def _leg_mode(seq: int, *, trip_type: str, mode: str | None, legs: list | None) 
 def validate_leg_picks(
     picks: list | None, *, trip_type: str, return_date: date | None, legs: list | None, mode: str | None = None
 ) -> list[dict]:
-    """One choice per ticketable leg is required: for a train or flight leg a picked option, or a
-    short note saying what they'd like instead; for a bus leg (never searched) when they want to
-    leave and what kind of bus. Returns the cleaned list to store."""
+    """One choice per ticketable leg is required: for a flight leg a picked option, or a short note
+    saying what they'd like instead; for a train leg (not searched since 2026-11-23) when they want
+    to leave; for a bus leg (never searched) when they want to leave and what kind of bus. Returns
+    the cleaned list to store."""
     from app.services.travel_option_finder import _clean
 
     count = _expected_leg_count(trip_type, return_date, legs)
@@ -851,7 +845,14 @@ def validate_leg_picks(
         if pick is None:
             raise HTTPException(status_code=422, detail=f"Choose a flight, train or bus for {leg_name}")
         windows = clean_time_windows(pick.get("time_windows"))
-        if _leg_mode(seq, trip_type=trip_type, mode=mode, legs=legs) == TravelRequestMode.BUS.value:
+        leg_mode = _leg_mode(seq, trip_type=trip_type, mode=mode, legs=legs)
+        if leg_mode == TravelRequestMode.TRAIN.value:
+            # Trains aren't searched: the traveller says when they want to leave, and whoever
+            # books finds a train in a class their level allows.
+            if not windows:
+                raise HTTPException(status_code=422, detail=f"Choose when you want to leave for {leg_name}")
+            cleaned.append({"seq": seq, "choice": "times", "option": None, "note": None, "time_windows": windows})
+        elif leg_mode == TravelRequestMode.BUS.value:
             bus_types = clean_bus_types(pick.get("bus_types"))
             if not windows:
                 raise HTTPException(status_code=422, detail=f"Choose when you want to leave for {leg_name}")
@@ -1300,29 +1301,25 @@ async def _determine_blocking_exceptions(
 
     if train_dates and is_exception_enabled(cfg, "TRAIN_ADVANCE_BOOKING_OVERRIDE"):
         # Separate from TRAIN_TATKAL (self-declared/invoice-detected, claims side) — this is
-        # purely date-driven, same as the flight check above. Inclusive boundary (<=, not <):
-        # a departure exactly `min_train_days` days out — e.g. booking on the 6th for the
-        # 8th — is itself the short-notice case this is meant to catch, not the safe side of it.
+        # purely date-driven, same as the flight check above: fewer than N calendar days away.
         earliest_train_date = min(train_dates)
         min_train_days = travel_notice_days(cfg, "TRAIN_ADVANCE_BOOKING_OVERRIDE")
-        train_days_in_advance = (earliest_train_date - today).days
-        if train_days_in_advance <= min_train_days:
+        if (earliest_train_date - today).days < min_train_days:
             blocking.append((
                 "TRAIN_ADVANCE_BOOKING_OVERRIDE",
-                f"Trains leaving within {min_train_days} day(s) need exception approval.",
+                f"Trains need at least {min_train_days} days' notice.",
             ))
 
     if other_dates and is_exception_enabled(cfg, "TRAVEL_REQUEST_LEAD_TIME_OVERRIDE"):
-        # Generic floor for any mode without its own dedicated advance-booking exception
-        # (flight and train are covered above, at their own thresholds, instead of this one).
+        # Any mode without its own check (flight and train are covered above): fewer than N
+        # calendar days away, the same rule.
         min_lead_days = travel_notice_days(cfg, "TRAVEL_REQUEST_LEAD_TIME_OVERRIDE")
-        earliest_allowed = earliest_travel_date_allowed(today, min_lead_days)
-        earliest_other_date = min(other_dates)
-        if earliest_other_date < earliest_allowed:
+        earliest_allowed = earliest_travel_date_without_exception(today, min_lead_days)
+        if min(other_dates) < earliest_allowed:
             blocking.append((
                 "TRAVEL_REQUEST_LEAD_TIME_OVERRIDE",
-                f"Travel must be booked at least {min_lead_days} working day(s) in advance. "
-                f"Earliest allowed travel date is {format_date(earliest_allowed)}.",
+                f"Trips need at least {min_lead_days} days' notice. "
+                f"The earliest travel date without an exception is {format_date(earliest_allowed)}.",
             ))
 
     if flight_dates and impact_level in LEVELS_REQUIRING_AIR_UNLOCK and is_exception_enabled(cfg, "AIR_TRAVEL_UNLOCK"):
@@ -1387,18 +1384,13 @@ async def create_travel_request(
     leg_picks: list | None = None,
     traveller_id: dict | None = None,
     booked_by: str | None = None,
-    self_tickets: list | None = None,
     db: AsyncSession,
 ) -> TravelRequest:
     """`traveller_id`: {id_name, id_type, id_proof_ref, id_proof_filename} — all required — plus
     meal_preference, the optional passport_number / passport_expiry, and save_id_to_profile.
-    `booked_by` SELF needs `self_tickets`, a ticket for every leg (self_booked_travel_service)."""
-    from app.services.self_booked_travel_service import (
-        BOOKED_BY_SELF,
-        attach_self_tickets,
-        clean_booked_by,
-        clean_self_tickets,
-    )
+    `booked_by` SELF: the employee booked it themselves and uploads the tickets once it's
+    approved (self_booked_travel_service)."""
+    from app.services.self_booked_travel_service import BOOKED_BY_SELF, clean_booked_by
 
     user, mode_val = await _validate_common_travel_request_fields(
         user_id=user_id, travel_mode=travel_mode, travel_date=travel_date, legs=legs, db=db
@@ -1413,13 +1405,12 @@ async def create_travel_request(
         purpose=purpose,
         db=db,
     )
-    picks = validate_leg_picks(leg_picks, trip_type=trip_type, return_date=return_date, legs=legs, mode=mode_val)
-    ident, save_id = await _traveller_details(user_id, traveller_id, db)
     booked_by = clean_booked_by(booked_by)
-    tickets = clean_self_tickets(
-        user_id, trip_type, legs, self_tickets,
-        from_city=from_city, to_city=to_city, travel_date=travel_date, return_date=return_date,
-    ) if booked_by == BOOKED_BY_SELF else []
+    # A trip the employee already booked has no flight, train or bus to choose.
+    picks = [] if booked_by == BOOKED_BY_SELF else validate_leg_picks(
+        leg_picks, trip_type=trip_type, return_date=return_date, legs=legs, mode=mode_val
+    )
+    ident, save_id = await _traveller_details(user_id, traveller_id, db)
 
     impact_level = await _get_user_impact_level_code(user_id, db)
     blocking = await _determine_blocking_exceptions(
@@ -1457,8 +1448,6 @@ async def create_travel_request(
     )
     if save_id:
         await _save_id_to_profile(user_id, ident, db)
-    if tickets:
-        await attach_self_tickets(row, user_id, tickets, db)
 
     # Build the (possibly multi-stage, admin-configured) approval chain and notify its first
     # approver(s), then save the request, its legs and its chain together in one commit: quicker
@@ -1562,19 +1551,13 @@ async def create_travel_request_with_exception(
     leg_picks: list | None = None,
     traveller_id: dict | None = None,
     booked_by: str | None = None,
-    self_tickets: list | None = None,
     justification: str,
     db: AsyncSession,
 ) -> TravelRequest:
     """Same validation as create_travel_request, but when the request is only blocked by a
     policy exception, creates it anyway in PENDING_EXCEPTION status and raises the exception
     request instead of rejecting the submission outright."""
-    from app.services.self_booked_travel_service import (
-        BOOKED_BY_SELF,
-        attach_self_tickets,
-        clean_booked_by,
-        clean_self_tickets,
-    )
+    from app.services.self_booked_travel_service import BOOKED_BY_SELF, clean_booked_by
 
     await _validate_common_travel_request_fields(
         user_id=user_id, travel_mode=travel_mode, travel_date=travel_date, legs=legs, db=db
@@ -1590,13 +1573,11 @@ async def create_travel_request_with_exception(
         purpose=purpose,
         db=db,
     )
-    picks = validate_leg_picks(leg_picks, trip_type=trip_type, return_date=return_date, legs=legs, mode=mode_val)
-    ident, save_id = await _traveller_details(user_id, traveller_id, db)
     clean_by = clean_booked_by(booked_by)
-    tickets = clean_self_tickets(
-        user_id, trip_type, legs, self_tickets,
-        from_city=from_city, to_city=to_city, travel_date=travel_date, return_date=return_date,
-    ) if clean_by == BOOKED_BY_SELF else []
+    picks = [] if clean_by == BOOKED_BY_SELF else validate_leg_picks(
+        leg_picks, trip_type=trip_type, return_date=return_date, legs=legs, mode=mode_val
+    )
+    ident, save_id = await _traveller_details(user_id, traveller_id, db)
 
     impact_level = await _get_user_impact_level_code(user_id, db)
     blocking = await _determine_blocking_exceptions(
@@ -1621,7 +1602,6 @@ async def create_travel_request_with_exception(
             leg_picks=leg_picks,
             traveller_id=traveller_id,
             booked_by=booked_by,
-            self_tickets=self_tickets,
             db=db,
         )
 
@@ -1646,8 +1626,6 @@ async def create_travel_request_with_exception(
     )
     if save_id:
         await _save_id_to_profile(user_id, ident, db)
-    if tickets:
-        await attach_self_tickets(row, user_id, tickets, db)
 
     from app.services.workflow_service import create_travel_exception_request
 
@@ -1857,7 +1835,8 @@ async def count_pending_travel_requests_for_desk(db: AsyncSession) -> int:
         select(func.count(TravelRequest.id)).where(
             TravelRequest.status.in_(
                 [TravelRequestStatus.APPROVED.value, TravelRequestStatus.PARTIALLY_BOOKED.value]
-            )
+            ),
+            TravelRequest.booked_by != "SELF",
         )
     )
     return int(result.scalar_one())
@@ -1868,7 +1847,8 @@ async def list_pending_travel_requests_for_desk(db: AsyncSession) -> list[dict]:
     until every segment has a ticket. Manager approval happens before Travel Desk ever sees it.
 
     Default order surfaces PARTIALLY_BOOKED requests first (they're mid-booking and easiest to
-    finish), then APPROVED ones — each group oldest-first."""
+    finish), then APPROVED ones — each group oldest-first. A trip the employee booked themselves
+    isn't here: they upload its tickets (self_booked_travel_service)."""
     status_priority = case(
         (TravelRequest.status == TravelRequestStatus.PARTIALLY_BOOKED.value, 0),
         else_=1,
@@ -1877,7 +1857,12 @@ async def list_pending_travel_requests_for_desk(db: AsyncSession) -> list[dict]:
         await db.execute(
             select(TravelRequest)
             .options(selectinload(TravelRequest.legs), selectinload(TravelRequest.tickets))
-            .where(TravelRequest.status.in_([TravelRequestStatus.APPROVED.value, TravelRequestStatus.PARTIALLY_BOOKED.value]))
+            .where(
+                TravelRequest.status.in_(
+                    [TravelRequestStatus.APPROVED.value, TravelRequestStatus.PARTIALLY_BOOKED.value]
+                ),
+                TravelRequest.booked_by != "SELF",
+            )
             .order_by(status_priority, TravelRequest.requested_at.asc())
         )
     ).scalars().all()
@@ -2471,6 +2456,10 @@ async def upload_ticket_for_request(
     ).scalar_one_or_none()
     if req is None:
         raise HTTPException(status_code=404, detail="Travel request not found")
+    if getattr(req, "booked_by", None) == "SELF":
+        raise HTTPException(
+            status_code=409, detail="The employee booked this trip themselves, so they upload its tickets"
+        )
 
     segments = _segments_for_request(req)
     segment = next((s for s in segments if s["seq"] == leg_sequence), None)
@@ -2855,6 +2844,10 @@ async def send_travel_request_to_agent(
     ).scalar_one_or_none()
     if req is None:
         raise HTTPException(status_code=404, detail="Travel request not found")
+    if getattr(req, "booked_by", None) == "SELF":
+        raise HTTPException(
+            status_code=409, detail="The employee booked this trip themselves, so it doesn't go to the travel agent"
+        )
     if req.status not in _AGENT_BOOKABLE_STATUSES:
         raise HTTPException(
             status_code=409, detail="Only approved or partially booked requests can be sent to the travel agent"
