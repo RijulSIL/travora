@@ -18,8 +18,19 @@ const ACTIONS = {
   reject: ['Reject', 'Rejects the whole item. The employee is told the reason.'],
   send_back: ['Send back to the employee', 'Returns the claim so the employee can correct and resubmit it.'],
   skip: ['Skip this step', 'Passes it to the next approver without a decision.'],
-  approve_all: ['Approve all remaining steps', 'Approves every step left in one go. Claims stop at Finance, which still records the payment.'],
+  approve_all: ['Approve all remaining steps', 'Approves every step left in one go.'],
 };
+/** What happens once approve-all clears the route — differs by kind (see the server's final-approval handlers). */
+const APPROVE_ALL_AFTER = {
+  claim: 'It stops at Finance, which still records the payment.',
+  travel: "It then goes to the travel agent for booking, or, if the employee is booking it themselves, they're asked to upload their tickets.",
+  relocation: 'The employee can then raise their relocation claim.',
+};
+
+function actionHint(key, kind) {
+  const base = ACTIONS[key][1];
+  return key === 'approve_all' && APPROVE_ALL_AFTER[kind] ? `${base} ${APPROVE_ALL_AFTER[kind]}` : base;
+}
 const DONE = {
   approve: 'Approved',
   reject: 'Rejected',
@@ -138,7 +149,7 @@ export default function OverridePanel({ item, onDone }) {
                   />
                   <span className="min-w-0">
                     <span className="block text-[12.5px] font-bold text-ink">{ACTIONS[key][0]}</span>
-                    <span className="block text-[11.5px] leading-snug text-slate-500">{ACTIONS[key][1]}</span>
+                    <span className="block text-[11.5px] leading-snug text-slate-500">{actionHint(key, item.kind)}</span>
                   </span>
                 </label>
               ))}
@@ -171,7 +182,8 @@ export default function OverridePanel({ item, onDone }) {
               {busy ? 'Applying…' : `Override: ${ACTIONS[action][0].toLowerCase()}`}
             </button>
             <p className="m-0 text-[11.5px] leading-relaxed text-slate-500">
-              Whoever the step was waiting on is told you acted for them. Finance&apos;s payment step can&apos;t be overridden.
+              Whoever the step was waiting on is told you acted for them.
+              {item.kind === 'claim' ? <> Finance&apos;s payment step can&apos;t be overridden.</> : null}
             </p>
           </>
         )}

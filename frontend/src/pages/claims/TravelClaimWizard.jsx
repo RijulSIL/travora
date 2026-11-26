@@ -751,13 +751,8 @@ export default function TravelClaimWizard({ relocation = false }) {
           tripGroups={tripGroups}
           windowDays={windowDays}
           selectedTripIds={selectedTripIds}
-          onToggleTripGroup={(tripIds, checked) =>
-            setSelectedTripIds((prev) =>
-              checked
-                ? [...new Set([...prev, ...tripIds])]
-                : prev.filter((item) => !tripIds.includes(item)),
-            )
-          }
+          // A claim covers one trip (all its legs): picking another replaces it; null clears it.
+          onSelectTripGroup={(tripIds) => setSelectedTripIds(tripIds ? [...tripIds] : [])}
           onPreviewTicket={previewTicket}
         />
       ) : null}

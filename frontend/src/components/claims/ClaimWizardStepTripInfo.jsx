@@ -41,8 +41,8 @@ function TicketButton({ onClick }) {
   );
 }
 
-/** One booked trip (all its legs) as a row you tick. */
-function TripRow({ group, selected, onToggle, onPreviewTicket }) {
+/** One booked trip (all its legs) as a row you pick; a claim takes one. The picked one can be cleared. */
+function TripRow({ group, selected, onSelect, onClear, onPreviewTicket }) {
   const legs = group.legs;
   const first = legs[0];
   const multi = legs.length > 1;
@@ -68,10 +68,11 @@ function TripRow({ group, selected, onToggle, onPreviewTicket }) {
       }`}
     >
       <input
-        type="checkbox"
+        type="radio"
+        name="claim-trip"
         className="mt-0.5 h-4 w-4 accent-brand"
         checked={selected}
-        onChange={(e) => onToggle(e.target.checked)}
+        onChange={onSelect}
       />
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
@@ -80,6 +81,19 @@ function TripRow({ group, selected, onToggle, onPreviewTicket }) {
             {kind.label}
             {multi && !isRound ? ` · ${legs.length} legs` : ''}
           </span>
+          {selected && onClear ? (
+            <button
+              type="button"
+              className="ml-auto rounded-md px-1.5 py-0.5 text-[11.5px] font-bold text-slate-500 hover:bg-slate-100 hover:text-ink"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onClear();
+              }}
+            >
+              Clear
+            </button>
+          ) : null}
         </div>
         <div className="text-xs text-slate-500">{meta.join(' · ')}</div>
         {/* A trip can go on several claims (until it's archived), e.g. for bills found later. */}
@@ -162,31 +176,48 @@ export default function ClaimWizardStepTripInfo({
   // { lateDays, archiveDays } after a trip ends (claimWindowDays), for the empty-list note.
   windowDays = null,
   selectedTripIds = [],
-  onToggleTripGroup,
+  onSelectTripGroup,
   onPreviewTicket,
 }) {
   const getError = (name) => validationErrors?.[name];
   const err = (name) => (getError(name) ? <p className="mt-1 text-[11px] font-bold text-rose-600">{getError(name)}</p> : null);
   const selectedGroups = tripGroups.filter((g) => g.tripIds.every((id) => selectedTripIds.includes(id)));
-  const fromRef = selectedGroups.length
-    ? selectedGroups.map((g) => (g.legs[0].travel_request_id ? travelRef(g.legs[0].travel_request_id) : g.legs[0].reference_id)).filter(Boolean)
-    : [];
-  const multiStop = selectedGroups.some((g) => g.tripType === 'MULTI_CITY' && g.legs.length > 1);
+  // A claim covers one trip. One saved with several before that rule shows none picked, with a
+  // note, until they pick the one it's for (the server refuses saving it with more than one).
+  const chosen = selectedGroups.length === 1 ? selectedGroups[0] : null;
+  const groupRef = (g) => (g.legs[0].travel_request_id ? travelRef(g.legs[0].travel_request_id) : g.legs[0].reference_id);
+  const fromRef = chosen ? [groupRef(chosen)].filter(Boolean) : [];
+  const multiStop = chosen?.tripType === 'MULTI_CITY' && chosen.legs.length > 1;
   const caps = useDestinationCaps(form.destination_city, form.departure_date);
   const groupName = caps ? caps.city_group_name || (caps.city_group ? `Group ${caps.city_group}` : '') : '';
 
   return (
     <>
-      <Card title="Start from a booked trip" sub="Ticking a trip fills in the details below. All legs of a round or multi-city trip go together." bodyClass="space-y-1.5">
-        {tripGroups.map((group) => (
-          <TripRow
-            key={group.key}
-            group={group}
-            selected={group.tripIds.every((id) => selectedTripIds.includes(id))}
-            onToggle={(checked) => onToggleTripGroup(group.tripIds, checked)}
-            onPreviewTicket={onPreviewTicket}
-          />
-        ))}
+      <Card
+        title="Start from a booked trip"
+        sub="Pick the trip this claim is for and it fills in the details below. A claim covers one trip; all legs of a round or multi-city trip go together."
+        bodyClass="space-y-1.5"
+      >
+        {selectedGroups.length > 1 ? (
+          <Note tone="amber" title="This claim has more than one trip">
+            It&apos;s linked to {selectedGroups.map(groupRef).filter(Boolean).join(', ')}. A claim covers one trip: pick the one it&apos;s for,
+            and raise a separate claim for the other.
+          </Note>
+        ) : null}
+        {tripGroups.length ? (
+          <div role="radiogroup" aria-label="Booked trips" className="space-y-1.5">
+            {tripGroups.map((group) => (
+              <TripRow
+                key={group.key}
+                group={group}
+                selected={chosen?.key === group.key}
+                onSelect={() => onSelectTripGroup(group.tripIds)}
+                onClear={() => onSelectTripGroup(null)}
+                onPreviewTicket={onPreviewTicket}
+              />
+            ))}
+          </div>
+        ) : null}
         {/* Said, not hidden: an empty list otherwise looks like the trips have gone missing. */}
         {!tripGroups.length ? (
           <p className="text-[12.5px] text-slate-500">

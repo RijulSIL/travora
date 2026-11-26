@@ -1943,6 +1943,39 @@ async def assert_trips_claimable(trip_ids: list[int], claim_id: int, db: AsyncSe
         )
 
 
+async def assert_one_trip_per_claim(trip_ids: list[int], db: AsyncSession) -> None:
+    """A claim covers one trip: every leg booked from one travel request (a round or multi-city
+    trip's legs go together), or a single booking made without a request. Refuse (422) a claim
+    that mixes trips, naming the ones to claim separately. Checked when a claim is saved, so one
+    saved with several trips before this rule (26/11/2026) only has to drop them once it's edited."""
+    ids = list(dict.fromkeys(trip_ids))
+    if len(ids) < 2:
+        return
+    rows = (
+        await db.execute(
+            select(TravelTrip.id, TravelTrip.travel_request_id, TravelTrip.reference_id).where(TravelTrip.id.in_(ids))
+        )
+    ).all()
+    by_id = {row.id: row for row in rows}
+    first = by_id.get(ids[0])
+    if first is None:
+        return  # an unknown trip is refused (404) when it's linked
+    others: list[str] = []
+    for trip_id in ids[1:]:
+        row = by_id.get(trip_id)
+        if row is None or (first.travel_request_id is not None and row.travel_request_id == first.travel_request_id):
+            continue
+        name = f"TR-{row.travel_request_id:04d}" if row.travel_request_id else (row.reference_id or f"Trip {row.id}")
+        if name not in others:
+            others.append(name)
+    if others:
+        named = others[0] if len(others) == 1 else f"{', '.join(others[:-1])} and {others[-1]}"
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"A claim can cover one trip. Raise a separate claim for {named}.",
+        )
+
+
 async def trip_end_dates(trips: list, db: AsyncSession) -> dict[int, date]:
     """Each trip's to date — what its claim window is counted from: the last leg of the trip it
     belongs to (every leg booked from one travel request counts as one trip) or that request's
@@ -2223,6 +2256,7 @@ async def _create_or_update_claim_draft_impl(
             claim_category=payload.reimbursement_category,
         )
     await assert_trips_claimable(list(payload.trip_ids), claim.id, db)
+    await assert_one_trip_per_claim(list(payload.trip_ids), db)
     _assert_trip_dates_in_order(payload)
 
     # Validated the same way _validate_request_details validates a travel request — the Travel

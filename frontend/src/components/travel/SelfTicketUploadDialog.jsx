@@ -7,6 +7,7 @@ import { reimbursementApi } from '../../services/reimbursementApi';
 import { showToast } from '../../store/toastStore';
 import { formatWeekdayDate } from '../../utils/formatters';
 import { LABEL, MODE_ICON } from './TravelRequestFormParts';
+import SelfTicketsDone from './SelfTicketsDone';
 import { fillFromRead, plainAmount, providerLabel, selfTicketError, selfTicketsPayload } from './selfTickets';
 import { MODE_NAME } from './travelRequestView';
 
@@ -15,7 +16,8 @@ import { MODE_NAME } from './travelRequestView';
  * is read as it's attached (booking reference, who it's with, fare); they check every field
  * against the ticket and submit them together, which books the trip. Ticking "Submit these fares
  * for reimbursement" also creates and submits a travel claim with the tickets (the server keeps it
- * as a draft if it can't go through as it is).
+ * as a draft if it can't go through as it is). Once submitted, the dialog shows the booking and
+ * the claim's outcome (SelfTicketsDone); closing that hands the booked request to `onSubmitted`.
  */
 
 const EMPTY = { ref: '', filename: '', file: null, pnr: '', provider: '', amount: '' };
@@ -87,6 +89,8 @@ export default function SelfTicketUploadDialog({ request, onClose, onSubmitted }
   const [dragSeq, setDragSeq] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [showErrors, setShowErrors] = useState(false);
+  // Set once the tickets are submitted: { request, claim } from the server.
+  const [done, setDone] = useState(null);
   const ticketsRef = useRef(tickets);
   ticketsRef.current = tickets;
   const readsRef = useRef(reads);
@@ -100,13 +104,20 @@ export default function SelfTicketUploadDialog({ request, onClose, onSubmitted }
     return sum + (Number.isFinite(n) && n > 0 ? n : 0);
   }, 0);
 
+  // After submitting, closing (Done, ✕ or Escape) refreshes the list behind with the booked request.
+  const finish = () => onSubmitted?.(done?.request);
+  const finishRef = useRef(finish);
+  finishRef.current = finish;
+
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key === 'Escape' && !submitting) onClose();
+      if (e.key !== 'Escape' || submitting) return;
+      if (done) finishRef.current();
+      else onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, submitting]);
+  }, [onClose, submitting, done]);
 
   const setField = (seq, field, value) =>
     setTickets((prev) => ({ ...prev, [seq]: { ...EMPTY, ...prev[seq], [field]: value } }));
@@ -182,12 +193,7 @@ export default function SelfTicketUploadDialog({ request, onClose, onSubmitted }
     setSubmitting(true);
     try {
       const { data } = await reimbursementApi.submitSelfTickets(request.id, selfTicketsPayload(segments, tickets), claimFares);
-      const claim = data?.claim;
-      if (!claim) showToast('Tickets submitted. Your trip is booked.', 'success');
-      else if (claim.status === 'submitted') showToast(`Tickets submitted. ${claim.message}`, 'success');
-      else if (claim.status === 'draft') showToast(`Tickets submitted. The claim was saved as a draft: ${claim.message}`, 'info');
-      else showToast(`Tickets submitted. ${claim.message}`, 'info');
-      onSubmitted?.(data?.request ?? data);
+      setDone({ request: data?.request ?? data, claim: data?.claim ?? null });
     } catch (err) {
       const detail = err?.response?.data?.detail;
       showToast(typeof detail === 'string' ? detail : 'Could not submit the tickets', 'error');
@@ -203,6 +209,22 @@ export default function SelfTicketUploadDialog({ request, onClose, onSubmitted }
 
   const smallButton =
     'inline-flex h-7 flex-none items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-[11.5px] font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50';
+
+  if (done) {
+    return createPortal(
+      <div className="fixed inset-0 z-[100] grid place-items-center bg-slate-900/60 p-4 backdrop-blur-sm">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="self-ticket-done-title"
+          className="flex max-h-[92vh] w-full max-w-[560px] flex-col overflow-hidden rounded-[18px] bg-white shadow-2xl"
+        >
+          <SelfTicketsDone request={request} segments={segments} tickets={tickets} claim={done.claim} onDone={finish} />
+        </div>
+      </div>,
+      document.body,
+    );
+  }
 
   return createPortal(
     <div className="fixed inset-0 z-[100] grid place-items-center bg-slate-900/60 p-4 backdrop-blur-sm">
